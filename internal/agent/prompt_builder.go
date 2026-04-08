@@ -22,15 +22,15 @@ func NewPromptBuilder() *PromptBuilder {
 	return &PromptBuilder{}
 }
 
-func (b *PromptBuilder) BuildMessages(state *types.State, systemPrompt string) []llmChatMessage {
-	messages := []llmChatMessage{
+func (b *PromptBuilder) BuildMessages(state *types.State, systemPrompt string) []ChatMessage {
+	messages := []ChatMessage{
 		{Role: "system", Content: systemPrompt},
 	}
 
 	for _, evt := range state.History {
 		switch e := evt.(type) {
 		case *types.MessageAction:
-			messages = append(messages, llmChatMessage{
+			messages = append(messages, ChatMessage{
 				Role:    roleForSource(e.GetBase().Source),
 				Content: e.Content,
 			})
@@ -39,12 +39,12 @@ func (b *PromptBuilder) BuildMessages(state *types.State, systemPrompt string) [
 			if e.Thought != "" {
 				content = fmt.Sprintf("%s\nReason: %s", content, e.Thought)
 			}
-			messages = append(messages, llmChatMessage{
+			messages = append(messages, ChatMessage{
 				Role:    roleForSource(e.GetBase().Source),
 				Content: content,
 			})
 		case *types.CmdOutputObservation:
-			messages = append(messages, llmChatMessage{
+			messages = append(messages, ChatMessage{
 				Role: "user",
 				Content: fmt.Sprintf(
 					"Command result for action %d (exit_code=%d):\n%s",
@@ -54,13 +54,13 @@ func (b *PromptBuilder) BuildMessages(state *types.State, systemPrompt string) [
 				),
 			})
 		case *types.FinishAction:
-			messages = append(messages, llmChatMessage{
+			messages = append(messages, ChatMessage{
 				Role:    "assistant",
 				Content: "Finished task: " + e.Result,
 			})
 		default:
 			if msg := strings.TrimSpace(evt.GetBase().Message); msg != "" {
-				messages = append(messages, llmChatMessage{
+				messages = append(messages, ChatMessage{
 					Role:    roleForSource(evt.GetBase().Source),
 					Content: msg,
 				})

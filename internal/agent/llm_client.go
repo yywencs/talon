@@ -1,9 +1,10 @@
 // Package agent 实现了与不同 LLM provider 交互的客户端封装。
 // 当前支持两类后端：Ollama 原生 /api/chat 接口，以及 OpenAI-compatible /chat/completions 接口。
-// 通过统一接口 llmClient 抽象 provider 差异，使上层 agent 无需感知具体实现。
+// 通过统一接口 LLMClient 抽象 provider 差异，使上层 agent 无需感知具体实现。
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -19,36 +20,37 @@ import (
 	"github.com/wen/opentalon/pkg/config"
 )
 
-// llmChatMessage 表示对话中的一条消息，包含角色和内容。
+// ChatMessage 表示对话中的一条消息，包含角色和内容。
 // Role 支持 "user" / "assistant" / "system" 等标准角色。
-type llmChatMessage struct {
+type ChatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content,omitempty"`
 }
 
-// llmChatRequest 是发给 LLM 的请求结构，Model/Messages 为必填字段，
+// ChatRequest 是发给 LLM 的请求结构，Model/Messages 为必填字段，
 // Schema 用于声明输出 JSON schema（部分 provider 支持），Temperature 控制随机性。
-type llmChatRequest struct {
+type ChatRequest struct {
 	Model       string
-	Messages    []llmChatMessage
+	Messages    []ChatMessage
 	Schema      map[string]any
 	Temperature float64
 	Stream      bool
 }
 
-// llmChatResponse 是 LLM 返回的响应结构，Content 为实际文本回复，
+// ChatResponse 是 LLM 返回的响应结构，Content 为实际文本回复，
 // PromptTokens/CompletionTokens 分别统计输入/输出的 token 数量。
-type llmChatResponse struct {
+type ChatResponse struct {
 	Content          string
 	PromptTokens     int
 	CompletionTokens int
 }
 
-// llmClient 接口抽象了所有 LLM provider 的 chat 能力。
+// LLMClient 接口抽象了所有 LLM provider 的 chat 能力。
 // 之所以用接口而不是直接分支，是因为 agent 需要在运行时按配置切换具体实现，
 // 而不想在 agent.Step() 里写 if-else 判断要走哪条路。
-type llmClient interface {
-	Chat(ctx context.Context, req llmChatRequest) (*llmChatResponse, error)
+type LLMClient interface {
+	Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
+	StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) error
 }
 
 var sharedLLMHTTPClient = &http.Client{}
@@ -105,7 +107,7 @@ func isNonRetryableStatus(statusCode int) bool {
 // newLLMClient 是工厂函数，按 config.LLMConfig 返回具体 client 实例。
 // 之所以在这里做分发，而不是让外部直接 newOllamaClient/newOpenAIClient，
 // 是因为 agent.go 只需要一个统一的 client，不需要知道背后是哪个 provider。
-func newLLMClient(cfg config.LLMConfig) (llmClient, error) {
+func NewLLMClient(cfg config.LLMConfig) (LLMClient, error) {
 	switch normalizeProvider(cfg.Provider) {
 	case "ollama":
 		return newOllamaClient(cfg.Endpoint), nil
@@ -147,11 +149,11 @@ func newOllamaClient(endpoint string) *ollamaClient {
 
 // ollamaWireRequest 是发给 Ollama 的 wire 协议请求。
 type ollamaWireRequest struct {
-	Model    string           `json:"model"`
-	Messages []llmChatMessage `json:"messages"`
-	Stream   bool             `json:"stream"`
-	Format   map[string]any   `json:"format,omitempty"`
-	Options  map[string]any   `json:"options,omitempty"`
+	Model    string         `json:"model"`
+	Messages []ChatMessage  `json:"messages"`
+	Stream   bool           `json:"stream"`
+	Format   map[string]any `json:"format,omitempty"`
+	Options  map[string]any `json:"options,omitempty"`
 }
 
 // ollamaWireResponse 是 Ollama 返回的 wire 协议响应。
@@ -165,7 +167,7 @@ type ollamaWireResponse struct {
 }
 
 // Chat 向 Ollama 发起 chat 请求。
-func (c *ollamaClient) Chat(ctx context.Context, req llmChatRequest) (*llmChatResponse, error) {
+func (c *ollamaClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	wireReq := ollamaWireRequest{
 		Model:    req.Model,
 		Messages: req.Messages,
@@ -181,11 +183,90 @@ func (c *ollamaClient) Chat(ctx context.Context, req llmChatRequest) (*llmChatRe
 		return nil, fmt.Errorf("请求 ollama 失败: %w", err)
 	}
 
-	return &llmChatResponse{
+	return &ChatResponse{
 		Content:          wireResp.Message.Content,
 		PromptTokens:     wireResp.PromptEvalCount,
 		CompletionTokens: wireResp.EvalCount,
 	}, nil
+}
+
+func (c *ollamaClient) StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) error {
+	if req.Schema != nil {
+		return fmt.Errorf("Ollama 流式模式不支持 Schema 输出")
+	}
+
+	wireReq := ollamaWireRequest{
+		Model:    req.Model,
+		Messages: req.Messages,
+		Stream:   true,
+		Format:   req.Schema,
+		Options: map[string]any{
+			"temperature": req.Temperature,
+		},
+	}
+
+	body, err := json.Marshal(wireReq)
+	if err != nil {
+		return fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveOllamaEndpoint(c.endpoint), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("创建请求失败: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := sharedLLMHTTPClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("请求 ollama 失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Ollama 流式请求失败，状态码: %d，响应: %s", resp.StatusCode, string(respBytes))
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("读取流式响应失败: %w", err)
+		}
+
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+
+		var chunk ollamaStreamChunk
+		if err := json.Unmarshal(line, &chunk); err != nil {
+			continue
+		}
+
+		if chunk.Message.Content != "" {
+			onToken(chunk.Message.Content)
+		}
+
+		if chunk.Done {
+			break
+		}
+	}
+
+	return nil
+}
+
+type ollamaStreamChunk struct {
+	Message struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	} `json:"message"`
+	Done            bool `json:"done"`
+	PromptEvalCount int  `json:"prompt_eval_count,omitempty"`
+	EvalCount       int  `json:"eval_count,omitempty"`
 }
 
 // ------------------------------------------------------------------
@@ -214,11 +295,11 @@ func newOpenAIClient(endpoint, apiKey string) *openAICompatibleClient {
 
 // openAIWireRequest 是发给 OpenAI-compatible 接口的 wire 协议请求。
 type openAIWireRequest struct {
-	Model          string           `json:"model"`
-	Messages       []llmChatMessage `json:"messages"`
-	Temperature    float64          `json:"temperature,omitempty"`
-	ResponseFormat map[string]any   `json:"response_format,omitempty"`
-	Stream         bool             `json:"stream"`
+	Model          string         `json:"model"`
+	Messages       []ChatMessage  `json:"messages"`
+	Temperature    float64        `json:"temperature,omitempty"`
+	ResponseFormat map[string]any `json:"response_format,omitempty"`
+	Stream         bool           `json:"stream"`
 }
 
 // openAIWireResponse 是 OpenAI-compatible 接口返回的 wire 协议响应。
@@ -236,7 +317,7 @@ type openAIWireResponse struct {
 }
 
 // Chat 向 OpenAI-compatible 接口发起 chat 请求。
-func (c *openAICompatibleClient) Chat(ctx context.Context, req llmChatRequest) (*llmChatResponse, error) {
+func (c *openAICompatibleClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	headers := map[string]string{
 		"Content-Type": "application/json",
 	}
@@ -271,11 +352,100 @@ func (c *openAICompatibleClient) Chat(ctx context.Context, req llmChatRequest) (
 		return nil, fmt.Errorf("openai-compatible 响应缺少 choices")
 	}
 
-	return &llmChatResponse{
+	return &ChatResponse{
 		Content:          wireResp.Choices[0].Message.Content,
 		PromptTokens:     wireResp.Usage.PromptTokens,
 		CompletionTokens: wireResp.Usage.CompletionTokens,
 	}, nil
+}
+
+func (c *openAICompatibleClient) StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) error {
+	if req.Schema != nil {
+		return fmt.Errorf("OpenAI-compatible 流式模式不支持 Schema 输出")
+	}
+
+	headers := map[string]string{
+		"Content-Type": "application/json",
+	}
+	if c.apiKey != "" {
+		headers["Authorization"] = "Bearer " + c.apiKey
+	}
+
+	wireReq := openAIWireRequest{
+		Model:       req.Model,
+		Messages:    req.Messages,
+		Temperature: req.Temperature,
+		Stream:      true,
+	}
+
+	body, err := json.Marshal(wireReq)
+	if err != nil {
+		return fmt.Errorf("序列化请求失败: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveOpenAIEndpoint(c.endpoint), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("创建请求失败: %w", err)
+	}
+	for k, v := range headers {
+		httpReq.Header.Set(k, v)
+	}
+
+	resp, err := sharedLLMHTTPClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("请求 openai-compatible 失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("OpenAI-compatible 流式请求失败，状态码: %d，响应: %s", resp.StatusCode, string(respBytes))
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("读取流式响应失败: %w", err)
+		}
+
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 || !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+
+		data := bytes.TrimPrefix(line, []byte("data: "))
+		if bytes.Equal(data, []byte("[DONE]")) {
+			break
+		}
+
+		var chunk openAIStreamChunk
+		if err := json.Unmarshal(data, &chunk); err != nil {
+			continue
+		}
+
+		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
+			onToken(chunk.Choices[0].Delta.Content)
+		}
+	}
+
+	return nil
+}
+
+type openAIStreamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"delta"`
+	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+	} `json:"usage"`
 }
 
 // doJSONRequest 是通用的 JSON HTTP 请求封装，处理序列化、请求构建、响应解析。
