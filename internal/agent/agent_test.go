@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -61,7 +62,7 @@ func TestThinkingAgentStepReturnsRunActionFromOllama(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	action, err := agent.Step(&types.State{
+	action, err := agent.Step(context.Background(), &types.State{
 		History: []types.Event{
 			&types.MessageAction{
 				BaseEvent: types.BaseEvent{Source: types.SourceUser},
@@ -119,7 +120,7 @@ func TestThinkingAgentStepReturnsFinishActionFromOpenAICompatibleLive(t *testing
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	action, err := agent.Step(&types.State{
+	action, err := agent.Step(context.Background(), &types.State{
 		History: []types.Event{
 			&types.MessageAction{
 				BaseEvent: types.BaseEvent{Source: types.SourceUser},
@@ -162,7 +163,7 @@ func TestThinkingAgentStepReturnsRunActionFromOpenAICompatibleLive(t *testing.T)
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	action, err := agent.Step(&types.State{
+	action, err := agent.Step(context.Background(), &types.State{
 		History: []types.Event{
 			&types.MessageAction{
 				BaseEvent: types.BaseEvent{Source: types.SourceUser},

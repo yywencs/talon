@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/wen/opentalon/internal/agent"
@@ -59,7 +60,7 @@ func (c *Controller) step() {
 		return
 	}
 
-	action, err := c.agent.Step(c.state)
+	action, err := c.agent.Step(context.Background(), c.state)
 
 	if err != nil {
 		c.state.LastError = err.Error()

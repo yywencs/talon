@@ -5,10 +5,14 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"math/rand"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +33,7 @@ type llmChatRequest struct {
 	Messages    []llmChatMessage
 	Schema      map[string]any
 	Temperature float64
+	Stream      bool
 }
 
 // llmChatResponse 是 LLM 返回的响应结构，Content 为实际文本回复，
@@ -43,12 +48,59 @@ type llmChatResponse struct {
 // 之所以用接口而不是直接分支，是因为 agent 需要在运行时按配置切换具体实现，
 // 而不想在 agent.Step() 里写 if-else 判断要走哪条路。
 type llmClient interface {
-	Chat(req llmChatRequest) (*llmChatResponse, error)
+	Chat(ctx context.Context, req llmChatRequest) (*llmChatResponse, error)
 }
 
-// sharedLLMHTTPClient 是全局复用的 HTTP client，Timeout 设置为 2 分钟，
-// 足够覆盖大多数 LLM 请求（包括模型冷启动时间）。
-var sharedLLMHTTPClient = &http.Client{Timeout: 2 * time.Minute}
+var sharedLLMHTTPClient = &http.Client{}
+
+const (
+	maxRetries  = 3
+	baseBackoff = 500 * time.Millisecond
+	maxBackoff  = 10 * time.Second
+)
+
+type retryableError struct {
+	StatusCode int
+	Message    string
+	RetryAfter time.Duration
+}
+
+func (e *retryableError) Error() string {
+	return fmt.Sprintf("状态码 %d: %s", e.StatusCode, e.Message)
+}
+
+func (e *retryableError) IsRetryable() bool {
+	return true
+}
+
+type nonRetryableError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *nonRetryableError) Error() string {
+	return fmt.Sprintf("状态码 %d: %s", e.StatusCode, e.Message)
+}
+
+func (e *nonRetryableError) IsRetryable() bool {
+	return false
+}
+
+func isRetryableStatus(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests ||
+		statusCode == http.StatusInternalServerError ||
+		statusCode == http.StatusBadGateway ||
+		statusCode == http.StatusServiceUnavailable ||
+		statusCode == http.StatusGatewayTimeout
+}
+
+func isNonRetryableStatus(statusCode int) bool {
+	return statusCode == http.StatusBadRequest ||
+		statusCode == http.StatusUnauthorized ||
+		statusCode == http.StatusForbidden ||
+		statusCode == http.StatusNotFound ||
+		statusCode == http.StatusUnprocessableEntity
+}
 
 // newLLMClient 是工厂函数，按 config.LLMConfig 返回具体 client 实例。
 // 之所以在这里做分发，而不是让外部直接 newOllamaClient/newOpenAIClient，
@@ -56,16 +108,9 @@ var sharedLLMHTTPClient = &http.Client{Timeout: 2 * time.Minute}
 func newLLMClient(cfg config.LLMConfig) (llmClient, error) {
 	switch normalizeProvider(cfg.Provider) {
 	case "ollama":
-		return &ollamaClient{
-			endpoint: strings.TrimSpace(cfg.Endpoint),
-			http:     sharedLLMHTTPClient,
-		}, nil
+		return newOllamaClient(cfg.Endpoint), nil
 	case "openai":
-		return &openAICompatibleClient{
-			endpoint: strings.TrimSpace(cfg.Endpoint),
-			apiKey:   strings.TrimSpace(cfg.APIKey),
-			http:     sharedLLMHTTPClient,
-		}, nil
+		return newOpenAIClient(cfg.Endpoint, cfg.APIKey), nil
 	default:
 		return nil, fmt.Errorf("不支持的 LLM provider: %q", cfg.Provider)
 	}
@@ -92,7 +137,12 @@ func normalizeProvider(provider string) string {
 // ------------------------------------------------------------------
 type ollamaClient struct {
 	endpoint string
-	http     *http.Client
+}
+
+func newOllamaClient(endpoint string) *ollamaClient {
+	return &ollamaClient{
+		endpoint: strings.TrimSpace(endpoint),
+	}
 }
 
 // ollamaWireRequest 是发给 Ollama 的 wire 协议请求。
@@ -115,11 +165,11 @@ type ollamaWireResponse struct {
 }
 
 // Chat 向 Ollama 发起 chat 请求。
-func (c *ollamaClient) Chat(req llmChatRequest) (*llmChatResponse, error) {
+func (c *ollamaClient) Chat(ctx context.Context, req llmChatRequest) (*llmChatResponse, error) {
 	wireReq := ollamaWireRequest{
 		Model:    req.Model,
 		Messages: req.Messages,
-		Stream:   false,
+		Stream:   req.Stream && req.Schema == nil,
 		Format:   req.Schema,
 		Options: map[string]any{
 			"temperature": req.Temperature,
@@ -127,7 +177,7 @@ func (c *ollamaClient) Chat(req llmChatRequest) (*llmChatResponse, error) {
 	}
 
 	var wireResp ollamaWireResponse
-	if err := doJSONRequest(c.http, resolveOllamaEndpoint(c.endpoint), wireReq, nil, &wireResp); err != nil {
+	if err := doJSONRequest(ctx, sharedLLMHTTPClient, resolveOllamaEndpoint(c.endpoint), wireReq, nil, &wireResp); err != nil {
 		return nil, fmt.Errorf("请求 ollama 失败: %w", err)
 	}
 
@@ -153,7 +203,13 @@ func (c *ollamaClient) Chat(req llmChatRequest) (*llmChatResponse, error) {
 type openAICompatibleClient struct {
 	endpoint string
 	apiKey   string
-	http     *http.Client
+}
+
+func newOpenAIClient(endpoint, apiKey string) *openAICompatibleClient {
+	return &openAICompatibleClient{
+		endpoint: strings.TrimSpace(endpoint),
+		apiKey:   strings.TrimSpace(apiKey),
+	}
 }
 
 // openAIWireRequest 是发给 OpenAI-compatible 接口的 wire 协议请求。
@@ -180,7 +236,7 @@ type openAIWireResponse struct {
 }
 
 // Chat 向 OpenAI-compatible 接口发起 chat 请求。
-func (c *openAICompatibleClient) Chat(req llmChatRequest) (*llmChatResponse, error) {
+func (c *openAICompatibleClient) Chat(ctx context.Context, req llmChatRequest) (*llmChatResponse, error) {
 	headers := map[string]string{
 		"Content-Type": "application/json",
 	}
@@ -203,12 +259,11 @@ func (c *openAICompatibleClient) Chat(req llmChatRequest) (*llmChatResponse, err
 	}
 
 	var wireResp openAIWireResponse
-	err := doJSONRequest(c.http, resolveOpenAIEndpoint(c.endpoint), wireReq, headers, &wireResp)
+	err := doJSONRequest(ctx, sharedLLMHTTPClient, resolveOpenAIEndpoint(c.endpoint), wireReq, headers, &wireResp)
 	if err != nil {
-		// Some OpenAI-compatible providers support json_object but not json_schema.
 		wireReq.ResponseFormat = map[string]any{"type": "json_object"}
-		if retryErr := doJSONRequest(c.http, resolveOpenAIEndpoint(c.endpoint), wireReq, headers, &wireResp); retryErr != nil {
-			return nil, fmt.Errorf("请求 openai-compatible 接口失败: %w", err)
+		if retryErr := doJSONRequest(ctx, sharedLLMHTTPClient, resolveOpenAIEndpoint(c.endpoint), wireReq, headers, &wireResp); retryErr != nil {
+			return nil, fmt.Errorf("请求 openai-compatible 接口失败: %w", retryErr)
 		}
 	}
 
@@ -225,49 +280,115 @@ func (c *openAICompatibleClient) Chat(req llmChatRequest) (*llmChatResponse, err
 
 // doJSONRequest 是通用的 JSON HTTP 请求封装，处理序列化、请求构建、响应解析。
 // headers 参数可选，用于传入 Authorization 等自定义 header。
-func doJSONRequest(client *http.Client, endpoint string, reqBody any, headers map[string]string, respBody any) error {
-	body, err := json.Marshal(reqBody)
+func doJSONRequest(ctx context.Context, client *http.Client, endpoint string, reqBody any, headers map[string]string, respBody any) error {
+	return doRequestWithRetry(ctx, client, http.MethodPost, endpoint, reqBody, headers, respBody)
+}
 
+func doRequestWithRetry(ctx context.Context, client *http.Client, method, endpoint string, reqBody any, headers map[string]string, respBody any) error {
+	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return fmt.Errorf("序列化请求失败: %w", err)
 	}
 
-	httpReq, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("创建请求失败: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	for k, v := range headers {
-		httpReq.Header.Set(k, v)
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := calculateBackoff(attempt, lastErr)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("创建请求失败: %w", err)
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		for k, v := range headers {
+			httpReq.Header.Set(k, v)
+		}
+
+		httpResp, err := client.Do(httpReq)
+		if err != nil {
+			lastErr = err
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			continue
+		}
+
+		respBytes, readErr := io.ReadAll(httpResp.Body)
+		httpResp.Body.Close()
+		if readErr != nil {
+			lastErr = fmt.Errorf("读取响应失败: %w", readErr)
+			continue
+		}
+
+		statusCode := httpResp.StatusCode
+
+		if statusCode >= 200 && statusCode < 300 {
+			if unmarshalErr := json.Unmarshal(respBytes, respBody); unmarshalErr != nil {
+				return fmt.Errorf("解析响应失败: %w", unmarshalErr)
+			}
+			return nil
+		}
+
+		respStr := strings.TrimSpace(string(respBytes))
+		if isNonRetryableStatus(statusCode) {
+			return &nonRetryableError{StatusCode: statusCode, Message: respStr}
+		}
+
+		if isRetryableStatus(statusCode) {
+			retryAfter := parseRetryAfter(httpResp.Header)
+			lastErr = &retryableError{StatusCode: statusCode, Message: respStr, RetryAfter: retryAfter}
+			continue
+		}
+
+		lastErr = &nonRetryableError{StatusCode: statusCode, Message: respStr}
+		break
 	}
 
-	httpResp, err := client.Do(httpReq)
-
-	if err != nil {
-		return err
-	}
-	defer httpResp.Body.Close()
-
-	respBytes, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return fmt.Errorf("读取响应失败: %w", err)
-	}
-
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		return fmt.Errorf("状态码 %d: %s", httpResp.StatusCode, strings.TrimSpace(string(respBytes)))
-	}
-
-	if err := json.Unmarshal(respBytes, respBody); err != nil {
-		return fmt.Errorf("解析响应失败: %w", err)
-	}
-	return nil
+	return lastErr
 }
 
-// ------------------------------------------------------------------
+func calculateBackoff(attempt int, lastErr error) time.Duration {
+	if re, ok := lastErr.(*retryableError); ok && re.RetryAfter > 0 {
+		return re.RetryAfter
+	}
+
+	backoff := float64(baseBackoff) * math.Pow(2, float64(attempt-1))
+	if backoff > float64(maxBackoff) {
+		backoff = float64(maxBackoff)
+	}
+
+	jitter := time.Duration(rand.Float64() * 0.3 * backoff)
+	return time.Duration(backoff) + jitter
+}
+
+func parseRetryAfter(header http.Header) time.Duration {
+	v := header.Get("Retry-After")
+	if v == "" {
+		return 0
+	}
+
+	if seconds, err := strconv.Atoi(v); err == nil {
+		return time.Duration(seconds) * time.Second
+	}
+
+	if t, err := time.Parse(http.TimeFormat, v); err == nil {
+		wait := t.Sub(time.Now())
+		if wait > 0 {
+			return wait
+		}
+	}
+	return 0
+}
+
 // resolveOllamaEndpoint 将基础 URL 补全为 /api/chat 端点。
 // 允许两种传参方式：基础地址 http://host:11434 或完整路径 http://host:11434/api/chat。
 // 前者更符合"配置一个地址"的直觉，后者给需要代理转发的场景留出口。
-// ------------------------------------------------------------------
 func resolveOllamaEndpoint(endpoint string) string {
 	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
 	if endpoint == "" {

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -10,7 +11,7 @@ import (
 )
 
 type Agent interface {
-	Step(state *types.State) (types.Action, error)
+	Step(ctx context.Context, state *types.State) (types.Action, error)
 }
 
 type llmDecision struct {
@@ -54,8 +55,8 @@ func NewThinkingAgent(cfg config.LLMConfig) (*ThinkingAgent, error) {
 	}, nil
 }
 
-func (a *ThinkingAgent) Step(state *types.State) (types.Action, error) {
-	return stepWithLLM(a.client, a.promptBld, a.model, state, baseAgentInstructions+"\n\n当前模式: 通用推理与编码助手。")
+func (a *ThinkingAgent) Step(ctx context.Context, state *types.State) (types.Action, error) {
+	return stepWithLLM(ctx, a.client, a.promptBld, a.model, state, baseAgentInstructions+"\n\n当前模式: 通用推理与编码助手。")
 }
 
 type SearchAgent struct{}
@@ -64,51 +65,44 @@ func NewSearchAgent() *SearchAgent {
 	return &SearchAgent{}
 }
 
-func (a *SearchAgent) Step(state *types.State) (types.Action, error) {
+func (a *SearchAgent) Step(ctx context.Context, state *types.State) (types.Action, error) {
 	cfg := ensureConfig()
 	client, err := newLLMClient(cfg.LLM)
 	if err != nil {
 		return nil, err
 	}
-	return stepWithLLM(client, NewPromptBuilder(), cfg.LLM.Model, state, baseAgentInstructions+"\n\n当前模式: 搜索优先。你应更积极地使用 run 执行 grep、find、ls 等检索命令。")
+	return stepWithLLM(ctx, client, NewPromptBuilder(), cfg.LLM.Model, state, baseAgentInstructions+"\n\n当前模式: 搜索优先。你应更积极地使用 run 执行 grep、find、ls 等检索命令。")
 }
 
 // stepWithLLM 是 agent 推理的核心引擎，完成请求组装、LLM 调用、响应解析三个阶段。
 // client、promptBld、model 三个参数由调用方在构造时注入，使函数本身不依赖全局状态。
-func stepWithLLM(client llmClient, promptBld *PromptBuilder, model string, state *types.State, systemPrompt string) (types.Action, error) {
-	var lastErr error
-	const maxRetries = 3
-
-	for i := 0; i < maxRetries; i++ {
-		req := llmChatRequest{
-			Model:       model,
-			Messages:    promptBld.BuildMessages(state, systemPrompt),
-			Schema:      decisionSchema(),
-			Temperature: 0,
-		}
-
-		resp, err := client.Chat(req)
-		if err != nil {
-			return nil, err
-		}
-
-		action, err := responseToAction(resp)
-		if err != nil {
-			return nil, err
-		}
-
-		if action != nil {
-			action.GetBase().LLMMetrics = &types.Metrics{
-				PromptTokens:     resp.PromptTokens,
-				CompletionTokens: resp.CompletionTokens,
-			}
-			return action, nil
-		}
-
-		lastErr = fmt.Errorf("模型输出了无效动作（空 action），已重试 %d 次", i+1)
+func stepWithLLM(ctx context.Context, client llmClient, promptBld *PromptBuilder, model string, state *types.State, systemPrompt string) (types.Action, error) {
+	req := llmChatRequest{
+		Model:       model,
+		Messages:    promptBld.BuildMessages(state, systemPrompt),
+		Schema:      decisionSchema(),
+		Temperature: 0,
 	}
 
-	return nil, lastErr
+	resp, err := client.Chat(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	action, err := responseToAction(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	if action == nil {
+		return nil, fmt.Errorf("模型输出了无效动作（空 action）")
+	}
+
+	action.GetBase().LLMMetrics = &types.Metrics{
+		PromptTokens:     resp.PromptTokens,
+		CompletionTokens: resp.CompletionTokens,
+	}
+	return action, nil
 }
 
 func ensureConfig() *config.Config {

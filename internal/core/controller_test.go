@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"testing"
 
 	"github.com/wen/opentalon/internal/types"
@@ -11,7 +12,7 @@ type stubAgent struct {
 	calls   int
 }
 
-func (a *stubAgent) Step(state *types.State) (types.Action, error) {
+func (a *stubAgent) Step(ctx context.Context, state *types.State) (types.Action, error) {
 	if a.calls >= len(a.actions) {
 		return nil, nil
 	}
