@@ -1,4 +1,4 @@
-openhands/
+
 
 .env
 .env.local
@@ -47,6 +47,7 @@ vendor/
 bin/
 tmp/
 temp/
+.trae/
 
 *.db
 *.sqlite
