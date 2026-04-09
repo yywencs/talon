@@ -4,9 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
+	"time"
 
 	"github.com/wen/opentalon/internal/agent"
 	"github.com/wen/opentalon/internal/core"
@@ -14,6 +13,9 @@ import (
 	"github.com/wen/opentalon/pkg/config"
 )
 
+// main 是 CLI 入口，根据 os.Args 分流到两种模式：
+//  1. One-Shot 模式：os.Args 带参数，拼接为一句用户指令，发送一次后等待完成并退出。
+//  2. Interactive 模式：无参数则进入 REPL，逐行读取用户输入，直到 exit/quit。
 func main() {
 	config.Load()
 	cfg := config.Global
@@ -41,63 +43,81 @@ func main() {
 	bus.Subscribe(controller.OnEvent)
 	bus.Subscribe(printHandler(state))
 
-	go runMainLoop(bus, state)
+	args := os.Args[1:]
+	if len(args) > 0 {
+		// One-Shot：将参数拼接为一句话发送一次，等待结束并退出
+		oneShot(bus, state, strings.Join(args, " "))
+		return
+	}
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-	fmt.Println("\n[main] interrupted, exiting.")
+	// Interactive：进入 REPL 循环
+	repl(bus, state)
 }
 
-func runMainLoop(bus *core.EventBus, state *types.State) {
-	scanner := bufio.NewScanner(os.Stdin)
+// oneShot 实现 One-Shot 模式：发送一条用户消息后，等待任务完成或出错并退出。
+func oneShot(bus *core.EventBus, state *types.State, content string) {
+	if strings.TrimSpace(content) == "" {
+		fmt.Fprintln(os.Stderr, "empty input")
+		os.Exit(1)
+	}
+
+	bus.Publish(&types.MessageAction{
+		BaseEvent: types.BaseEvent{Source: types.SourceUser},
+		Content:   content,
+	})
 
 	for {
-		currentState := state.AgentState
-		fmt.Printf("Current State: %s\n", currentState)
-
-		switch currentState {
-		case types.StateLoading:
-			fmt.Print("\n[user] ")
-			if !scanner.Scan() {
-				return
-			}
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
-				continue
-			}
-			bus.Publish(&types.MessageAction{
-				BaseEvent: types.BaseEvent{Source: types.SourceUser},
-				Content:   line,
-			})
-
-		case types.StateRunning:
-			if state.PendingAction != nil {
-				fmt.Printf("[agent] running command...\n")
-			}
-			return
-
-		case types.StateAwaitingInput:
-			fmt.Print("\n[user] ")
-			if !scanner.Scan() {
-				return
-			}
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
-				continue
-			}
-			bus.Publish(&types.MessageAction{
-				BaseEvent: types.BaseEvent{Source: types.SourceUser},
-				Content:   line,
-			})
-
+		s := state.AgentState
+		switch s {
 		case types.StateFinished:
-			fmt.Printf("\n[system] task finished.\n")
+			fmt.Println("\n[system] task finished.")
 			os.Exit(0)
-
 		case types.StateError:
 			fmt.Fprintf(os.Stderr, "\n[system] error: %s\n", state.LastError)
 			os.Exit(1)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// repl 实现 Interactive 模式：逐行读取用户输入，支持 exit/quit 退出。
+func repl(bus *core.EventBus, state *types.State) {
+	scanner := bufio.NewScanner(os.Stdin)
+	for {
+		fmt.Print("👤 你: ")
+		if !scanner.Scan() {
+			fmt.Println()
+			return
+		}
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if line == "exit" || line == "quit" {
+			return
+		}
+
+		// 将用户输入封装为 SourceUser 的 MessageAction 并发布到总线
+		bus.Publish(&types.MessageAction{
+			BaseEvent: types.BaseEvent{Source: types.SourceUser},
+			Content:   line,
+		})
+
+		// 等待这一轮推理/执行进入可交互阶段或结束
+		for {
+			s := state.AgentState
+			if s == types.StateAwaitingInput || s == types.StateFinished || s == types.StateError {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		if state.AgentState == types.StateFinished {
+			fmt.Println("\n[system] task finished.")
+		}
+		if state.AgentState == types.StateError {
+			fmt.Fprintf(os.Stderr, "\n[system] error: %s\n", state.LastError)
+			return
 		}
 	}
 }

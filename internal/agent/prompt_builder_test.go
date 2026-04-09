@@ -25,7 +25,7 @@ func TestPromptBuilderBuildMessages(t *testing.T) {
 				ExitCode:  0,
 			},
 		},
-	}, "system prompt")
+	}, "system prompt", "user example prompt")
 
 	if len(messages) != 4 {
 		t.Fatalf("expected 4 messages, got %d", len(messages))

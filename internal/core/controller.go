@@ -2,10 +2,10 @@ package core
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/wen/opentalon/internal/agent"
 	"github.com/wen/opentalon/internal/types"
+	"github.com/wen/opentalon/pkg/logger"
 )
 
 // Controller 是事件循环的驱动引擎，所有状态转换和 agent 步进由它统一编排。
@@ -32,14 +32,14 @@ func NewController(bus *EventBus, agent agent.Agent, state *types.State) *Contro
 // 顺序：记录历史 → 处理事件副作用 → 判断是否推进 agent。
 func (c *Controller) OnEvent(evt types.Event) {
 	c.state.History = append(c.state.History, evt)
-	fmt.Printf("Received Event: %v\n", evt)
+	logger.Debug("Received Event: %v\n", evt)
 
 	switch e := evt.(type) {
 	case types.Action:
-		fmt.Println("receive action event!")
+		logger.Debug("receive action event!")
 		c.handleAction(e)
 	case types.Observation:
-		fmt.Println("receive observation event!")
+		logger.Debug("receive observation event!")
 		c.handleObservation(e)
 	}
 

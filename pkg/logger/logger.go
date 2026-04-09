@@ -2,159 +2,83 @@ package logger
 
 import (
 	"context"
-	"fmt"
-	"io"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strings"
-	"sync"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"github.com/wen/opentalon/pkg/config"
-	"github.com/wen/opentalon/pkg/helper"
 )
 
-type loggerLevel string
-
-const (
-	loggerDEBUG loggerLevel = "DEBUG"
-	loggerINFO  loggerLevel = "INFO"
-	loggerWarn  loggerLevel = "WARN"
-	loggerError loggerLevel = "ERROR"
-	loggerFatal loggerLevel = "FATAL"
-)
-
-var setupLogOnce sync.Once
+var LogDir string
 
 func SetupLogger() {
-	setupLogOnce.Do(func() {
-		if LogDir != "" {
-			var logPath string
-			if config.Global.OneLogFile {
-				logPath = filepath.Join(LogDir, "oneapi.log")
-			} else {
-				logPath = filepath.Join(LogDir, fmt.Sprintf("oneapi-%s.log", time.Now().Format("20060102")))
-			}
-			fd, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if err != nil {
-				log.Fatal("failed to open log file")
-			}
-			gin.DefaultWriter = io.MultiWriter(os.Stdout, fd)
-			gin.DefaultErrorWriter = io.MultiWriter(os.Stderr, fd)
+	var handler slog.Handler
+	level := slog.LevelInfo
+	if config.Global != nil && config.Global.Debug {
+		level = slog.LevelDebug
+	}
+	opts := &slog.HandlerOptions{Level: level, AddSource: true}
+
+	if LogDir != "" {
+		var logPath string
+		if config.Global != nil && config.Global.OneLogFile {
+			logPath = filepath.Join(LogDir, "oneapi.log")
+		} else {
+			logPath = filepath.Join(LogDir, time.Now().Format("oneapi-20060102")+".log")
 		}
-	})
-}
-
-func SysLog(s string) {
-	logHelper(nil, loggerINFO, s)
-}
-
-func SysLogf(format string, a ...any) {
-	logHelper(nil, loggerINFO, fmt.Sprintf(format, a...))
-}
-
-func SysWarn(s string) {
-	logHelper(nil, loggerWarn, s)
-}
-
-func SysWarnf(format string, a ...any) {
-	logHelper(nil, loggerWarn, fmt.Sprintf(format, a...))
-}
-
-func SysError(s string) {
-	logHelper(nil, loggerError, s)
-}
-
-func SysErrorf(format string, a ...any) {
-	logHelper(nil, loggerError, fmt.Sprintf(format, a...))
-}
-
-func Debug(ctx context.Context, msg string) {
-	if !config.Global.Debug {
+		fd, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Fatal("failed to open log file")
+		}
+		handler = slog.NewJSONHandler(fd, opts)
+		slog.SetDefault(slog.New(handler))
 		return
 	}
-	logHelper(ctx, loggerDEBUG, msg)
+
+	handler = slog.NewTextHandler(os.Stdout, opts)
+	slog.SetDefault(slog.New(handler))
 }
 
-func Info(ctx context.Context, msg string) {
-	logHelper(ctx, loggerINFO, msg)
+func Debug(msg string, args ...any) {
+	slog.Default().Debug(msg, args...)
 }
 
-func Warn(ctx context.Context, msg string) {
-	logHelper(ctx, loggerWarn, msg)
+func Info(msg string, args ...any) {
+	slog.Default().Info(msg, args...)
 }
 
-func Error(ctx context.Context, msg string) {
-	logHelper(ctx, loggerError, msg)
+func Warn(msg string, args ...any) {
+	slog.Default().Warn(msg, args...)
 }
 
-func Debugf(ctx context.Context, format string, a ...any) {
-	if !config.Global.Debug {
-		return
-	}
-	logHelper(ctx, loggerDEBUG, fmt.Sprintf(format, a...))
+func Error(msg string, args ...any) {
+	slog.Default().Error(msg, args...)
 }
 
-func Infof(ctx context.Context, format string, a ...any) {
-	logHelper(ctx, loggerINFO, fmt.Sprintf(format, a...))
+func Fatal(msg string, args ...any) {
+	slog.Default().Error(msg, args...)
+	os.Exit(1)
 }
 
-func Warnf(ctx context.Context, format string, a ...any) {
-	logHelper(ctx, loggerWarn, fmt.Sprintf(format, a...))
+func DebugWithCtx(ctx context.Context, msg string, args ...any) {
+	slog.Default().DebugContext(ctx, msg, args...)
 }
 
-func Errorf(ctx context.Context, format string, a ...any) {
-	logHelper(ctx, loggerError, fmt.Sprintf(format, a...))
+func InfoWithCtx(ctx context.Context, msg string, args ...any) {
+	slog.Default().InfoContext(ctx, msg, args...)
 }
 
-func FatalLog(s string) {
-	logHelper(nil, loggerFatal, s)
+func WarnWithCtx(ctx context.Context, msg string, args ...any) {
+	slog.Default().WarnContext(ctx, msg, args...)
 }
 
-func FatalLogf(format string, a ...any) {
-	logHelper(nil, loggerFatal, fmt.Sprintf(format, a...))
+func ErrorWithCtx(ctx context.Context, msg string, args ...any) {
+	slog.Default().ErrorContext(ctx, msg, args...)
 }
 
-func logHelper(ctx context.Context, level loggerLevel, msg string) {
-	writer := gin.DefaultErrorWriter
-	if level == loggerINFO {
-		writer = gin.DefaultWriter
-	}
-	var requestId string
-	if ctx != nil {
-		rawRequestId := helper.GetRequestID(ctx)
-		if rawRequestId != "" {
-			requestId = fmt.Sprintf(" | %s", rawRequestId)
-		}
-	}
-	lineInfo, funcName := getLineInfo()
-	now := time.Now()
-	_, _ = fmt.Fprintf(writer, "[%s] %v%s%s %s%s \n", level, now.Format("2006/01/02 - 15:04:05"), requestId, lineInfo, funcName, msg)
-	SetupLogger()
-	if level == loggerFatal {
-		os.Exit(1)
-	}
-}
-
-func getLineInfo() (string, string) {
-	funcName := "[unknown] "
-	pc, file, line, ok := runtime.Caller(3)
-	if ok {
-		if fn := runtime.FuncForPC(pc); fn != nil {
-			parts := strings.Split(fn.Name(), ".")
-			funcName = "[" + parts[len(parts)-1] + "] "
-		}
-	} else {
-		file = "unknown"
-		line = 0
-	}
-	parts := strings.Split(file, "one-api/")
-	if len(parts) > 1 {
-		file = parts[1]
-	}
-	return fmt.Sprintf(" | %s:%d", file, line), funcName
+func FatalWithCtx(ctx context.Context, msg string, args ...any) {
+	slog.Default().ErrorContext(ctx, msg, args...)
+	os.Exit(1)
 }

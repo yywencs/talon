@@ -22,9 +22,16 @@ func NewPromptBuilder() *PromptBuilder {
 	return &PromptBuilder{}
 }
 
-func (b *PromptBuilder) BuildMessages(state *types.State, systemPrompt string) []ChatMessage {
+func (b *PromptBuilder) BuildMessages(state *types.State, systemPrompt string, userPromptExamples string) []ChatMessage {
 	messages := []ChatMessage{
 		{Role: "system", Content: systemPrompt},
+	}
+
+	if userPromptExamples != "" {
+		messages = append(messages, ChatMessage{
+			Role:    "user",
+			Content: userPromptExamples,
+		})
 	}
 
 	for _, evt := range state.History {
