@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/wen/opentalon/internal/types"
@@ -13,51 +14,57 @@ import (
 )
 
 func TestThinkingAgentStepReturnsRunActionFromOllama(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	for _, f := range []struct {
+		name string
+		body string
+	}{
+		{"system_prompt", "你是一个测试助手。"},
+		{"user_prompt", "示例：这是少样本提示。"},
+	} {
+		path := filepath.Join(tmpDir, f.name+".md")
+		if err := os.WriteFile(path, []byte(f.body), 0644); err != nil {
+			t.Fatalf("write prompt file: %v", err)
+		}
+	}
+
+	var capturedReq ollamaWireRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/chat" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
-
-		var req ollamaWireRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.NewDecoder(r.Body).Decode(&capturedReq); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if req.Model != "test-model" {
-			t.Fatalf("unexpected model %q", req.Model)
-		}
-		if len(req.Messages) < 2 {
-			t.Fatalf("expected prompt and user message, got %d messages", len(req.Messages))
-		}
-
 		resp := ollamaWireResponse{
 			PromptEvalCount: 123,
 			EvalCount:       45,
 		}
 		resp.Message.Role = "assistant"
-		resp.Message.Content = `{"action":"run","command":"ls -la","thought":"先看看目录"}`
-
-		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			t.Fatalf("encode response: %v", err)
-		}
+		resp.Message.Content = `<execute_bash>ls -la</execute_bash>`
+		json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
 	previous := config.Global
 	config.Global = &config.Config{
 		LLM: config.LLMConfig{
-			Provider: "ollama",
-			Model:    "test-model",
-			Endpoint: server.URL,
+			Provider:   "ollama",
+			Model:      "test-model",
+			Endpoint:   server.URL,
+			PromptsDir: tmpDir,
 		},
 	}
 	t.Cleanup(func() {
 		config.Global = previous
 	})
 
-	agent, err := NewThinkingAgent(config.LLMConfig{
-		Provider: "ollama",
-		Model:    "test-model",
-		Endpoint: server.URL,
+	agent, err := NewBaseAgent(config.LLMConfig{
+		Provider:   "ollama",
+		Model:      "test-model",
+		Endpoint:   server.URL,
+		PromptsDir: tmpDir,
 	})
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
@@ -72,6 +79,10 @@ func TestThinkingAgentStepReturnsRunActionFromOllama(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("step returned error: %v", err)
+	}
+
+	if len(capturedReq.Messages) < 3 {
+		t.Fatalf("expected system + example + user message, got %d messages", len(capturedReq.Messages))
 	}
 
 	runAction, ok := action.(*types.CmdRunAction)
@@ -95,7 +106,6 @@ func TestThinkingAgentStepReturnsFinishActionFromOpenAICompatibleLive(t *testing
 	}
 
 	config.Load()
-	t.Logf("LLM Config: %v", config.Global.LLM)
 	previous := config.Global
 	config.Global = &config.Config{
 		LLM: config.LLMConfig{
@@ -105,13 +115,11 @@ func TestThinkingAgentStepReturnsFinishActionFromOpenAICompatibleLive(t *testing
 			APIKey:   previous.LLM.APIKey,
 		},
 	}
-
 	t.Cleanup(func() {
 		config.Global = previous
 	})
-	t.Logf("LLM API Key: %s", config.Global.LLM.APIKey)
 
-	agent, err := NewThinkingAgent(config.LLMConfig{
+	agent, err := NewBaseAgent(config.LLMConfig{
 		Provider: "openai",
 		Model:    "qwen3.5-plus",
 		Endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -137,9 +145,11 @@ func TestThinkingAgentStepReturnsFinishActionFromOpenAICompatibleLive(t *testing
 }
 
 func TestThinkingAgentStepReturnsRunActionFromOpenAICompatibleLive(t *testing.T) {
+	if os.Getenv("RUN_LIVE_LLM_TESTS") != "1" {
+		t.Skip("set RUN_LIVE_LLM_TESTS=1 to run live openai-compatible test")
+	}
 
 	config.Load()
-
 	previous := config.Global
 	config.Global = &config.Config{
 		LLM: config.LLMConfig{
@@ -149,12 +159,11 @@ func TestThinkingAgentStepReturnsRunActionFromOpenAICompatibleLive(t *testing.T)
 			APIKey:   previous.LLM.APIKey,
 		},
 	}
-
 	t.Cleanup(func() {
 		config.Global = previous
 	})
 
-	agent, err := NewThinkingAgent(config.LLMConfig{
+	agent, err := NewBaseAgent(config.LLMConfig{
 		Provider: "openai",
 		Model:    "qwen3.5-plus",
 		Endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1",

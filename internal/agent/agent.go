@@ -2,8 +2,8 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/wen/opentalon/internal/types"
@@ -15,56 +15,19 @@ type Agent interface {
 	Step(ctx context.Context, state *types.State) (types.Action, error)
 }
 
-type llmDecision struct {
-	Action          string `json:"action"`
-	Message         string `json:"message,omitempty"`
-	Command         string `json:"command,omitempty"`
-	Result          string `json:"result,omitempty"`
-	Thought         string `json:"thought,omitempty"`
-	WaitForResponse bool   `json:"wait_for_response,omitempty"`
-}
-
-type ThinkingAgent struct {
-	client     LLMClient
-	promptReg  *prompts.Registry
-	promptBld  *PromptBuilder
-	model      string
-	promptName string
-}
-
-func NewThinkingAgent(cfg config.LLMConfig) (*ThinkingAgent, error) {
-	client, err := NewLLMClient(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return &ThinkingAgent{
-		client:     client,
-		promptReg:  prompts.NewRegistry(cfg.PromptsDir),
-		promptBld:  NewPromptBuilder(),
-		model:      cfg.Model,
-		promptName: "thinking",
-	}, nil
-}
-
-func (a *ThinkingAgent) Step(ctx context.Context, state *types.State) (types.Action, error) {
-	systemPrompt := a.promptReg.Get("system_prompt").Base()
-	userPrompt := a.promptReg.Get("user_prompt").Base()
-	return stepWithLLM(ctx, a.client, a.promptBld, a.model, state, systemPrompt, userPrompt)
-}
-
-type SearchAgent struct {
+type BaseAgent struct {
 	client    LLMClient
 	promptReg *prompts.Registry
 	promptBld *PromptBuilder
 	model     string
 }
 
-func NewSearchAgent(cfg config.LLMConfig) (*SearchAgent, error) {
+func NewBaseAgent(cfg config.LLMConfig) (*BaseAgent, error) {
 	client, err := NewLLMClient(cfg)
 	if err != nil {
 		return nil, err
 	}
-	return &SearchAgent{
+	return &BaseAgent{
 		client:    client,
 		promptReg: prompts.NewRegistry(cfg.PromptsDir),
 		promptBld: NewPromptBuilder(),
@@ -72,20 +35,16 @@ func NewSearchAgent(cfg config.LLMConfig) (*SearchAgent, error) {
 	}, nil
 }
 
-func (a *SearchAgent) Step(ctx context.Context, state *types.State) (types.Action, error) {
+func (a *BaseAgent) Step(ctx context.Context, state *types.State) (types.Action, error) {
 	systemPrompt := a.promptReg.Get("system_prompt").Base()
 	userPrompt := a.promptReg.Get("user_prompt").Base()
 	return stepWithLLM(ctx, a.client, a.promptBld, a.model, state, systemPrompt, userPrompt)
 }
 
-// stepWithLLM 是 agent 推理的核心引擎，完成请求组装、LLM 调用、响应解析三个阶段。
-// client、promptBld、model 三个参数由调用方在构造时注入，使函数本身不依赖全局状态。
 func stepWithLLM(ctx context.Context, client LLMClient, promptBld *PromptBuilder, model string, state *types.State, systemPrompt string, userPromptExamples string) (types.Action, error) {
 	req := ChatRequest{
-		Model:       model,
-		Messages:    promptBld.BuildMessages(state, systemPrompt, userPromptExamples),
-		Schema:      decisionSchema(),
-		Temperature: 0,
+		Model:    model,
+		Messages: promptBld.BuildMessages(state, systemPrompt, userPromptExamples),
 	}
 
 	resp, err := client.Chat(ctx, req)
@@ -93,13 +52,9 @@ func stepWithLLM(ctx context.Context, client LLMClient, promptBld *PromptBuilder
 		return nil, err
 	}
 
-	action, err := responseToAction(resp)
-	if err != nil {
-		return nil, err
-	}
-
+	action := responseToAction(resp)
 	if action == nil {
-		return nil, fmt.Errorf("模型输出了无效动作（空 action）")
+		return nil, fmt.Errorf("模型未输出有效动作")
 	}
 
 	action.GetBase().LLMMetrics = &types.Metrics{
@@ -109,67 +64,43 @@ func stepWithLLM(ctx context.Context, client LLMClient, promptBld *PromptBuilder
 	return action, nil
 }
 
-func decisionSchema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"action": map[string]any{
-				"type": "string",
-				"enum": []string{"message", "run", "finish"},
-			},
-			"message": map[string]any{
-				"type": "string",
-			},
-			"command": map[string]any{
-				"type": "string",
-			},
-			"result": map[string]any{
-				"type": "string",
-			},
-			"thought": map[string]any{
-				"type": "string",
-			},
-			"wait_for_response": map[string]any{
-				"type": "boolean",
-			},
-		},
-		"required": []string{"action"},
+func responseToAction(resp *ChatResponse) types.Action {
+	content := strings.TrimSpace(resp.Content)
+
+	if finish := extractTag(content, "finish"); finish != "" || strings.Contains(content, "<finish>") {
+		return &types.FinishAction{Result: strings.TrimSpace(finish)}
 	}
+
+	if bash := extractTag(content, "execute_bash"); bash != "" {
+		return &types.CmdRunAction{Command: strings.TrimSpace(bash)}
+	}
+
+	if python := extractTag(content, "execute_ipython"); python != "" {
+		return &types.CmdRunAction{Command: "python3 -c " + strings.TrimSpace(python)}
+	}
+
+	if browse := extractTag(content, "execute_browse"); browse != "" {
+		return &types.CmdRunAction{Command: "echo 'browse: " + strings.TrimSpace(browse) + "'"}
+	}
+
+	if content != "" {
+		return &types.MessageAction{Content: content}
+	}
+
+	return nil
 }
 
-func responseToAction(resp *ChatResponse) (types.Action, error) {
-	var decision llmDecision
-	if err := json.Unmarshal([]byte(resp.Content), &decision); err != nil {
-		return nil, fmt.Errorf("解析 LLM 决策失败: %w, 原始输出: %s", err, resp.Content)
+func extractTag(content, tagName string) string {
+	patterns := []string{
+		fmt.Sprintf(`<%s>(?s)(.+?)</%s>`, tagName, tagName),
+		fmt.Sprintf(`<%s>(.+)</%s>`, tagName, tagName),
 	}
-	return decisionToAction(decision)
-}
-
-func decisionToAction(decision llmDecision) (types.Action, error) {
-	switch decision.Action {
-	case "message":
-		content := strings.TrimSpace(decision.Message)
-		if content == "" {
-			return nil, nil
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(`(?i)` + pattern)
+		matches := re.FindStringSubmatch(content)
+		if len(matches) > 1 {
+			return strings.TrimSpace(matches[1])
 		}
-		return &types.MessageAction{
-			Content:         content,
-			WaitForResponse: decision.WaitForResponse,
-		}, nil
-	case "run":
-		command := strings.TrimSpace(decision.Command)
-		if command == "" {
-			return nil, nil
-		}
-		return &types.CmdRunAction{
-			Command: command,
-			Thought: strings.TrimSpace(decision.Thought),
-		}, nil
-	case "finish":
-		return &types.FinishAction{
-			Result: strings.TrimSpace(decision.Result),
-		}, nil
-	default:
-		return nil, fmt.Errorf("未知动作类型 %q", decision.Action)
 	}
+	return ""
 }

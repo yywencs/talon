@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -51,6 +52,9 @@ func TestOllamaStreamChat(t *testing.T) {
 }
 
 func TestOpenAICompatibleStreamChat(t *testing.T) {
+	if os.Getenv("RUN_LIVE_LLM_TESTS") != "1" {
+		t.Skip("set RUN_LIVE_LLM_TESTS=1 to run live openai-compatible streaming test")
+	}
 	config.Load()
 	cfg := config.Global
 
@@ -163,43 +167,6 @@ func TestOpenAICompatibleChat(t *testing.T) {
 
 	t.Logf("响应内容: %s", resp.Content)
 	t.Logf("Prompt tokens: %d, Completion tokens: %d", resp.PromptTokens, resp.CompletionTokens)
-}
-
-func TestStreamChatWithSchema(t *testing.T) {
-	config.Load()
-	cfg := config.Global
-
-	client, err := NewLLMClient(cfg.LLM)
-	if err != nil {
-		t.Fatalf("创建 LLM 客户端失败: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
-	defer cancel()
-
-	req := ChatRequest{
-		Model: cfg.LLM.Model,
-		Messages: []ChatMessage{
-			{Role: "user", Content: "今天天气如何？"},
-		},
-		Temperature: 0.7,
-		Schema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"answer": map[string]any{"type": "string"},
-			},
-		},
-	}
-
-	err = client.StreamChat(ctx, req, func(token string) {
-		fmt.Print(token)
-	})
-
-	if err == nil {
-		t.Error("预期返回错误，因为流式模式不支持 Schema")
-	}
-
-	t.Logf("正确捕获错误: %v", err)
 }
 
 func TestNewLLMClientFactory(t *testing.T) {

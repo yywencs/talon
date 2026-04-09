@@ -32,7 +32,6 @@ type ChatMessage struct {
 type ChatRequest struct {
 	Model       string
 	Messages    []ChatMessage
-	Schema      map[string]any
 	Temperature float64
 	Stream      bool
 }
@@ -152,7 +151,6 @@ type ollamaWireRequest struct {
 	Model    string         `json:"model"`
 	Messages []ChatMessage  `json:"messages"`
 	Stream   bool           `json:"stream"`
-	Format   map[string]any `json:"format,omitempty"`
 	Options  map[string]any `json:"options,omitempty"`
 }
 
@@ -171,8 +169,7 @@ func (c *ollamaClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 	wireReq := ollamaWireRequest{
 		Model:    req.Model,
 		Messages: req.Messages,
-		Stream:   req.Stream && req.Schema == nil,
-		Format:   req.Schema,
+		Stream:   req.Stream,
 		Options: map[string]any{
 			"temperature": req.Temperature,
 		},
@@ -191,15 +188,10 @@ func (c *ollamaClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 }
 
 func (c *ollamaClient) StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) error {
-	if req.Schema != nil {
-		return fmt.Errorf("Ollama 流式模式不支持 Schema 输出")
-	}
-
 	wireReq := ollamaWireRequest{
 		Model:    req.Model,
 		Messages: req.Messages,
 		Stream:   true,
-		Format:   req.Schema,
 		Options: map[string]any{
 			"temperature": req.Temperature,
 		},
@@ -330,22 +322,12 @@ func (c *openAICompatibleClient) Chat(ctx context.Context, req ChatRequest) (*Ch
 		Messages:    req.Messages,
 		Temperature: req.Temperature,
 		Stream:      false,
-		ResponseFormat: map[string]any{
-			"type": "json_schema",
-			"json_schema": map[string]any{
-				"name":   "agent_decision",
-				"schema": req.Schema,
-			},
-		},
 	}
 
 	var wireResp openAIWireResponse
 	err := doJSONRequest(ctx, sharedLLMHTTPClient, resolveOpenAIEndpoint(c.endpoint), wireReq, headers, &wireResp)
 	if err != nil {
-		wireReq.ResponseFormat = map[string]any{"type": "json_object"}
-		if retryErr := doJSONRequest(ctx, sharedLLMHTTPClient, resolveOpenAIEndpoint(c.endpoint), wireReq, headers, &wireResp); retryErr != nil {
-			return nil, fmt.Errorf("请求 openai-compatible 接口失败: %w", retryErr)
-		}
+		return nil, fmt.Errorf("请求 openai-compatible 接口失败: %w", err)
 	}
 
 	if len(wireResp.Choices) == 0 {
@@ -360,10 +342,6 @@ func (c *openAICompatibleClient) Chat(ctx context.Context, req ChatRequest) (*Ch
 }
 
 func (c *openAICompatibleClient) StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) error {
-	if req.Schema != nil {
-		return fmt.Errorf("OpenAI-compatible 流式模式不支持 Schema 输出")
-	}
-
 	headers := map[string]string{
 		"Content-Type": "application/json",
 	}

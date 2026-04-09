@@ -6,6 +6,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/wen/opentalon/pkg/config"
@@ -13,13 +16,67 @@ import (
 
 var LogDir string
 
+type SimpleJSONHandler struct {
+	slog.JSONHandler
+}
+
+func (h *SimpleJSONHandler) Handle(ctx context.Context, r slog.Record) error {
+	r.Time = r.Time.Truncate(time.Second)
+	return h.JSONHandler.Handle(ctx, r)
+}
+
+func getCaller() (string, int) {
+	pc, file, line, ok := runtime.Caller(2)
+	if !ok {
+		return "unknown", 0
+	}
+	fn := runtime.FuncForPC(pc)
+	funcName := ""
+	if fn != nil {
+		funcName = fn.Name()
+		parts := strings.Split(funcName, ".")
+		if len(parts) > 0 {
+			funcName = parts[len(parts)-1]
+		}
+	}
+	shortFile := filepath.Base(file)
+	return shortFile + ":" + funcName, line
+}
+
 func SetupLogger() {
 	var handler slog.Handler
 	level := slog.LevelInfo
 	if config.Global != nil && config.Global.Debug {
 		level = slog.LevelDebug
 	}
-	opts := &slog.HandlerOptions{Level: level, AddSource: true}
+
+	opts := &slog.HandlerOptions{
+		Level:     level,
+		AddSource: false,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				a.Value = slog.StringValue(a.Value.Time().Format("15:04:05"))
+			}
+			if a.Key == slog.SourceKey {
+				pc, file, line, ok := runtime.Caller(4)
+				if !ok {
+					return slog.Attr{Key: "source", Value: slog.StringValue("???")}
+				}
+				fn := runtime.FuncForPC(pc)
+				funcName := ""
+				if fn != nil {
+					funcName = fn.Name()
+					parts := strings.Split(funcName, ".")
+					if len(parts) > 0 {
+						funcName = parts[len(parts)-1]
+					}
+				}
+				shortFile := filepath.Base(file)
+				a.Value = slog.StringValue(shortFile + ":" + funcName + ":" + strconv.Itoa(line))
+			}
+			return a
+		},
+	}
 
 	if LogDir != "" {
 		var logPath string

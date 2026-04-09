@@ -32,16 +32,24 @@ func NewController(bus *EventBus, agent agent.Agent, state *types.State) *Contro
 // 顺序：记录历史 → 处理事件副作用 → 判断是否推进 agent。
 func (c *Controller) OnEvent(evt types.Event) {
 	c.state.History = append(c.state.History, evt)
-	logger.Debug("Received Event: %v\n", evt)
+
+	evtKind := evt.Kind()
+	evtID := evt.GetBase().ID
+	prevState := c.state.AgentState
 
 	switch e := evt.(type) {
 	case types.Action:
-		logger.Debug("receive action event!")
 		c.handleAction(e)
 	case types.Observation:
-		logger.Debug("receive observation event!")
 		c.handleObservation(e)
 	}
+
+	logger.Debug("状态变化",
+		"evtKind", evtKind,
+		"evtID", evtID,
+		"prev", prevState,
+		"next", c.state.AgentState,
+		"source", evt.GetBase().Source)
 
 	if c.shouldStep(evt) {
 		c.step()
@@ -63,22 +71,17 @@ func (c *Controller) step() {
 	action, err := c.agent.Step(context.Background(), c.state)
 
 	if err != nil {
+		logger.Error("agent.Step失败", "error", err)
 		c.state.LastError = err.Error()
 		c.state.AgentState = types.StateError
 		return
 	}
 	if action == nil {
-		c.state.LastError = "agent returned nil action"
-		c.state.AgentState = types.StateError
+		logger.Error("agent.Step返回nil action")
 		return
 	}
 
 	action.GetBase().Source = types.SourceAgent
-	// 只有需要环境回执的动作才挂起；MessageAction 和 FinishAction 不阻塞循环。
-	if requiresObservation(action) {
-		c.state.PendingAction = action
-	}
-
 	c.bus.Publish(action)
 }
 
@@ -92,11 +95,7 @@ func (c *Controller) handleAction(action types.Action) {
 	case *types.FinishAction:
 		c.handleFinishAction(a)
 	case *types.CmdRunAction:
-		// CmdRunAction 只有在 Source == Agent 时才挂起；
-		// 用户也可以发 CmdRunAction（比如快捷命令），此时不需要等待观察结果。
-		if a.GetBase().Source == types.SourceAgent {
-			c.state.PendingAction = a
-		}
+		c.handleCmdRunAction(a)
 	}
 }
 
@@ -104,7 +103,9 @@ func (c *Controller) handleAction(action types.Action) {
 // 用户消息：打破等待态/初始态，将状态切回运行。
 // agent 消息：WaitForResponse=true 表示需要人工确认，切到AwaitingInput 态暂停循环。
 func (c *Controller) handleMessageAction(action *types.MessageAction) {
-	switch action.GetBase().Source {
+	source := action.GetBase().Source
+
+	switch source {
 	case types.SourceUser:
 		if c.state.AgentState == types.StateLoading || c.state.AgentState == types.StateAwaitingInput {
 			c.state.AgentState = types.StateRunning
@@ -118,6 +119,7 @@ func (c *Controller) handleMessageAction(action *types.MessageAction) {
 
 // handleFinishAction 处理任务正常结束。
 // 重要：FinishAction 即使是需要观察结果的类型也不挂起——结束是终态，不需要观察结果闭环。
+// 但在设置终态前必须清除 PendingAction，防止遗留的未完成命令阻塞后续会话。
 func (c *Controller) handleFinishAction(action *types.FinishAction) {
 	if action.GetBase().Source != types.SourceAgent {
 		return
@@ -133,8 +135,16 @@ func (c *Controller) handleObservation(obs types.Observation) {
 	if c.state.PendingAction == nil {
 		return
 	}
+
 	if obs.GetBase().Cause == c.state.PendingAction.GetBase().ID {
 		c.state.PendingAction = nil
+	}
+}
+
+// handleCmdRunAction 处理命令执行动作
+func (c *Controller) handleCmdRunAction(action *types.CmdRunAction) {
+	if action.GetBase().Source == types.SourceAgent {
+		c.state.PendingAction = action
 	}
 }
 
@@ -144,24 +154,35 @@ func (c *Controller) handleObservation(obs types.Observation) {
 //   - 用户消息在等待态/初始态触发（给系统一个重启的机会）。
 //   - 其他所有情况不触发，避免 agent 在任意事件刺激下无意义地重复推理。
 func (c *Controller) shouldStep(evt types.Event) bool {
-	if c.state.AgentState == types.StateFinished || c.state.AgentState == types.StateError {
-		return false
-	}
-	if evt.Kind() == types.KindObservation {
-		return true
-	}
-	action, ok := evt.(*types.MessageAction)
-	return ok && action.GetBase().Source == types.SourceUser
-}
+	evtKind := evt.Kind()
 
-// requiresObservation 定义哪些 action 类型需要等待环境回执。
-// 当前只有 CmdRunAction 需要，其他 action 类型都是"即时完成"。
-// 如果后续增加需要执行的工具（如 FileEdit），也需要在这里注册。
-func requiresObservation(action types.Action) bool {
-	switch action.(type) {
-	case *types.CmdRunAction:
-		return true
-	default:
+	if c.state.AgentState == types.StateFinished {
 		return false
 	}
+	if c.state.AgentState == types.StateError {
+		return false
+	}
+	if c.state.PendingAction != nil {
+		return false
+	}
+
+	if evtKind == types.KindObservation {
+		return true
+	}
+
+	action, ok := evt.(*types.MessageAction)
+	if !ok {
+		return false
+	}
+
+	source := action.GetBase().Source
+	if source == types.SourceUser {
+		return true
+	}
+
+	if action.WaitForResponse {
+		return false
+	}
+
+	return true
 }

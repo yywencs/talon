@@ -42,8 +42,11 @@ func (rt *LocalRuntime) onEvent(evt types.Event) {
 		return
 	}
 
-	obs := rt.Execute(action)
-	rt.bus.Publish(obs)
+	go func() {
+		obs := rt.Execute(action)
+		rt.bus.Publish(obs)
+	}()
+
 }
 
 // Execute 同步执行一条 shell 命令并返回观察结果。

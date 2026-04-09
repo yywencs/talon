@@ -12,6 +12,7 @@ import (
 type Config struct {
 	Debug      bool
 	OneLogFile bool
+	LogDir     string
 	LLM        LLMConfig
 }
 
@@ -31,9 +32,17 @@ func Load() {
 	if err != nil {
 		fmt.Printf("Warning: .env file not found: %v", err)
 	}
+
+	logDir := getEnv("LOG_DIR", "./logs")
+
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		fmt.Printf("Warning: failed to create log directory %s: %v", logDir, err)
+	}
+
 	Global = &Config{
 		Debug:      getEnvAsBool("DEBUG", false),
 		OneLogFile: getEnvAsBool("ONLY_ONE_LOG_FILE", false),
+		LogDir:     logDir,
 		LLM: LLMConfig{
 			Provider:   getEnv("LLM_PROVIDER", "ollama"),
 			Model:      getEnv("LLM_MODEL", "qwen3:32b"),

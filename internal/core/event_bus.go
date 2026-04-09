@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/wen/opentalon/internal/types"
+	"github.com/wen/opentalon/pkg/logger"
 )
 
 // Handler 是事件总线的订阅回调，收到事件时由总线同步调用。
@@ -35,10 +36,17 @@ func NewEventBus() *EventBus {
 // 后续的 Cause 匹配不需要任何协调。
 func (b *EventBus) Publish(e types.Event) {
 	base := e.GetBase()
+
 	if base.ID == 0 {
 		b.nextID++
 		base.ID = b.nextID
+
+		logger.Debug("发布新事件",
+			"evtKind", e.Kind(),
+			"evtID", base.ID,
+			"source", base.Source)
 	}
+
 	if base.Timestamp.IsZero() {
 		base.Timestamp = time.Now()
 	}

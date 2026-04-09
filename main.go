@@ -11,6 +11,7 @@ import (
 	"github.com/wen/opentalon/internal/core"
 	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/config"
+	"github.com/wen/opentalon/pkg/logger"
 )
 
 // main 是 CLI 入口，根据 os.Args 分流到两种模式：
@@ -18,6 +19,8 @@ import (
 //  2. Interactive 模式：无参数则进入 REPL，逐行读取用户输入，直到 exit/quit。
 func main() {
 	config.Load()
+	logger.LogDir = config.Global.LogDir
+	logger.SetupLogger()
 	cfg := config.Global
 
 	fmt.Println("")
@@ -30,7 +33,7 @@ func main() {
 
 	bus := core.NewEventBus()
 
-	agentInstance, err := agent.NewThinkingAgent(cfg.LLM)
+	agentInstance, err := agent.NewBaseAgent(cfg.LLM)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create agent failed: %v\n", err)
 		os.Exit(1)
@@ -113,7 +116,8 @@ func repl(bus *core.EventBus, state *types.State) {
 		}
 
 		if state.AgentState == types.StateFinished {
-			fmt.Println("\n[system] task finished.")
+			state.PendingAction = nil
+			state.AgentState = types.StateAwaitingInput
 		}
 		if state.AgentState == types.StateError {
 			fmt.Fprintf(os.Stderr, "\n[system] error: %s\n", state.LastError)
@@ -130,9 +134,11 @@ func printHandler(state *types.State) core.Handler {
 				fmt.Printf("\n[agent] %s\n", e.Content)
 			}
 		case *types.FinishAction:
-			if e.Result != "" {
-				fmt.Printf("\n[result] %s\n", e.Result)
+			result := e.Result
+			if result == "" {
+				result = "任务圆满完成！"
 			}
+			fmt.Printf("\n✅ [任务结束]: %s\n", result)
 		}
 	}
 }
