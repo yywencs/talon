@@ -29,10 +29,8 @@ func NewController(bus *EventBus, agent agent.Agent, state *types.State) *Contro
 }
 
 // OnEvent 是总线的订阅回调，所有外部事件（用户输入、runtime 观察结果）都从这儿进入。
-// 顺序：记录历史 → 处理事件副作用 → 判断是否推进 agent。
+// 顺序：处理事件副作用 → 判断是否推进 agent。
 func (c *Controller) OnEvent(evt types.Event) {
-	c.state.History = append(c.state.History, evt)
-
 	evtKind := evt.Kind()
 	evtID := evt.GetBase().ID
 	prevState := c.state.AgentState
@@ -44,12 +42,16 @@ func (c *Controller) OnEvent(evt types.Event) {
 		c.handleObservation(e)
 	}
 
-	logger.Debug("状态变化",
-		"evtKind", evtKind,
-		"evtID", evtID,
-		"prev", prevState,
-		"next", c.state.AgentState,
-		"source", evt.GetBase().Source)
+	c.state.History = c.bus.History()
+
+	if prevState != c.state.AgentState {
+		logger.Debug("状态变化",
+			"evtKind", evtKind,
+			"evtID", evtID,
+			"prev", prevState,
+			"next", c.state.AgentState,
+			"source", evt.GetBase().Source)
+	}
 
 	if c.shouldStep(evt) {
 		c.step()

@@ -15,8 +15,10 @@ type Handler func(types.Event)
 //   - 总线不负责路由，所有订阅者收到相同事件（广播语义）。
 //   - Publish 期间 ID 由总线统一分配，保证因果链可追踪。
 //   - 不需要异步或并发写入保护，因为调用方（controller）是单 goroutine 驱动。
+//   - 自动维护 History 序列，记录所有已发布的事件。
 type EventBus struct {
 	handlers []Handler
+	history  []types.Event
 	nextID   int64
 }
 
@@ -51,7 +53,16 @@ func (b *EventBus) Publish(e types.Event) {
 		base.Timestamp = time.Now()
 	}
 
+	b.history = append(b.history, e)
+
 	for _, h := range b.handlers {
 		h(e)
 	}
+}
+
+// History 返回所有已发布事件的副本。
+func (b *EventBus) History() []types.Event {
+	result := make([]types.Event, len(b.history))
+	copy(result, b.history)
+	return result
 }
