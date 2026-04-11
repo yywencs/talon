@@ -45,15 +45,14 @@ func main() {
 
 	bus.Subscribe(controller.OnEvent)
 	bus.Subscribe(printHandler(state))
+	bus.Start()
 
 	args := os.Args[1:]
 	if len(args) > 0 {
-		// One-Shot：将参数拼接为一句话发送一次，等待结束并退出
 		oneShot(bus, state, strings.Join(args, " "))
 		return
 	}
 
-	// Interactive：进入 REPL 循环
 	repl(bus, state)
 }
 
