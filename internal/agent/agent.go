@@ -84,7 +84,7 @@ func responseToAction(resp *ChatResponse) types.Action {
 	}
 
 	if content != "" {
-		return &types.MessageAction{Content: content}
+		return &types.MessageAction{Content: content, WaitForResponse: true}
 	}
 
 	return nil

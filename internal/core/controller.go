@@ -31,10 +31,6 @@ func NewController(bus *EventBus, agent agent.Agent, state *types.State) *Contro
 // OnEvent 是总线的订阅回调，所有外部事件（用户输入、runtime 观察结果）都从这儿进入。
 // 顺序：处理事件副作用 → 判断是否推进 agent。
 func (c *Controller) OnEvent(evt types.Event) {
-	evtKind := evt.Kind()
-	evtID := evt.GetBase().ID
-	prevState := c.state.AgentState
-
 	switch e := evt.(type) {
 	case types.Action:
 		c.handleAction(e)
@@ -42,16 +38,14 @@ func (c *Controller) OnEvent(evt types.Event) {
 		c.handleObservation(e)
 	}
 
-	c.state.History = c.bus.History()
+	logger.Debug("当前状态为",
+		"evtKind", evt.Kind(),
+		"evtType", evt.Name(),
+		"evtID", evt.GetBase().ID,
+		"state", c.state.AgentState,
+		"source", evt.GetBase().Source)
 
-	if prevState != c.state.AgentState {
-		logger.Debug("状态变化",
-			"evtKind", evtKind,
-			"evtID", evtID,
-			"prev", prevState,
-			"next", c.state.AgentState,
-			"source", evt.GetBase().Source)
-	}
+	c.state.History = c.bus.History()
 
 	if c.shouldStep(evt) {
 		c.step()
@@ -75,7 +69,7 @@ func (c *Controller) step() {
 	if err != nil {
 		logger.Error("agent.Step失败", "error", err)
 		c.state.LastError = err.Error()
-		c.state.AgentState = types.StateError
+		c.setAgentStateTo(types.StateError)
 		return
 	}
 	if action == nil {
@@ -93,10 +87,19 @@ func (c *Controller) step() {
 func (c *Controller) handleAction(action types.Action) {
 	switch a := action.(type) {
 	case *types.MessageAction:
+		if a.GetBase().Source == types.SourceUser {
+			logger.Info("👤 用户输入", "content", a.Content)
+		} else {
+			logger.Info("🤖 Agent回复", "content", a.Content)
+		}
 		c.handleMessageAction(a)
 	case *types.FinishAction:
+		if a.GetBase().Source == types.SourceAgent {
+			logger.Info("✅ 任务完成", "result", a.Result)
+		}
 		c.handleFinishAction(a)
 	case *types.CmdRunAction:
+		logger.Info("⚡ Agent执行命令", "command", a.Command, "thought", a.Thought)
 		c.handleCmdRunAction(a)
 	}
 }
@@ -110,11 +113,11 @@ func (c *Controller) handleMessageAction(action *types.MessageAction) {
 	switch source {
 	case types.SourceUser:
 		if c.state.AgentState == types.StateLoading || c.state.AgentState == types.StateAwaitingInput {
-			c.state.AgentState = types.StateRunning
+			c.setAgentStateTo(types.StateRunning)
 		}
 	case types.SourceAgent:
 		if action.WaitForResponse {
-			c.state.AgentState = types.StateAwaitingInput
+			c.setAgentStateTo(types.StateAwaitingInput)
 		}
 	}
 }
@@ -127,7 +130,7 @@ func (c *Controller) handleFinishAction(action *types.FinishAction) {
 		return
 	}
 	c.state.PendingAction = nil
-	c.state.AgentState = types.StateFinished
+	c.setAgentStateTo(types.StateFinished)
 }
 
 // handleObservation 是因果闭环的关键。
@@ -139,8 +142,29 @@ func (c *Controller) handleObservation(obs types.Observation) {
 	}
 
 	if obs.GetBase().Cause == c.state.PendingAction.GetBase().ID {
+		var content string
+		if cmdObs, ok := obs.(*types.CmdOutputObservation); ok {
+			content = truncate(cmdObs.Content, 100)
+		} else {
+			content = truncate(obs.GetBase().Message, 100)
+		}
+		logger.Info("📋 命令执行结果", "content", content)
 		c.state.PendingAction = nil
 	}
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+func (c *Controller) setAgentStateTo(newState types.AgentState) {
+	logger.Debug("状态变化",
+		"from", c.state.AgentState,
+		"to", newState)
+	c.state.AgentState = newState
 }
 
 // handleCmdRunAction 处理命令执行动作
@@ -186,5 +210,5 @@ func (c *Controller) shouldStep(evt types.Event) bool {
 		return false
 	}
 
-	return true
+	return false
 }

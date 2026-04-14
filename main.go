@@ -99,6 +99,8 @@ func repl(bus *core.EventBus, state *types.State) {
 			return
 		}
 
+		state.AgentState = types.StateRunning
+
 		// 将用户输入封装为 SourceUser 的 MessageAction 并发布到总线
 		bus.Publish(&types.MessageAction{
 			BaseEvent: types.BaseEvent{Source: types.SourceUser},
