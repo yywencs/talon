@@ -1,0 +1,50 @@
+{
+  "timestamp": "2026-04-14T14:42:44.286489+08:00",
+  "run_id": "run-1776148959906-000",
+  "step": 1,
+  "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+  "status_code": 200,
+  "headers": {
+    "Content-Type": "application/json",
+    "Date": "Tue, 14 Apr 2026 06:42:43 GMT",
+    "Req-Arrive-Time": "1776148959821",
+    "Req-Cost-Time": "4205",
+    "Resp-Start-Time": "1776148964026",
+    "Server": "istio-envoy",
+    "Vary": "Origin,Access-Control-Request-Method,Access-Control-Request-Headers, Accept-Encoding",
+    "X-Dashscope-Call-Gateway": "true",
+    "X-Envoy-Upstream-Service-Time": "4204",
+    "X-Request-Id": "d1ed6d7c-bec8-985b-a1d3-5513f6723598"
+  },
+  "body": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "content": "你好！我是 OpenTalon 智能体，一名面向命令行与自动化开发场景的助理。\n\n我可以帮助你：\n- 编写/修改脚本、分析日志、排查错误\n- 执行 Shell 命令与 Python 代码\n- 组织项目结构、完成自动化任务\n\n请问有什么任务需要我协助？\u003cwait_response\u003eTrue\u003c/wait_response\u003e",
+          "reasoning_content": "用户发送了一个简单的问候\"你好\"。这是一个简单的打招呼，不需要执行任何工具或命令。我应该礼貌地回应，介绍自己作为 OpenTalon 智能体的身份，并询问用户有什么需要帮助的任务。\n\n根据响应风格要求：\n- 简洁、礼貌\n- 不需要执行块（因为没有实际任务需要执行）\n- 如果任务完成需要\u003cfinish\u003e，但这里只是问候，没有具体任务\n- 如果需要更多信息，使用\u003cwait_response\u003e\n\n由于这只是一个问候，我应该友好回应并询问用户需要什么帮助，然后使用\u003cwait_response\u003e等待用户的具体需求。",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1776148964,
+    "id": "chatcmpl-d1ed6d7c-bec8-985b-a1d3-5513f6723598",
+    "model": "qwen3.5-plus",
+    "object": "chat.completion",
+    "system_fingerprint": null,
+    "usage": {
+      "completion_tokens": 205,
+      "completion_tokens_details": {
+        "reasoning_tokens": 125,
+        "text_tokens": 205
+      },
+      "prompt_tokens": 1202,
+      "prompt_tokens_details": {
+        "text_tokens": 1202
+      },
+      "total_tokens": 1407
+    }
+  }
+}

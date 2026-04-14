@@ -1,0 +1,50 @@
+{
+  "timestamp": "2026-04-14T14:44:05.972346+08:00",
+  "run_id": "run-1776148959906-000",
+  "step": 2,
+  "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+  "status_code": 200,
+  "headers": {
+    "Content-Type": "application/json",
+    "Date": "Tue, 14 Apr 2026 06:44:05 GMT",
+    "Req-Arrive-Time": "1776149043285",
+    "Req-Cost-Time": "2426",
+    "Resp-Start-Time": "1776149045712",
+    "Server": "istio-envoy",
+    "Vary": "Origin,Access-Control-Request-Method,Access-Control-Request-Headers, Accept-Encoding",
+    "X-Dashscope-Call-Gateway": "true",
+    "X-Envoy-Upstream-Service-Time": "2426",
+    "X-Request-Id": "a57c793f-1dd0-9431-9759-b6daecb06e64"
+  },
+  "body": {
+    "choices": [
+      {
+        "finish_reason": "stop",
+        "index": 0,
+        "logprobs": null,
+        "message": {
+          "content": "我将先确认当前工作目录，然后列出目录内容。\n\n```\n\u003cexecute_bash\u003e pwd \u0026\u0026 ls -la \u003c/execute_bash\u003e\n```",
+          "reasoning_content": "用户想查看当前目录下有什么内容。这是一个简单的任务，我需要使用 \u003cexecute_bash\u003e 来执行命令查看当前目录。\n\n我应该：\n1. 先使用 pwd 确认当前工作目录\n2. 使用 ls -la 查看目录内容\n\n按照示例的做法，我应该先说明计划，然后执行一个工具。",
+          "role": "assistant"
+        }
+      }
+    ],
+    "created": 1776149046,
+    "id": "chatcmpl-a57c793f-1dd0-9431-9759-b6daecb06e64",
+    "model": "qwen3.5-plus",
+    "object": "chat.completion",
+    "system_fingerprint": null,
+    "usage": {
+      "completion_tokens": 106,
+      "completion_tokens_details": {
+        "reasoning_tokens": 69,
+        "text_tokens": 106
+      },
+      "prompt_tokens": 1292,
+      "prompt_tokens_details": {
+        "text_tokens": 1292
+      },
+      "total_tokens": 1398
+    }
+  }
+}

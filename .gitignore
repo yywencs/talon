@@ -48,6 +48,7 @@ bin/
 tmp/
 temp/
 .trae/
+.trace/
 
 *.db
 *.sqlite

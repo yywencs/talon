@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/joho/godotenv"
+	"github.com/wen/opentalon/pkg/utils"
 )
 
 type Config struct {
@@ -28,9 +29,14 @@ type LLMConfig struct {
 var Global *Config
 
 func Load() {
-	err := LoadEnv()
+	workspaceRoot, err := utils.FindWorkspaceRoot()
 	if err != nil {
-		fmt.Printf("Warning: .env file not found: %v", err)
+		panic(err)
+	}
+
+	envPath := filepath.Join(workspaceRoot, ".env")
+	if err := godotenv.Load(envPath); err != nil {
+		fmt.Printf("Warning: failed to load .env file %s: %v", envPath, err)
 	}
 
 	logDir := getEnv("LOG_DIR", "./logs")
@@ -53,6 +59,10 @@ func Load() {
 	}
 }
 
+func IsDebug() bool {
+	return Global.Debug
+}
+
 // 辅助函数：简化获取环境变量的逻辑
 func getEnv(key, fallback string) string {
 	if value, ok := os.LookupEnv(key); ok {
@@ -67,28 +77,4 @@ func getEnvAsBool(key string, fallback bool) bool {
 		return fallback
 	}
 	return strings.ToLower(val) == "true"
-}
-
-func LoadEnv() error {
-	dir, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-
-	// 向上遍历，最多找 10 层，防止死循环
-	for i := 0; i < 10; i++ {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			// 找到了 go.mod 所在的目录（即项目根目录）
-			envPath := filepath.Join(dir, ".env")
-			return godotenv.Load(envPath)
-		}
-		// 往上一层
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break // 到达系统根目录
-		}
-		dir = parent
-	}
-
-	return fmt.Errorf("未能找到项目根目录 (go.mod)")
 }

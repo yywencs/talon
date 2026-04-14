@@ -52,7 +52,9 @@ type LLMClient interface {
 	StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) error
 }
 
-var sharedLLMHTTPClient = &http.Client{}
+var sharedLLMHTTPClient = &http.Client{
+	Transport: newTraceRoundTripper(http.DefaultTransport),
+}
 
 const (
 	maxRetries  = 3
@@ -475,6 +477,9 @@ func doRequestWithRetry(ctx context.Context, client *http.Client, method, endpoi
 		}
 
 		statusCode := httpResp.StatusCode
+
+		var respData map[string]any
+		json.Unmarshal(respBytes, &respData)
 
 		if statusCode >= 200 && statusCode < 300 {
 			if unmarshalErr := json.Unmarshal(respBytes, respBody); unmarshalErr != nil {
