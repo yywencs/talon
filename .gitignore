@@ -48,7 +48,8 @@ bin/
 tmp/
 temp/
 .trae/
-.trace/
+.opentalon/
+.opentalon/traces/
 
 *.db
 *.sqlite

@@ -45,4 +45,13 @@ func TestPromptBuilderBuildMessages(t *testing.T) {
 	if messages[4].Role != "user" {
 		t.Fatalf("expected user role for observation, got %q", messages[4].Role)
 	}
+	if messages[0].CacheControl["type"] != "ephemeral" {
+		t.Fatalf("expected system message to be cacheable, got %+v", messages[0].CacheControl)
+	}
+	if messages[1].CacheControl["type"] != "ephemeral" {
+		t.Fatalf("expected example message to be cacheable, got %+v", messages[1].CacheControl)
+	}
+	if messages[4].CacheControl["type"] != "ephemeral" {
+		t.Fatalf("expected latest message to be cacheable, got %+v", messages[4].CacheControl)
+	}
 }

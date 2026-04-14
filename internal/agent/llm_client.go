@@ -23,8 +23,40 @@ import (
 // ChatMessage 表示对话中的一条消息，包含角色和内容。
 // Role 支持 "user" / "assistant" / "system" 等标准角色。
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content,omitempty"`
+	Role         string            `json:"role"`
+	Content      string            `json:"-"`
+	CacheControl map[string]string `json:"-"`
+}
+
+type chatMessageTextBlock struct {
+	Type         string            `json:"type"`
+	Text         string            `json:"text"`
+	CacheControl map[string]string `json:"cache_control,omitempty"`
+}
+
+func (m ChatMessage) MarshalJSON() ([]byte, error) {
+	type wireMessage struct {
+		Role    string `json:"role"`
+		Content any    `json:"content,omitempty"`
+	}
+
+	wire := wireMessage{
+		Role: m.Role,
+	}
+
+	if len(m.CacheControl) > 0 {
+		wire.Content = []chatMessageTextBlock{
+			{
+				Type:         "text",
+				Text:         m.Content,
+				CacheControl: m.CacheControl,
+			},
+		}
+	} else {
+		wire.Content = m.Content
+	}
+
+	return json.Marshal(wire)
 }
 
 // ChatRequest 是发给 LLM 的请求结构，Model/Messages 为必填字段，
@@ -170,7 +202,7 @@ type ollamaWireResponse struct {
 func (c *ollamaClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	wireReq := ollamaWireRequest{
 		Model:    req.Model,
-		Messages: req.Messages,
+		Messages: stripCacheControl(req.Messages),
 		Stream:   req.Stream,
 		Options: map[string]any{
 			"temperature": req.Temperature,
@@ -192,7 +224,7 @@ func (c *ollamaClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 func (c *ollamaClient) StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) error {
 	wireReq := ollamaWireRequest{
 		Model:    req.Model,
-		Messages: req.Messages,
+		Messages: stripCacheControl(req.Messages),
 		Stream:   true,
 		Options: map[string]any{
 			"temperature": req.Temperature,
@@ -568,4 +600,17 @@ func resolveOpenAIEndpoint(endpoint string) string {
 		return endpoint + "/chat/completions"
 	}
 	return endpoint + "/chat/completions"
+}
+
+func stripCacheControl(messages []ChatMessage) []ChatMessage {
+	if len(messages) == 0 {
+		return nil
+	}
+
+	sanitized := make([]ChatMessage, len(messages))
+	copy(sanitized, messages)
+	for i := range sanitized {
+		sanitized[i].CacheControl = nil
+	}
+	return sanitized
 }

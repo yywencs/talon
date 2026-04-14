@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
@@ -185,5 +186,75 @@ func TestNewLLMClientFactory(t *testing.T) {
 	_, ok := client.(LLMClient)
 	if !ok {
 		t.Error("客户端应实现 LLMClient 接口")
+	}
+}
+
+func TestStripCacheControl(t *testing.T) {
+	messages := []ChatMessage{
+		{
+			Role:    "system",
+			Content: "system prompt",
+			CacheControl: map[string]string{
+				"type": "ephemeral",
+			},
+		},
+		{
+			Role:    "user",
+			Content: "hello",
+		},
+	}
+
+	sanitized := stripCacheControl(messages)
+
+	if sanitized[0].CacheControl != nil {
+		t.Fatalf("expected cache_control to be stripped, got %+v", sanitized[0].CacheControl)
+	}
+	if messages[0].CacheControl == nil {
+		t.Fatal("stripCacheControl should not mutate original messages")
+	}
+}
+
+func TestChatMessageMarshalJSONWithCacheControl(t *testing.T) {
+	msg := ChatMessage{
+		Role:    "system",
+		Content: "system prompt",
+		CacheControl: map[string]string{
+			"type": "ephemeral",
+		},
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal chat message failed: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal payload failed: %v", err)
+	}
+
+	if _, exists := payload["cache_control"]; exists {
+		t.Fatalf("cache_control should not appear on message top level: %s", string(data))
+	}
+
+	content, ok := payload["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("content should be a single text block array: %s", string(data))
+	}
+
+	block, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("content block should be an object: %s", string(data))
+	}
+	if block["type"] != "text" {
+		t.Fatalf("unexpected content block type: %s", string(data))
+	}
+	if block["text"] != "system prompt" {
+		t.Fatalf("unexpected content block text: %s", string(data))
+	}
+
+	cacheControl, ok := block["cache_control"].(map[string]any)
+	if !ok || cacheControl["type"] != "ephemeral" {
+		t.Fatalf("cache_control should appear inside content block: %s", string(data))
 	}
 }

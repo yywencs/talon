@@ -75,7 +75,41 @@ func (b *PromptBuilder) BuildMessages(state *types.State, systemPrompt string, u
 		}
 	}
 
+	applyEphemeralCacheControls(messages, strings.TrimSpace(userPromptExamples) != "")
 	return messages
+}
+
+const (
+	maxExplicitCacheMarkers = 4
+	cacheLookbackWindow     = 20
+)
+
+// applyEphemeralCacheControls 为稳定前缀和滚动上下文打缓存标记，
+// 兼顾更高命中率与 provider 单次最多 4 个标记、单标记最多回溯 20 个内容块的限制。
+func applyEphemeralCacheControls(messages []ChatMessage, hasExamples bool) {
+	markerCount := 0
+
+	addMarker := func(idx int) {
+		if idx < 0 || idx >= len(messages) || markerCount >= maxExplicitCacheMarkers {
+			return
+		}
+		if messages[idx].CacheControl != nil {
+			return
+		}
+
+		messages[idx].CacheControl = map[string]string{
+			"type": "ephemeral",
+		}
+		markerCount++
+	}
+
+	addMarker(0)
+	if hasExamples {
+		addMarker(1)
+	}
+	for idx := len(messages) - 1; idx >= 0 && markerCount < maxExplicitCacheMarkers; idx -= cacheLookbackWindow {
+		addMarker(idx)
+	}
 }
 
 func roleForSource(source types.EventSource) string {
