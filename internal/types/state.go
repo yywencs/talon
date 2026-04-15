@@ -35,9 +35,6 @@ const (
 	StateAwaitingConfirmation AgentState = "awaiting_user_confirmation"
 	StateUserConfirmed        AgentState = "user_confirmed"
 	StateUserRejected         AgentState = "user_rejected"
-
-	// 高并发云原生特有状态
-	StateRateLimited AgentState = "rate_limited"
 )
 
 type State struct {
