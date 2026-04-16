@@ -1,11 +1,67 @@
 package types
 
-// Observation 接口由所有观察结果类型实现，表示环境对 Action 的响应。
-// 与 Action 的本质区别：Observation 是"被动产生"的，其 Cause 字段必须指向对应的 Action ID。
-// 如果 Observation 回来时没有匹配的 PendingAction，系统会忽略它（不会错误解锁）。
+import "strings"
+
+// Observation 表示工具或环境产出的业务结果。
+// 核心引擎只通过它判断是否报错，并读取多模态内容。
 type Observation interface {
-	Event
-	isObservation()
+	GetContent() []Content
+	IsError() bool
+}
+
+// ContentType 表示多模态内容的判别标签。
+type ContentType string
+
+const (
+	ContentTypeText     ContentType = "text"
+	ContentTypeImageURL ContentType = "image_url"
+)
+
+// Content 是多模态内容的联合类型接口。
+type Content interface {
+	Type() ContentType
+}
+
+// TextContent 表示纯文本内容。
+type TextContent struct {
+	DataType ContentType `json:"type"`
+	Text     string      `json:"text"`
+}
+
+func (c TextContent) Type() ContentType { return c.DataType }
+
+// ImageURL 表示图片 URL 载荷。
+type ImageURL struct {
+	URL string `json:"url"`
+}
+
+// ImageContent 表示图片内容。
+type ImageContent struct {
+	DataType ContentType `json:"type"`
+	ImageURL ImageURL    `json:"image_url"`
+}
+
+func (c ImageContent) Type() ContentType { return c.DataType }
+
+// BaseObservation 是 Observation 的基础实现。
+type BaseObservation struct {
+	BaseEvent
+	Content     []Content `json:"content"`
+	ErrorStatus bool      `json:"error_status,omitempty"`
+}
+
+func (o *BaseObservation) GetContent() []Content {
+	if o == nil {
+		return nil
+	}
+	return o.Content
+}
+
+func (o *BaseObservation) IsError() bool {
+	if o == nil {
+		return true
+	}
+	return o.ErrorStatus
 }
 
 type ObservationType string
@@ -19,16 +75,31 @@ const (
 	ObsSuccess ObservationType = "success"
 )
 
-// CmdOutputObservation 是命令执行结果的包装器。
-// 包含命令的退出码（ExitCode），使得 Agent 可以区分"命令成功"和"命令失败但有输出"两种情况。
-// Content 是原始 stdout/stderr 混合输出；Agent 可以自行解析其格式。
-type CmdOutputObservation struct {
+// ObservationEvent 是 Observation 的事件信封，用于在总线上传递系统元信息。
+type ObservationEvent struct {
 	BaseEvent
-	Content  string `json:"content"`
-	ExitCode int    `json:"exit_code,omitempty"`
+	ActionID    string      `json:"action_id"`
+	ToolName    string      `json:"tool_name"`
+	Observation Observation `json:"observation"`
 }
 
-func (e *CmdOutputObservation) GetBase() *BaseEvent { return &e.BaseEvent }
-func (e *CmdOutputObservation) Kind() EventKind     { return KindObservation }
-func (e *CmdOutputObservation) Name() string        { return "CmdOutput" }
-func (e *CmdOutputObservation) isObservation()      {}
+func (e *ObservationEvent) GetBase() *BaseEvent { return &e.BaseEvent }
+func (e *ObservationEvent) Kind() EventKind     { return KindObservation }
+func (e *ObservationEvent) Name() string        { return "observation_event" }
+
+// FlattenTextContent 将多模态内容中的文本片段按顺序拼接，便于日志或 prompt 构造。
+func FlattenTextContent(contents []Content) string {
+	var parts []string
+	for _, item := range contents {
+		text, ok := item.(TextContent)
+		if ok && strings.TrimSpace(text.Text) != "" {
+			parts = append(parts, text.Text)
+			continue
+		}
+
+		if textPtr, ok := item.(*TextContent); ok && strings.TrimSpace(textPtr.Text) != "" {
+			parts = append(parts, textPtr.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
+}

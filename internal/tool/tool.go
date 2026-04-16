@@ -68,30 +68,40 @@ type ActionMetadata struct {
 	SecurityRisk SecurityRisk `json:"security_risk" jsonschema:"description=风险等级"`
 }
 
-type BashAction struct {
-	ActionMetadata `json:",inline"`
-	Command        string `json:"command"`
-}
-
 type Tool interface {
 	Name() string
 	Description() string
 	Execute(ctx context.Context, rawArgs []byte) Observation
 }
 
-type BaseTool[A any, O any] struct {
+type BaseTool[A any, O types.Observation] struct {
 	ToolName string
 	ToolDesc string
 	Executor func(ctx context.Context, action A) O
 }
 
-func (t *BaseTool[A, O]) Execute(ctx context.Context, rawArgs []byte) (Observation, error) {
+func (t *BaseTool[A, O]) Name() string {
+	return t.ToolName
+}
+
+func (t *BaseTool[A, O]) Description() string {
+	return t.ToolDesc
+}
+
+func (t *BaseTool[A, O]) Execute(ctx context.Context, rawArgs []byte) Observation {
 	var action A
 	if err := json.Unmarshal(rawArgs, &action); err != nil {
-		return nil, err
+		return &types.BaseObservation{
+			Content: []types.Content{
+				types.TextContent{
+					DataType: types.ContentTypeText,
+					Text:     "invalid JSON arguments: " + err.Error(),
+				},
+			},
+			ErrorStatus: true,
+		}
 	}
 
 	result := t.Executor(ctx, action)
-
-	return NewObservation(result)
+	return result
 }

@@ -3,6 +3,7 @@ package agent
 import (
 	"testing"
 
+	toolpkg "github.com/wen/opentalon/internal/tool"
 	"github.com/wen/opentalon/internal/types"
 )
 
@@ -19,10 +20,11 @@ func TestPromptBuilderBuildMessages(t *testing.T) {
 				Command:   "ls -la",
 				Thought:   "先看文件结构",
 			},
-			&types.CmdOutputObservation{
-				BaseEvent: types.BaseEvent{Cause: 2},
-				Content:   "file-a\nfile-b",
-				ExitCode:  0,
+			&types.ObservationEvent{
+				BaseEvent:   types.BaseEvent{Source: types.SourceEnvironment, Cause: 2},
+				ActionID:    "2",
+				ToolName:    "bash",
+				Observation: toolpkg.NewTerminalObservation("ls -la", "", nil, false, 0, "file-a\nfile-b"),
 			},
 		},
 	}, "system prompt", "user example prompt")

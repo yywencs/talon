@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/wen/opentalon/internal/agent"
 	"github.com/wen/opentalon/internal/types"
@@ -34,7 +35,7 @@ func (c *Controller) OnEvent(evt types.Event) {
 	switch e := evt.(type) {
 	case types.Action:
 		c.handleAction(e)
-	case types.Observation:
+	case *types.ObservationEvent:
 		c.handleObservation(e)
 	}
 
@@ -136,18 +137,17 @@ func (c *Controller) handleFinishAction(action *types.FinishAction) {
 // handleObservation 是因果闭环的关键。
 // 只有当观察结果的 Cause 精确匹配当前 PendingAction 的 ID 时，才解锁。
 // 这防止了：旧 observation 回来后误解除新的 PendingAction。
-func (c *Controller) handleObservation(obs types.Observation) {
+func (c *Controller) handleObservation(evt *types.ObservationEvent) {
 	if c.state.PendingAction == nil {
 		return
 	}
 
-	if obs.GetBase().Cause == c.state.PendingAction.GetBase().ID {
-		var content string
-		if cmdObs, ok := obs.(*types.CmdOutputObservation); ok {
-			content = truncate(cmdObs.Content, 100)
-		} else {
-			content = truncate(obs.GetBase().Message, 100)
-		}
+	if evt == nil || evt.Observation == nil {
+		return
+	}
+
+	if evt.ActionID == strconv.FormatInt(c.state.PendingAction.GetBase().ID, 10) {
+		content := truncate(types.FlattenTextContent(evt.Observation.GetContent()), 100)
 		logger.Info("📋 命令执行结果", "content", content)
 		c.state.PendingAction = nil
 	}

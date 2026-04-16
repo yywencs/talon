@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strconv"
 	"syscall"
 	"time"
 
+	toolpkg "github.com/wen/opentalon/internal/tool"
 	"github.com/wen/opentalon/internal/types"
 )
 
@@ -44,22 +46,26 @@ func (rt *LocalRuntime) onEvent(evt types.Event) {
 
 	go func() {
 		obs := rt.Execute(action)
-		rt.bus.Publish(obs)
+		rt.bus.Publish(&types.ObservationEvent{
+			BaseEvent: types.BaseEvent{
+				Source: types.SourceEnvironment,
+				Cause:  action.GetBase().ID,
+			},
+			ActionID:    strconv.FormatInt(action.GetBase().ID, 10),
+			ToolName:    "bash",
+			Observation: obs,
+		})
 	}()
 
 }
 
 // Execute 同步执行一条 shell 命令并返回观察结果。
-// 命令错误（不存在）和非零退出码都被归入 CmdOutputObservation，不会上报到 Controller。
+// 命令错误（不存在）和非零退出码都被归入终端观察结果，不会上报到 Controller。
 // 超时使用 action.GetBase().Timeout，如果为 0 则不设超时。
 func (rt *LocalRuntime) Execute(action types.Action) types.Observation {
 	cmdRun, ok := action.(*types.CmdRunAction)
 	if !ok {
-		return &types.CmdOutputObservation{
-			BaseEvent: types.BaseEvent{Source: types.SourceEnvironment},
-			Content:   "unsupported action type",
-			ExitCode:  -1,
-		}
+		return toolpkg.NewTerminalObservation("unsupported action type", "", nil, false, -1, "unsupported action type")
 	}
 
 	cmd := exec.Command("sh", "-c", cmdRun.Command)
@@ -81,14 +87,7 @@ func (rt *LocalRuntime) Execute(action types.Action) types.Observation {
 		exitCode = cmd.ProcessState.ExitCode()
 	}
 
-	return &types.CmdOutputObservation{
-		BaseEvent: types.BaseEvent{
-			Source: types.SourceAgent,
-			Cause:  cmdRun.GetBase().ID,
-		},
-		Content:  content,
-		ExitCode: exitCode,
-	}
+	return toolpkg.NewTerminalObservation(cmdRun.Command, "", nil, false, exitCode, content)
 }
 
 func execWithTimeout(cmd *exec.Cmd, timeout time.Duration) ([]byte, error) {

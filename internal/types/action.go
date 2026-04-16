@@ -26,6 +26,18 @@ const (
 	ActionFinish  ActionType = "finish"
 )
 
+// ActionEvent 是 Action 的事件信封，用于将业务动作与系统元信息解耦。
+type ActionEvent struct {
+	BaseEvent
+	ActionID   string     `json:"action_id"`
+	ActionType ActionType `json:"action_type"`
+	Action     Action     `json:"action"`
+}
+
+func (e *ActionEvent) GetBase() *BaseEvent { return &e.BaseEvent }
+func (e *ActionEvent) Kind() EventKind     { return KindAction }
+func (e *ActionEvent) Name() string        { return string(e.ActionType) }
+
 // CmdRunAction 表示需要在环境中执行的一条 shell 命令。
 // 这是当前唯一会挂起 PendingAction 的 Action 类型。
 // Thought 字段承载 Agent 的内部推理说明，供人工审查用，不会发给 LLM。

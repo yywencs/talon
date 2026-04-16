@@ -2,8 +2,11 @@ package core
 
 import (
 	"context"
+	"strconv"
 	"testing"
+	"time"
 
+	toolpkg "github.com/wen/opentalon/internal/tool"
 	"github.com/wen/opentalon/internal/types"
 )
 
@@ -23,7 +26,9 @@ func (a *stubAgent) Step(ctx context.Context, state *types.State) (types.Action,
 }
 
 func TestControllerStepsAgainAfterObservation(t *testing.T) {
-	bus := &EventBus{}
+	bus := NewEventBus()
+	bus.Start()
+	defer bus.Stop()
 	agent := &stubAgent{
 		actions: []types.Action{
 			&types.CmdRunAction{Command: "first"},
@@ -47,15 +52,33 @@ func TestControllerStepsAgainAfterObservation(t *testing.T) {
 			return
 		}
 
-		bus.Publish(&types.CmdOutputObservation{
-			BaseEvent: types.BaseEvent{Cause: action.GetBase().ID},
-			Content:   "ok",
+		waitFor(t, func() bool {
+			pending, ok := state.PendingAction.(*types.CmdRunAction)
+			return ok && pending.GetBase().ID == action.GetBase().ID
+		})
+
+		bus.Publish(&types.ObservationEvent{
+			BaseEvent: types.BaseEvent{
+				Source: types.SourceEnvironment,
+				Cause:  action.GetBase().ID,
+			},
+			ActionID:    strconv.FormatInt(action.GetBase().ID, 10),
+			ToolName:    "bash",
+			Observation: toolpkg.NewTerminalObservation("first", "", nil, false, 0, "ok"),
 		})
 	})
 
 	bus.Publish(&types.MessageAction{
 		BaseEvent: types.BaseEvent{Source: types.SourceUser},
 		Content:   "task",
+	})
+
+	waitFor(t, func() bool {
+		if agent.calls != 2 {
+			return false
+		}
+		pending, ok := state.PendingAction.(*types.CmdRunAction)
+		return ok && pending.Command == "second"
 	})
 
 	if agent.calls != 2 {
@@ -72,16 +95,47 @@ func TestControllerStepsAgainAfterObservation(t *testing.T) {
 	if pending.Command != "second" {
 		t.Fatalf("expected second action to remain pending, got %q", pending.Command)
 	}
-	if len(state.History) != 4 {
-		t.Fatalf("expected 4 history events, got %d", len(state.History))
+	if len(state.History) < 3 {
+		t.Fatalf("expected at least 3 history events, got %d", len(state.History))
 	}
-	if state.History[1].GetBase().ID == 0 {
-		t.Fatal("expected published agent action to have a generated id")
+
+	var hasUserMessage bool
+	var hasFirstAction bool
+	var hasObservation bool
+	var hasSecondAction bool
+
+	for _, evt := range state.History {
+		switch e := evt.(type) {
+		case *types.MessageAction:
+			if e.GetBase().Source == types.SourceUser && e.Content == "task" {
+				hasUserMessage = true
+			}
+		case *types.CmdRunAction:
+			if e.Command == "first" {
+				hasFirstAction = true
+				if e.GetBase().ID == 0 {
+					t.Fatal("expected published agent action to have a generated id")
+				}
+			}
+			if e.Command == "second" {
+				hasSecondAction = true
+			}
+		case *types.ObservationEvent:
+			if e.ActionID != "" {
+				hasObservation = true
+			}
+		}
+	}
+
+	if !hasUserMessage || !hasFirstAction || !hasObservation || !hasSecondAction {
+		t.Fatalf("expected history to contain user message, first action, observation and second action, got %#v", state.History)
 	}
 }
 
 func TestControllerFinishesWithoutPendingAction(t *testing.T) {
-	bus := &EventBus{}
+	bus := NewEventBus()
+	bus.Start()
+	defer bus.Stop()
 	agent := &stubAgent{
 		actions: []types.Action{
 			&types.FinishAction{Result: "done"},
@@ -98,6 +152,10 @@ func TestControllerFinishesWithoutPendingAction(t *testing.T) {
 	bus.Publish(&types.MessageAction{
 		BaseEvent: types.BaseEvent{Source: types.SourceUser},
 		Content:   "task",
+	})
+
+	waitFor(t, func() bool {
+		return agent.calls == 1 && state.AgentState == types.StateFinished && state.PendingAction == nil && len(state.History) == 2
 	})
 
 	if agent.calls != 1 {
@@ -117,4 +175,18 @@ func TestControllerFinishesWithoutPendingAction(t *testing.T) {
 	if finish.Result != "done" {
 		t.Fatalf("expected finish result to be %q, got %q", "done", finish.Result)
 	}
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatal("condition not met before timeout")
 }

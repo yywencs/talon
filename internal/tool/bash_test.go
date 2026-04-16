@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wen/opentalon/internal/types"
 )
 
 func iptr(i int) *int {
@@ -26,15 +25,15 @@ func TestBash_SimpleEcho(t *testing.T) {
 	})
 
 	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*types.CmdOutputObservation)
+	output, ok := obs.(*TerminalObservation)
 	if !ok {
-		t.Fatalf("expected *CmdOutputObservation, got %T", obs)
+		t.Fatalf("expected *TerminalObservation, got %T", obs)
 	}
-	if output.ExitCode != 0 {
-		t.Fatalf("expected exit code 0, got %d", output.ExitCode)
+	if output.ExitCodeValue() != 0 {
+		t.Fatalf("expected exit code 0, got %d", output.ExitCodeValue())
 	}
-	if output.Content != "hello\n" {
-		t.Fatalf("expected content 'hello\\n', got %q", output.Content)
+	if output.OutputText() != "hello\n" {
+		t.Fatalf("expected content 'hello\\n', got %q", output.OutputText())
 	}
 }
 
@@ -53,12 +52,12 @@ func TestBash_WithTimeout(t *testing.T) {
 	obs := tool.Execute(context.Background(), rawArgs)
 	elapsed := time.Since(start)
 
-	output, ok := obs.(*types.CmdOutputObservation)
+	output, ok := obs.(*TerminalObservation)
 	if !ok {
-		t.Fatalf("expected *CmdOutputObservation, got %T", obs)
+		t.Fatalf("expected *TerminalObservation, got %T", obs)
 	}
-	if output.ExitCode != 0 {
-		t.Fatalf("expected exit code 0, got %d", output.ExitCode)
+	if output.ExitCodeValue() != 0 {
+		t.Fatalf("expected exit code 0, got %d", output.ExitCodeValue())
 	}
 	if elapsed < time.Second {
 		t.Fatalf("expected at least 1s elapsed, got %v", elapsed)
@@ -76,12 +75,12 @@ func TestBash_NonZeroExit(t *testing.T) {
 	})
 
 	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*types.CmdOutputObservation)
+	output, ok := obs.(*TerminalObservation)
 	if !ok {
-		t.Fatalf("expected *CmdOutputObservation, got %T", obs)
+		t.Fatalf("expected *TerminalObservation, got %T", obs)
 	}
-	if output.ExitCode != 1 {
-		t.Fatalf("expected exit code 1, got %d", output.ExitCode)
+	if output.ExitCodeValue() != 1 {
+		t.Fatalf("expected exit code 1, got %d", output.ExitCodeValue())
 	}
 }
 
@@ -96,15 +95,15 @@ func TestBash_EmptyCommand(t *testing.T) {
 	})
 
 	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*types.CmdOutputObservation)
+	output, ok := obs.(*TerminalObservation)
 	if !ok {
-		t.Fatalf("expected *CmdOutputObservation, got %T", obs)
+		t.Fatalf("expected *TerminalObservation, got %T", obs)
 	}
-	if output.ExitCode != -1 {
-		t.Fatalf("expected exit code -1, got %d", output.ExitCode)
+	if output.ExitCodeValue() != -1 {
+		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
 	}
-	if !strings.Contains(output.Content, "command is empty") {
-		t.Fatalf("expected error message to contain 'command is empty', got %q", output.Content)
+	if !strings.Contains(output.OutputText(), "command is empty") {
+		t.Fatalf("expected error message to contain 'command is empty', got %q", output.OutputText())
 	}
 }
 
@@ -120,15 +119,15 @@ func TestBash_InvalidTimeout_Zero(t *testing.T) {
 	})
 
 	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*types.CmdOutputObservation)
+	output, ok := obs.(*TerminalObservation)
 	if !ok {
-		t.Fatalf("expected *CmdOutputObservation, got %T", obs)
+		t.Fatalf("expected *TerminalObservation, got %T", obs)
 	}
-	if output.ExitCode != -1 {
-		t.Fatalf("expected exit code -1, got %d", output.ExitCode)
+	if output.ExitCodeValue() != -1 {
+		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
 	}
-	if !strings.Contains(output.Content, "timeout_secs out of range") {
-		t.Fatalf("expected error message to contain 'timeout_secs out of range', got %q", output.Content)
+	if !strings.Contains(output.OutputText(), "timeout_secs out of range") {
+		t.Fatalf("expected error message to contain 'timeout_secs out of range', got %q", output.OutputText())
 	}
 }
 
@@ -144,15 +143,15 @@ func TestBash_InvalidTimeout_Negative(t *testing.T) {
 	})
 
 	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*types.CmdOutputObservation)
+	output, ok := obs.(*TerminalObservation)
 	if !ok {
-		t.Fatalf("expected *CmdOutputObservation, got %T", obs)
+		t.Fatalf("expected *TerminalObservation, got %T", obs)
 	}
-	if output.ExitCode != -1 {
-		t.Fatalf("expected exit code -1, got %d", output.ExitCode)
+	if output.ExitCodeValue() != -1 {
+		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
 	}
-	if !strings.Contains(output.Content, "timeout_secs out of range") {
-		t.Fatalf("expected error message to contain 'timeout_secs out of range', got %q", output.Content)
+	if !strings.Contains(output.OutputText(), "timeout_secs out of range") {
+		t.Fatalf("expected error message to contain 'timeout_secs out of range', got %q", output.OutputText())
 	}
 }
 
@@ -168,15 +167,15 @@ func TestBash_InvalidTimeout_TooLarge(t *testing.T) {
 	})
 
 	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*types.CmdOutputObservation)
+	output, ok := obs.(*TerminalObservation)
 	if !ok {
-		t.Fatalf("expected *CmdOutputObservation, got %T", obs)
+		t.Fatalf("expected *TerminalObservation, got %T", obs)
 	}
-	if output.ExitCode != -1 {
-		t.Fatalf("expected exit code -1, got %d", output.ExitCode)
+	if output.ExitCodeValue() != -1 {
+		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
 	}
-	if !strings.Contains(output.Content, "timeout_secs out of range") {
-		t.Fatalf("expected error message to contain 'timeout_secs out of range', got %q", output.Content)
+	if !strings.Contains(output.OutputText(), "timeout_secs out of range") {
+		t.Fatalf("expected error message to contain 'timeout_secs out of range', got %q", output.OutputText())
 	}
 }
 
@@ -195,15 +194,15 @@ func TestBash_TimeoutExceeded(t *testing.T) {
 	obs := tool.Execute(context.Background(), rawArgs)
 	elapsed := time.Since(start)
 
-	output, ok := obs.(*types.CmdOutputObservation)
+	output, ok := obs.(*TerminalObservation)
 	if !ok {
-		t.Fatalf("expected *CmdOutputObservation, got %T", obs)
+		t.Fatalf("expected *TerminalObservation, got %T", obs)
 	}
-	if output.ExitCode != -1 {
-		t.Fatalf("expected exit code -1, got %d", output.ExitCode)
+	if output.ExitCodeValue() != -1 {
+		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
 	}
-	if !strings.Contains(output.Content, "timed out") {
-		t.Fatalf("expected error message to contain 'timed out', got %q", output.Content)
+	if !strings.Contains(output.OutputText(), "timed out") {
+		t.Fatalf("expected error message to contain 'timed out', got %q", output.OutputText())
 	}
 	if elapsed < time.Second && elapsed > 2*time.Second {
 		t.Fatalf("expected elapsed time around 1s, got %v", elapsed)
@@ -223,15 +222,15 @@ func TestBash_NonexistentWorkingDir(t *testing.T) {
 	})
 
 	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*types.CmdOutputObservation)
+	output, ok := obs.(*TerminalObservation)
 	if !ok {
-		t.Fatalf("expected *CmdOutputObservation, got %T", obs)
+		t.Fatalf("expected *TerminalObservation, got %T", obs)
 	}
-	if output.ExitCode != -1 {
-		t.Fatalf("expected exit code -1, got %d", output.ExitCode)
+	if output.ExitCodeValue() != -1 {
+		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
 	}
-	if !strings.Contains(output.Content, "working_dir does not exist") {
-		t.Fatalf("expected error message to contain 'working_dir does not exist', got %q", output.Content)
+	if !strings.Contains(output.OutputText(), "working_dir does not exist") {
+		t.Fatalf("expected error message to contain 'working_dir does not exist', got %q", output.OutputText())
 	}
 }
 
@@ -254,15 +253,15 @@ func TestBash_CtxCancelled(t *testing.T) {
 	}()
 
 	obs := tool.Execute(ctx, rawArgs)
-	output, ok := obs.(*types.CmdOutputObservation)
+	output, ok := obs.(*TerminalObservation)
 	if !ok {
-		t.Fatalf("expected *CmdOutputObservation, got %T", obs)
+		t.Fatalf("expected *TerminalObservation, got %T", obs)
 	}
-	if output.ExitCode != -1 {
-		t.Fatalf("expected exit code -1, got %d", output.ExitCode)
+	if output.ExitCodeValue() != -1 {
+		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
 	}
-	if !strings.Contains(output.Content, "context cancelled") {
-		t.Fatalf("expected error message to contain 'context cancelled', got %q", output.Content)
+	if !strings.Contains(output.OutputText(), "context cancelled") {
+		t.Fatalf("expected error message to contain 'context cancelled', got %q", output.OutputText())
 	}
 }
 
@@ -278,19 +277,19 @@ func TestBash_OutputTruncation(t *testing.T) {
 	})
 
 	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*types.CmdOutputObservation)
+	output, ok := obs.(*TerminalObservation)
 	if !ok {
-		t.Fatalf("expected *CmdOutputObservation, got %T", obs)
+		t.Fatalf("expected *TerminalObservation, got %T", obs)
 	}
-	if output.ExitCode != 0 {
-		t.Fatalf("expected exit code 0, got %d", output.ExitCode)
+	if output.ExitCodeValue() != 0 {
+		t.Fatalf("expected exit code 0, got %d", output.ExitCodeValue())
 	}
 	maxSize := 1024 * 1024
-	if len(output.Content) > maxSize+len("[output truncated]") {
-		t.Fatalf("expected content length <= %d, got %d", maxSize+len("[output truncated]"), len(output.Content))
+	if len(output.OutputText()) > maxSize+len("[output truncated]") {
+		t.Fatalf("expected content length <= %d, got %d", maxSize+len("[output truncated]"), len(output.OutputText()))
 	}
-	if !strings.HasSuffix(output.Content, "[output truncated]") {
-		t.Fatalf("expected content to end with '[output truncated]', got %q", output.Content)
+	if !strings.HasSuffix(output.OutputText(), "[output truncated]") {
+		t.Fatalf("expected content to end with '[output truncated]', got %q", output.OutputText())
 	}
 }
 
@@ -310,7 +309,7 @@ func TestBash_ConcurrentExec(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	results := make([]*types.CmdOutputObservation, len(commands))
+	results := make([]*TerminalObservation, len(commands))
 	var mu sync.Mutex
 
 	for i, cmd := range commands {
@@ -325,9 +324,9 @@ func TestBash_ConcurrentExec(t *testing.T) {
 				Command: command,
 			})
 			obs := tool.Execute(context.Background(), rawArgs)
-			output, ok := obs.(*types.CmdOutputObservation)
+			output, ok := obs.(*TerminalObservation)
 			if !ok {
-				t.Errorf("expected *CmdOutputObservation, got %T", obs)
+				t.Errorf("expected *TerminalObservation, got %T", obs)
 				return
 			}
 			mu.Lock()
@@ -343,12 +342,12 @@ func TestBash_ConcurrentExec(t *testing.T) {
 			t.Errorf("result %d is nil", i)
 			continue
 		}
-		if output.ExitCode != 0 {
-			t.Errorf("result %d: expected exit code 0, got %d", i, output.ExitCode)
+		if output.ExitCodeValue() != 0 {
+			t.Errorf("result %d: expected exit code 0, got %d", i, output.ExitCodeValue())
 		}
-		expected := commands[i] + "\n"
-		if output.Content != expected {
-			t.Errorf("result %d: expected %q, got %q", i, expected, output.Content)
+		expected := strings.TrimPrefix(commands[i], "echo ") + "\n"
+		if output.OutputText() != expected {
+			t.Errorf("result %d: expected %q, got %q", i, expected, output.OutputText())
 		}
 	}
 }
@@ -376,15 +375,15 @@ func TestBash_ValidWorkingDir(t *testing.T) {
 	})
 
 	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*types.CmdOutputObservation)
+	output, ok := obs.(*TerminalObservation)
 	if !ok {
-		t.Fatalf("expected *CmdOutputObservation, got %T", obs)
+		t.Fatalf("expected *TerminalObservation, got %T", obs)
 	}
-	if output.ExitCode != 0 {
-		t.Fatalf("expected exit code 0, got %d, content: %q", output.ExitCode, output.Content)
+	if output.ExitCodeValue() != 0 {
+		t.Fatalf("expected exit code 0, got %d, content: %q", output.ExitCodeValue(), output.OutputText())
 	}
-	if !strings.Contains(output.Content, "/tmp") {
-		t.Fatalf("expected content to contain '/tmp', got %q", output.Content)
+	if !strings.Contains(output.OutputText(), "/tmp") {
+		t.Fatalf("expected content to contain '/tmp', got %q", output.OutputText())
 	}
 }
 
@@ -400,16 +399,16 @@ func TestBash_PipeCommand(t *testing.T) {
 	})
 
 	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*types.CmdOutputObservation)
+	output, ok := obs.(*TerminalObservation)
 	if !ok {
-		t.Fatalf("expected *CmdOutputObservation, got %T", obs)
+		t.Fatalf("expected *TerminalObservation, got %T", obs)
 	}
-	if output.ExitCode != 0 {
-		t.Fatalf("expected exit code 0, got %d", output.ExitCode)
+	if output.ExitCodeValue() != 0 {
+		t.Fatalf("expected exit code 0, got %d", output.ExitCodeValue())
 	}
 	expected := "HELLO WORLD\n"
-	if output.Content != expected {
-		t.Fatalf("expected %q, got %q", expected, output.Content)
+	if output.OutputText() != expected {
+		t.Fatalf("expected %q, got %q", expected, output.OutputText())
 	}
 }
 
@@ -425,14 +424,14 @@ func TestBash_CommandNotFound(t *testing.T) {
 	})
 
 	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*types.CmdOutputObservation)
+	output, ok := obs.(*TerminalObservation)
 	if !ok {
-		t.Fatalf("expected *CmdOutputObservation, got %T", obs)
+		t.Fatalf("expected *TerminalObservation, got %T", obs)
 	}
-	if output.ExitCode == 0 {
+	if output.ExitCodeValue() == 0 {
 		t.Fatalf("expected non-zero exit code, got 0")
 	}
-	if !strings.Contains(output.Content, "未找到") && !strings.Contains(output.Content, "not found") && !strings.Contains(output.Content, "executable file not found") {
-		t.Fatalf("expected error about command not found, got %q", output.Content)
+	if !strings.Contains(output.OutputText(), "未找到") && !strings.Contains(output.OutputText(), "not found") && !strings.Contains(output.OutputText(), "executable file not found") {
+		t.Fatalf("expected error about command not found, got %q", output.OutputText())
 	}
 }

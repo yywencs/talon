@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"strings"
 
+	toolpkg "github.com/wen/opentalon/internal/tool"
 	"github.com/wen/opentalon/internal/types"
 )
 
@@ -50,16 +51,27 @@ func (b *PromptBuilder) BuildMessages(state *types.State, systemPrompt string, u
 				Role:    roleForSource(e.GetBase().Source),
 				Content: content,
 			})
-		case *types.CmdOutputObservation:
-			messages = append(messages, ChatMessage{
-				Role: "user",
-				Content: fmt.Sprintf(
-					"Command result for action %d (exit_code=%d):\n%s",
-					e.GetBase().Cause,
-					e.ExitCode,
-					e.Content,
-				),
-			})
+		case *types.ObservationEvent:
+			if cmdObs, ok := e.Observation.(*toolpkg.TerminalObservation); ok {
+				messages = append(messages, ChatMessage{
+					Role: "user",
+					Content: fmt.Sprintf(
+						"Command result for action %s (exit_code=%d):\n%s",
+						e.ActionID,
+						cmdObs.ExitCodeValue(),
+						cmdObs.OutputText(),
+					),
+				})
+				break
+			}
+
+			text := types.FlattenTextContent(e.Observation.GetContent())
+			if text != "" {
+				messages = append(messages, ChatMessage{
+					Role:    "user",
+					Content: text,
+				})
+			}
 		case *types.FinishAction:
 			messages = append(messages, ChatMessage{
 				Role:    "assistant",
