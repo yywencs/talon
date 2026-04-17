@@ -39,7 +39,7 @@ func Load() {
 		fmt.Printf("Warning: failed to load .env file %s: %v", envPath, err)
 	}
 
-	logDir := getEnv("LOG_DIR", "./logs")
+	logDir := getEnv("LOG_DIR", filepath.Join(workspaceRoot, "./logs"))
 
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		fmt.Printf("Warning: failed to create log directory %s: %v", logDir, err)

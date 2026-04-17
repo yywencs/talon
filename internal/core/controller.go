@@ -2,9 +2,9 @@ package core
 
 import (
 	"context"
-	"strconv"
 
 	"github.com/wen/opentalon/internal/agent"
+	toolpkg "github.com/wen/opentalon/internal/tool"
 	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/logger"
 )
@@ -33,8 +33,10 @@ func NewController(bus *EventBus, agent agent.Agent, state *types.State) *Contro
 // 顺序：处理事件副作用 → 判断是否推进 agent。
 func (c *Controller) OnEvent(evt types.Event) {
 	switch e := evt.(type) {
+	case *types.ActionEvent:
+		c.handleActionEvent(e)
 	case types.Action:
-		c.handleAction(e)
+		c.handleDirectAction(e)
 	case *types.ObservationEvent:
 		c.handleObservation(e)
 	}
@@ -42,9 +44,9 @@ func (c *Controller) OnEvent(evt types.Event) {
 	logger.Debug("当前状态为",
 		"evtKind", evt.Kind(),
 		"evtType", evt.Name(),
-		"evtID", evt.GetBase().ID,
+		"evtID", evt.GetID(),
 		"state", c.state.AgentState,
-		"source", evt.GetBase().Source)
+		"source", evt.GetSource())
 
 	c.state.History = c.bus.History()
 
@@ -78,14 +80,28 @@ func (c *Controller) step() {
 		return
 	}
 
-	action.GetBase().Source = types.SourceAgent
-	c.bus.Publish(action)
+	if eventAction, ok := action.(interface {
+		types.Event
+		GetBase() *types.BaseEvent
+	}); ok {
+		eventAction.GetBase().Source = types.SourceAgent
+		c.bus.Publish(eventAction)
+		return
+	}
+
+	c.bus.Publish(&types.ActionEvent{
+		BaseEvent: types.BaseEvent{
+			Source: types.SourceAgent,
+		},
+		ActionType: action.ActionType(),
+		Action:     action,
+	})
 }
 
 // handleAction 根据 action 类型驱动状态机。
 // 关键语义：Source 决定这条消息是"用户说的"还是"agent 说的"，
 // 两者在状态转换中承担完全不同的角色。
-func (c *Controller) handleAction(action types.Action) {
+func (c *Controller) handleDirectAction(action types.Action) {
 	switch a := action.(type) {
 	case *types.MessageAction:
 		if a.GetBase().Source == types.SourceUser {
@@ -99,9 +115,18 @@ func (c *Controller) handleAction(action types.Action) {
 			logger.Info("✅ 任务完成", "result", a.Result)
 		}
 		c.handleFinishAction(a)
-	case *types.CmdRunAction:
-		logger.Info("⚡ Agent执行命令", "command", a.Command, "thought", a.Thought)
-		c.handleCmdRunAction(a)
+	}
+}
+
+func (c *Controller) handleActionEvent(evt *types.ActionEvent) {
+	if evt == nil || evt.Action == nil {
+		return
+	}
+
+	switch a := evt.Action.(type) {
+	case *toolpkg.TerminalAction:
+		logger.Info("⚡ Agent执行命令", "command", a.Command)
+		c.handleTerminalAction(evt)
 	}
 }
 
@@ -146,7 +171,7 @@ func (c *Controller) handleObservation(evt *types.ObservationEvent) {
 		return
 	}
 
-	if evt.ActionID == strconv.FormatInt(c.state.PendingAction.GetBase().ID, 10) {
+	if evt.ActionID == c.state.PendingAction.GetID() {
 		content := truncate(types.FlattenTextContent(evt.Observation.GetContent()), 100)
 		logger.Info("📋 命令执行结果", "content", content)
 		c.state.PendingAction = nil
@@ -168,9 +193,9 @@ func (c *Controller) setAgentStateTo(newState types.AgentState) {
 }
 
 // handleCmdRunAction 处理命令执行动作
-func (c *Controller) handleCmdRunAction(action *types.CmdRunAction) {
-	if action.GetBase().Source == types.SourceAgent {
-		c.state.PendingAction = action
+func (c *Controller) handleTerminalAction(evt *types.ActionEvent) {
+	if evt.GetBase().Source == types.SourceAgent {
+		c.state.PendingAction = evt
 	}
 }
 

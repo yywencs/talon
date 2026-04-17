@@ -1,6 +1,7 @@
 package core
 
 import (
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -8,6 +9,10 @@ import (
 	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/logger"
 )
+
+type baseEventHolder interface {
+	GetBase() *types.BaseEvent
+}
 
 // Handler 是事件总线的订阅回调，收到事件时由总线调用。
 type Handler func(types.Event)
@@ -44,14 +49,24 @@ func (b *EventBus) Subscribe(h Handler) {
 // Publish 将事件发送到 channel 队列，立即返回。
 // ID 分配策略：从 1 开始递增，遇到已有 ID（外部预分配）则跳过。
 func (b *EventBus) Publish(e types.Event) {
-	base := e.GetBase()
+	holder, ok := e.(baseEventHolder)
+	if !ok {
+		b.eventCh <- e
+		return
+	}
 
-	if base.ID == 0 {
-		base.ID = b.nextID.Add(1)
+	base := holder.GetBase()
+
+	if base.ID == "" {
+		base.ID = strconv.FormatInt(b.nextID.Add(1), 10)
 	}
 
 	if base.Timestamp.IsZero() {
 		base.Timestamp = time.Now()
+	}
+
+	if actionEvent, ok := e.(*types.ActionEvent); ok && actionEvent.ActionID == "" {
+		actionEvent.ActionID = base.ID
 	}
 
 	b.eventCh <- e
@@ -72,8 +87,8 @@ func (b *EventBus) Start() {
 
 				logger.Debug("发布新事件",
 					"evtKind", e.Kind(),
-					"evtID", e.GetBase().ID,
-					"source", e.GetBase().Source)
+					"evtID", e.GetID(),
+					"source", e.GetSource())
 
 				for _, h := range b.handlers {
 					go h(e)

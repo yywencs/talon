@@ -15,13 +15,14 @@ func TestPromptBuilderBuildMessages(t *testing.T) {
 				BaseEvent: types.BaseEvent{Source: types.SourceUser},
 				Content:   "请看看目录",
 			},
-			&types.CmdRunAction{
-				BaseEvent: types.BaseEvent{Source: types.SourceAgent},
-				Command:   "ls -la",
-				Thought:   "先看文件结构",
+			&types.ActionEvent{
+				BaseEvent:  types.BaseEvent{Source: types.SourceAgent},
+				ActionID:   "2",
+				ActionType: types.ActionRun,
+				Action:     &toolpkg.TerminalAction{Command: "ls -la"},
 			},
 			&types.ObservationEvent{
-				BaseEvent:   types.BaseEvent{Source: types.SourceEnvironment, Cause: 2},
+				BaseEvent:   types.BaseEvent{Source: types.SourceEnvironment},
 				ActionID:    "2",
 				ToolName:    "bash",
 				Observation: toolpkg.NewTerminalObservation("ls -la", "", nil, false, 0, "file-a\nfile-b"),
@@ -32,13 +33,13 @@ func TestPromptBuilderBuildMessages(t *testing.T) {
 	if len(messages) != 5 {
 		t.Fatalf("expected 5 messages, got %d", len(messages))
 	}
-	if messages[0].Role != "system" || messages[0].Content != "system prompt" {
+	if messages[0].Role != "system" || types.FlattenTextContent(messages[0].Content) != "system prompt" {
 		t.Fatalf("unexpected system message: %+v", messages[0])
 	}
-	if messages[1].Role != "user" || messages[1].Content != "user example prompt" {
+	if messages[1].Role != "user" || types.FlattenTextContent(messages[1].Content) != "user example prompt" {
 		t.Fatalf("unexpected user example message: %+v", messages[1])
 	}
-	if messages[2].Role != "user" || messages[2].Content != "请看看目录" {
+	if messages[2].Role != "user" || types.FlattenTextContent(messages[2].Content) != "请看看目录" {
 		t.Fatalf("unexpected user message: %+v", messages[2])
 	}
 	if messages[3].Role != "assistant" {
@@ -46,14 +47,5 @@ func TestPromptBuilderBuildMessages(t *testing.T) {
 	}
 	if messages[4].Role != "user" {
 		t.Fatalf("expected user role for observation, got %q", messages[4].Role)
-	}
-	if messages[0].CacheControl["type"] != "ephemeral" {
-		t.Fatalf("expected system message to be cacheable, got %+v", messages[0].CacheControl)
-	}
-	if messages[1].CacheControl["type"] != "ephemeral" {
-		t.Fatalf("expected example message to be cacheable, got %+v", messages[1].CacheControl)
-	}
-	if messages[4].CacheControl["type"] != "ephemeral" {
-		t.Fatalf("expected latest message to be cacheable, got %+v", messages[4].CacheControl)
 	}
 }

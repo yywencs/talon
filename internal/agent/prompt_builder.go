@@ -23,67 +23,83 @@ func NewPromptBuilder() *PromptBuilder {
 	return &PromptBuilder{}
 }
 
-func (b *PromptBuilder) BuildMessages(state *types.State, systemPrompt string, userPromptExamples string) []ChatMessage {
-	messages := []ChatMessage{
-		{Role: "system", Content: systemPrompt},
+func (b *PromptBuilder) BuildMessages(state *types.State, systemPrompt string, userPromptExamples string) []types.Message {
+	return b.BuildPromptMessages(state, systemPrompt, userPromptExamples)
+}
+
+func (b *PromptBuilder) BuildPromptMessages(state *types.State, systemPrompt string, userPromptExamples string) []types.Message {
+	messages := []types.Message{
+		{
+			Role: types.RoleSystem,
+			Content: []types.Content{
+				types.TextContent{Text: systemPrompt},
+			},
+		},
 	}
 
 	if userPromptExamples != "" {
-		messages = append(messages, ChatMessage{
-			Role:    "user",
-			Content: userPromptExamples,
+		messages = append(messages, types.Message{
+			Role: types.RoleUser,
+			Content: []types.Content{
+				types.TextContent{Text: userPromptExamples},
+			},
 		})
 	}
 
 	for _, evt := range state.History {
 		switch e := evt.(type) {
 		case *types.MessageAction:
-			messages = append(messages, ChatMessage{
-				Role:    roleForSource(e.GetBase().Source),
-				Content: e.Content,
+			messages = append(messages, types.Message{
+				Role: roleForSourceMessage(e.GetSource()),
+				Content: []types.Content{
+					types.TextContent{Text: e.Content},
+				},
 			})
-		case *types.CmdRunAction:
-			content := fmt.Sprintf("Run command: %s", e.Command)
-			if e.Thought != "" {
-				content = fmt.Sprintf("%s\nReason: %s", content, e.Thought)
+		case *types.ActionEvent:
+			terminalAction, ok := e.Action.(*toolpkg.TerminalAction)
+			if !ok {
+				break
 			}
-			messages = append(messages, ChatMessage{
-				Role:    roleForSource(e.GetBase().Source),
-				Content: content,
+			messages = append(messages, types.Message{
+				Role: roleForSourceMessage(e.GetSource()),
+				Content: []types.Content{
+					types.TextContent{Text: fmt.Sprintf("Run command: %s", terminalAction.Command)},
+				},
 			})
 		case *types.ObservationEvent:
 			if cmdObs, ok := e.Observation.(*toolpkg.TerminalObservation); ok {
-				messages = append(messages, ChatMessage{
-					Role: "user",
-					Content: fmt.Sprintf(
-						"Command result for action %s (exit_code=%d):\n%s",
-						e.ActionID,
-						cmdObs.ExitCodeValue(),
-						cmdObs.OutputText(),
-					),
+				messages = append(messages, types.Message{
+					Role: types.RoleUser,
+					Content: []types.Content{
+						types.TextContent{
+							Text: fmt.Sprintf(
+								"Command result for action %s (exit_code=%d):\n%s",
+								e.ActionID,
+								cmdObs.ExitCodeValue(),
+								cmdObs.OutputText(),
+							),
+						},
+					},
 				})
 				break
 			}
 
 			text := types.FlattenTextContent(e.Observation.GetContent())
 			if text != "" {
-				messages = append(messages, ChatMessage{
-					Role:    "user",
-					Content: text,
+				messages = append(messages, types.Message{
+					Role: types.RoleUser,
+					Content: []types.Content{
+						types.TextContent{Text: text},
+					},
 				})
 			}
 		case *types.FinishAction:
-			messages = append(messages, ChatMessage{
-				Role:    "assistant",
-				Content: "Finished task: " + e.Result,
+			messages = append(messages, types.Message{
+				Role: types.RoleAssistant,
+				Content: []types.Content{
+					types.TextContent{Text: "Finished task: " + e.Result},
+				},
 			})
-		default:
-			if msg := strings.TrimSpace(evt.GetBase().Message); msg != "" {
-				messages = append(messages, ChatMessage{
-					Role:    roleForSource(evt.GetBase().Source),
-					Content: msg,
-				})
-			}
 		}
 	}
 
@@ -98,19 +114,34 @@ const (
 
 // applyEphemeralCacheControls 为稳定前缀和滚动上下文打缓存标记，
 // 兼顾更高命中率与 provider 单次最多 4 个标记、单标记最多回溯 20 个内容块的限制。
-func applyEphemeralCacheControls(messages []ChatMessage, hasExamples bool) {
+func applyEphemeralCacheControls(messages []types.Message, hasExamples bool) {
 	markerCount := 0
 
 	addMarker := func(idx int) {
 		if idx < 0 || idx >= len(messages) || markerCount >= maxExplicitCacheMarkers {
 			return
 		}
-		if messages[idx].CacheControl != nil {
+		if len(messages[idx].Content) == 0 {
 			return
 		}
-
-		messages[idx].CacheControl = map[string]string{
-			"type": "ephemeral",
+		if hasCachePrompt(messages[idx].Content) {
+			return
+		}
+		switch content := messages[idx].Content[len(messages[idx].Content)-1].(type) {
+		case types.TextContent:
+			content.CachePrompt = true
+			messages[idx].Content[len(messages[idx].Content)-1] = content
+		case *types.TextContent:
+			if content != nil {
+				content.CachePrompt = true
+			}
+		case types.ImageContent:
+			content.CachePrompt = true
+			messages[idx].Content[len(messages[idx].Content)-1] = content
+		case *types.ImageContent:
+			if content != nil {
+				content.CachePrompt = true
+			}
 		}
 		markerCount++
 	}
@@ -129,4 +160,35 @@ func roleForSource(source types.EventSource) string {
 		return "user"
 	}
 	return "assistant"
+}
+
+func roleForSourceMessage(source types.EventSource) types.MessageRole {
+	if source == types.SourceUser {
+		return types.RoleUser
+	}
+	return types.RoleAssistant
+}
+
+func hasCachePrompt(contents []types.Content) bool {
+	for _, content := range contents {
+		switch c := content.(type) {
+		case types.TextContent:
+			if c.CachePrompt {
+				return true
+			}
+		case *types.TextContent:
+			if c != nil && c.CachePrompt {
+				return true
+			}
+		case types.ImageContent:
+			if c.CachePrompt {
+				return true
+			}
+		case *types.ImageContent:
+			if c != nil && c.CachePrompt {
+				return true
+			}
+		}
+	}
+	return false
 }

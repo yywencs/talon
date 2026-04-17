@@ -17,53 +17,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/config"
 )
 
-// ChatMessage 表示对话中的一条消息，包含角色和内容。
-// Role 支持 "user" / "assistant" / "system" 等标准角色。
-type ChatMessage struct {
-	Role         string            `json:"role"`
-	Content      string            `json:"-"`
-	CacheControl map[string]string `json:"-"`
-}
-
-type chatMessageTextBlock struct {
-	Type         string            `json:"type"`
-	Text         string            `json:"text"`
-	CacheControl map[string]string `json:"cache_control,omitempty"`
-}
-
-func (m ChatMessage) MarshalJSON() ([]byte, error) {
-	type wireMessage struct {
-		Role    string `json:"role"`
-		Content any    `json:"content,omitempty"`
-	}
-
-	wire := wireMessage{
-		Role: m.Role,
-	}
-
-	if len(m.CacheControl) > 0 {
-		wire.Content = []chatMessageTextBlock{
-			{
-				Type:         "text",
-				Text:         m.Content,
-				CacheControl: m.CacheControl,
-			},
-		}
-	} else {
-		wire.Content = m.Content
-	}
-
-	return json.Marshal(wire)
-}
-
 // ChatRequest 是发给 LLM 的请求结构，Model/Messages 为必填字段，
-// Schema 用于声明输出 JSON schema（部分 provider 支持），Temperature 控制随机性。
+// Temperature 控制随机性。
 type ChatRequest struct {
 	Model       string
-	Messages    []ChatMessage
+	Messages    []types.Message
 	Temperature float64
 	Stream      bool
 }
@@ -77,8 +39,6 @@ type ChatResponse struct {
 }
 
 // LLMClient 接口抽象了所有 LLM provider 的 chat 能力。
-// 之所以用接口而不是直接分支，是因为 agent 需要在运行时按配置切换具体实现，
-// 而不想在 agent.Step() 里写 if-else 判断要走哪条路。
 type LLMClient interface {
 	Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
 	StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) error
@@ -183,7 +143,7 @@ func newOllamaClient(endpoint string) *ollamaClient {
 // ollamaWireRequest 是发给 Ollama 的 wire 协议请求。
 type ollamaWireRequest struct {
 	Model    string         `json:"model"`
-	Messages []ChatMessage  `json:"messages"`
+	Messages []any          `json:"messages"`
 	Stream   bool           `json:"stream"`
 	Options  map[string]any `json:"options,omitempty"`
 }
@@ -198,11 +158,27 @@ type ollamaWireResponse struct {
 	EvalCount       int `json:"eval_count"`
 }
 
+func toOllamaMessages(messages []types.Message) []any {
+	out := make([]any, 0, len(messages))
+	for _, msg := range messages {
+		content := types.FlattenTextContent(msg.Content)
+		if msg.ToolCalls != nil && len(msg.ToolCalls) > 0 {
+			content = ""
+		}
+		m := map[string]any{
+			"role":    string(msg.Role),
+			"content": content,
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
 // Chat 向 Ollama 发起 chat 请求。
 func (c *ollamaClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
 	wireReq := ollamaWireRequest{
 		Model:    req.Model,
-		Messages: stripCacheControl(req.Messages),
+		Messages: toOllamaMessages(stripCacheControl(req.Messages)),
 		Stream:   req.Stream,
 		Options: map[string]any{
 			"temperature": req.Temperature,
@@ -224,7 +200,7 @@ func (c *ollamaClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 func (c *ollamaClient) StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) error {
 	wireReq := ollamaWireRequest{
 		Model:    req.Model,
-		Messages: stripCacheControl(req.Messages),
+		Messages: toOllamaMessages(stripCacheControl(req.Messages)),
 		Stream:   true,
 		Options: map[string]any{
 			"temperature": req.Temperature,
@@ -321,11 +297,11 @@ func newOpenAIClient(endpoint, apiKey string) *openAICompatibleClient {
 
 // openAIWireRequest 是发给 OpenAI-compatible 接口的 wire 协议请求。
 type openAIWireRequest struct {
-	Model          string         `json:"model"`
-	Messages       []ChatMessage  `json:"messages"`
-	Temperature    float64        `json:"temperature,omitempty"`
-	ResponseFormat map[string]any `json:"response_format,omitempty"`
-	Stream         bool           `json:"stream"`
+	Model          string          `json:"model"`
+	Messages       []types.Message `json:"messages"`
+	Temperature    float64         `json:"temperature,omitempty"`
+	ResponseFormat map[string]any  `json:"response_format,omitempty"`
+	Stream         bool            `json:"stream"`
 }
 
 // openAIWireResponse 是 OpenAI-compatible 接口返回的 wire 协议响应。
@@ -563,7 +539,7 @@ func parseRetryAfter(header http.Header) time.Duration {
 	}
 
 	if t, err := time.Parse(http.TimeFormat, v); err == nil {
-		wait := t.Sub(time.Now())
+		wait := time.Until(t)
 		if wait > 0 {
 			return wait
 		}
@@ -602,15 +578,48 @@ func resolveOpenAIEndpoint(endpoint string) string {
 	return endpoint + "/chat/completions"
 }
 
-func stripCacheControl(messages []ChatMessage) []ChatMessage {
+func stripCacheControl(messages []types.Message) []types.Message {
 	if len(messages) == 0 {
 		return nil
 	}
-
-	sanitized := make([]ChatMessage, len(messages))
+	sanitized := make([]types.Message, len(messages))
 	copy(sanitized, messages)
 	for i := range sanitized {
-		sanitized[i].CacheControl = nil
+		if len(sanitized[i].Content) == 0 {
+			continue
+		}
+		sanitized[i].Content = cloneContentWithoutCache(sanitized[i].Content)
 	}
 	return sanitized
+}
+
+func cloneContentWithoutCache(contents []types.Content) []types.Content {
+	cloned := make([]types.Content, 0, len(contents))
+	for _, content := range contents {
+		switch c := content.(type) {
+		case types.TextContent:
+			c.CachePrompt = false
+			cloned = append(cloned, c)
+		case *types.TextContent:
+			if c == nil {
+				continue
+			}
+			dup := *c
+			dup.CachePrompt = false
+			cloned = append(cloned, dup)
+		case types.ImageContent:
+			c.CachePrompt = false
+			cloned = append(cloned, c)
+		case *types.ImageContent:
+			if c == nil {
+				continue
+			}
+			dup := *c
+			dup.CachePrompt = false
+			cloned = append(cloned, dup)
+		default:
+			cloned = append(cloned, content)
+		}
+	}
+	return cloned
 }

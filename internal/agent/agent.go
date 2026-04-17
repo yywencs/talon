@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 
+	toolpkg "github.com/wen/opentalon/internal/tool"
 	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/config"
 	"github.com/wen/opentalon/pkg/prompts"
@@ -56,11 +57,6 @@ func stepWithLLM(ctx context.Context, client LLMClient, promptBld *PromptBuilder
 	if action == nil {
 		return nil, fmt.Errorf("模型未输出有效动作")
 	}
-
-	action.GetBase().LLMMetrics = &types.Metrics{
-		PromptTokens:     resp.PromptTokens,
-		CompletionTokens: resp.CompletionTokens,
-	}
 	return action, nil
 }
 
@@ -72,15 +68,15 @@ func responseToAction(resp *ChatResponse) types.Action {
 	}
 
 	if bash := extractTag(content, "execute_bash"); bash != "" {
-		return &types.CmdRunAction{Command: strings.TrimSpace(bash)}
+		return &toolpkg.TerminalAction{Command: strings.TrimSpace(bash)}
 	}
 
 	if python := extractTag(content, "execute_ipython"); python != "" {
-		return &types.CmdRunAction{Command: "python3 -c " + strings.TrimSpace(python)}
+		return &toolpkg.TerminalAction{Command: "python3 -c " + strings.TrimSpace(python)}
 	}
 
 	if browse := extractTag(content, "execute_browse"); browse != "" {
-		return &types.CmdRunAction{Command: "echo 'browse: " + strings.TrimSpace(browse) + "'"}
+		return &toolpkg.TerminalAction{Command: "echo 'browse: " + strings.TrimSpace(browse) + "'"}
 	}
 
 	if content != "" {

@@ -19,6 +19,18 @@ type CmdOutputMetadata struct {
 	WorkingDir string `json:"working_dir,omitempty"`
 }
 
+// TerminalAction 对应大模型发出的终端操作指令。
+type TerminalAction struct {
+	Command string   `json:"command"`
+	IsInput bool     `json:"is_input,omitempty"`
+	Timeout *float64 `json:"timeout,omitempty"`
+	Reset   bool     `json:"reset,omitempty"`
+}
+
+func (a *TerminalAction) ActionType() types.ActionType {
+	return types.ActionRun
+}
+
 type TerminalObservation struct {
 	types.BaseObservation
 	Command           *string           `json:"command,omitempty"`
@@ -226,8 +238,7 @@ func NewTerminalObservation(command, workingDir string, pid *int, timeout bool, 
 			},
 			Content: []types.Content{
 				types.TextContent{
-					DataType: types.ContentTypeText,
-					Text:     output,
+					Text: output,
 				},
 			},
 			ErrorStatus: timeout || exitCode != 0,

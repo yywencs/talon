@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -33,13 +32,17 @@ func NewLocalRuntime(bus *EventBus) Runtime {
 	return rt
 }
 
-// onEvent 是 EventBus 的订阅回调，只处理 CmdRunAction，其他类型直接忽略。
-// CmdRunAction 被执行后，结果通过 bus.Publish() 广播。
+// onEvent 是 EventBus 的订阅回调，只处理 TerminalAction，其他类型直接忽略。
+// TerminalAction 被执行后，结果通过 bus.Publish() 广播。
 //
 // 注意：执行结果再次进入 bus，所以 Controller.OnEvent() 也会再次被调用。
 // 这形成了完整闭环：agent action -> runtime 执行 -> observation -> controller 收到 -> 下一轮 step
 func (rt *LocalRuntime) onEvent(evt types.Event) {
-	action, ok := evt.(*types.CmdRunAction)
+	actionEvent, ok := evt.(*types.ActionEvent)
+	if !ok {
+		return
+	}
+	action, ok := actionEvent.Action.(*toolpkg.TerminalAction)
 	if !ok {
 		return
 	}
@@ -49,9 +52,8 @@ func (rt *LocalRuntime) onEvent(evt types.Event) {
 		rt.bus.Publish(&types.ObservationEvent{
 			BaseEvent: types.BaseEvent{
 				Source: types.SourceEnvironment,
-				Cause:  action.GetBase().ID,
 			},
-			ActionID:    strconv.FormatInt(action.GetBase().ID, 10),
+			ActionID:    actionEvent.GetID(),
 			ToolName:    "bash",
 			Observation: obs,
 		})
@@ -63,7 +65,7 @@ func (rt *LocalRuntime) onEvent(evt types.Event) {
 // 命令错误（不存在）和非零退出码都被归入终端观察结果，不会上报到 Controller。
 // 超时使用 action.GetBase().Timeout，如果为 0 则不设超时。
 func (rt *LocalRuntime) Execute(action types.Action) types.Observation {
-	cmdRun, ok := action.(*types.CmdRunAction)
+	cmdRun, ok := action.(*toolpkg.TerminalAction)
 	if !ok {
 		return toolpkg.NewTerminalObservation("unsupported action type", "", nil, false, -1, "unsupported action type")
 	}
@@ -71,7 +73,10 @@ func (rt *LocalRuntime) Execute(action types.Action) types.Observation {
 	cmd := exec.Command("sh", "-c", cmdRun.Command)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	timeout := cmdRun.GetBase().Timeout
+	timeout := 2 * time.Minute
+	if cmdRun.Timeout != nil {
+		timeout = time.Duration(*cmdRun.Timeout * float64(time.Second))
+	}
 	if timeout == 0 {
 		timeout = 2 * time.Minute
 	}

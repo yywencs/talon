@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/config"
 )
 
@@ -29,8 +30,8 @@ func TestOllamaStreamChat(t *testing.T) {
 
 	req := ChatRequest{
 		Model: cfg.LLM.Model,
-		Messages: []ChatMessage{
-			{Role: "user", Content: "请用一句话介绍 Go 语言的特色"},
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.Content{types.TextContent{Text: "请用一句话介绍 Go 语言的特色"}}},
 		},
 		Temperature: 0.7,
 	}
@@ -73,8 +74,8 @@ func TestOpenAICompatibleStreamChat(t *testing.T) {
 
 	req := ChatRequest{
 		Model: cfg.LLM.Model,
-		Messages: []ChatMessage{
-			{Role: "user", Content: "请用一句话介绍 Go 语言的特色"},
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.Content{types.TextContent{Text: "请用一句话介绍 Go 语言的特色"}}},
 		},
 		Temperature: 0.7,
 	}
@@ -114,8 +115,8 @@ func TestOllamaChat(t *testing.T) {
 
 	req := ChatRequest{
 		Model: cfg.LLM.Model,
-		Messages: []ChatMessage{
-			{Role: "user", Content: "1+1等于几？"},
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.Content{types.TextContent{Text: "1+1等于几？"}}},
 		},
 		Temperature: 0,
 	}
@@ -151,8 +152,8 @@ func TestOpenAICompatibleChat(t *testing.T) {
 
 	req := ChatRequest{
 		Model: cfg.LLM.Model,
-		Messages: []ChatMessage{
-			{Role: "user", Content: "1+1等于几？"},
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.Content{types.TextContent{Text: "1+1等于几？"}}},
 		},
 		Temperature: 0,
 	}
@@ -190,42 +191,45 @@ func TestNewLLMClientFactory(t *testing.T) {
 }
 
 func TestStripCacheControl(t *testing.T) {
-	messages := []ChatMessage{
+	messages := []types.Message{
 		{
-			Role:    "system",
-			Content: "system prompt",
-			CacheControl: map[string]string{
-				"type": "ephemeral",
+			Role: types.RoleSystem,
+			Content: []types.Content{
+				types.TextContent{Text: "system prompt", BaseContent: types.BaseContent{CachePrompt: true}},
 			},
 		},
 		{
-			Role:    "user",
-			Content: "hello",
+			Role: types.RoleUser,
+			Content: []types.Content{
+				types.TextContent{Text: "hello"},
+			},
 		},
 	}
 
 	sanitized := stripCacheControl(messages)
 
-	if sanitized[0].CacheControl != nil {
-		t.Fatalf("expected cache_control to be stripped, got %+v", sanitized[0].CacheControl)
+	if len(sanitized[0].Content) == 0 {
+		t.Fatal("expected content to remain")
 	}
-	if messages[0].CacheControl == nil {
+	if tc, ok := sanitized[0].Content[0].(types.TextContent); !ok || tc.CachePrompt {
+		t.Fatalf("expected cache_prompt to be stripped, got %+v", sanitized[0].Content[0])
+	}
+	if tc, ok := messages[0].Content[0].(types.TextContent); !ok || !tc.CachePrompt {
 		t.Fatal("stripCacheControl should not mutate original messages")
 	}
 }
 
 func TestChatMessageMarshalJSONWithCacheControl(t *testing.T) {
-	msg := ChatMessage{
-		Role:    "system",
-		Content: "system prompt",
-		CacheControl: map[string]string{
-			"type": "ephemeral",
+	msg := types.Message{
+		Role: types.RoleSystem,
+		Content: []types.Content{
+			types.TextContent{Text: "system prompt", BaseContent: types.BaseContent{CachePrompt: true}},
 		},
 	}
 
 	data, err := json.Marshal(msg)
 	if err != nil {
-		t.Fatalf("marshal chat message failed: %v", err)
+		t.Fatalf("marshal message failed: %v", err)
 	}
 
 	var payload map[string]any

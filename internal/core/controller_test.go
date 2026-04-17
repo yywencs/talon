@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"strconv"
 	"testing"
 	"time"
 
@@ -31,8 +30,8 @@ func TestControllerStepsAgainAfterObservation(t *testing.T) {
 	defer bus.Stop()
 	agent := &stubAgent{
 		actions: []types.Action{
-			&types.CmdRunAction{Command: "first"},
-			&types.CmdRunAction{Command: "second"},
+			&toolpkg.TerminalAction{Command: "first"},
+			&toolpkg.TerminalAction{Command: "second"},
 		},
 	}
 	state := &types.State{AgentState: types.StateLoading}
@@ -44,8 +43,12 @@ func TestControllerStepsAgainAfterObservation(t *testing.T) {
 
 	bus.Subscribe(controller.OnEvent)
 	bus.Subscribe(func(evt types.Event) {
-		action, ok := evt.(*types.CmdRunAction)
-		if !ok || action.GetBase().Source != types.SourceAgent {
+		actionEvent, ok := evt.(*types.ActionEvent)
+		if !ok || actionEvent.GetSource() != types.SourceAgent {
+			return
+		}
+		action, ok := actionEvent.Action.(*toolpkg.TerminalAction)
+		if !ok {
 			return
 		}
 		if action.Command != "first" {
@@ -53,16 +56,14 @@ func TestControllerStepsAgainAfterObservation(t *testing.T) {
 		}
 
 		waitFor(t, func() bool {
-			pending, ok := state.PendingAction.(*types.CmdRunAction)
-			return ok && pending.GetBase().ID == action.GetBase().ID
+			return state.PendingAction != nil && state.PendingAction.GetID() == actionEvent.GetID()
 		})
 
 		bus.Publish(&types.ObservationEvent{
 			BaseEvent: types.BaseEvent{
 				Source: types.SourceEnvironment,
-				Cause:  action.GetBase().ID,
 			},
-			ActionID:    strconv.FormatInt(action.GetBase().ID, 10),
+			ActionID:    actionEvent.GetID(),
 			ToolName:    "bash",
 			Observation: toolpkg.NewTerminalObservation("first", "", nil, false, 0, "ok"),
 		})
@@ -77,7 +78,10 @@ func TestControllerStepsAgainAfterObservation(t *testing.T) {
 		if agent.calls != 2 {
 			return false
 		}
-		pending, ok := state.PendingAction.(*types.CmdRunAction)
+		if state.PendingAction == nil {
+			return false
+		}
+		pending, ok := state.PendingAction.Action.(*toolpkg.TerminalAction)
 		return ok && pending.Command == "second"
 	})
 
@@ -88,7 +92,7 @@ func TestControllerStepsAgainAfterObservation(t *testing.T) {
 		t.Fatalf("expected agent state to be running, got %s", state.AgentState)
 	}
 
-	pending, ok := state.PendingAction.(*types.CmdRunAction)
+	pending, ok := state.PendingAction.Action.(*toolpkg.TerminalAction)
 	if !ok {
 		t.Fatalf("expected pending action to be a command action, got %T", state.PendingAction)
 	}
@@ -107,17 +111,21 @@ func TestControllerStepsAgainAfterObservation(t *testing.T) {
 	for _, evt := range state.History {
 		switch e := evt.(type) {
 		case *types.MessageAction:
-			if e.GetBase().Source == types.SourceUser && e.Content == "task" {
+			if e.GetSource() == types.SourceUser && e.Content == "task" {
 				hasUserMessage = true
 			}
-		case *types.CmdRunAction:
-			if e.Command == "first" {
+		case *types.ActionEvent:
+			terminalAction, ok := e.Action.(*toolpkg.TerminalAction)
+			if !ok {
+				continue
+			}
+			if terminalAction.Command == "first" {
 				hasFirstAction = true
-				if e.GetBase().ID == 0 {
+				if e.GetID() == "" {
 					t.Fatal("expected published agent action to have a generated id")
 				}
 			}
-			if e.Command == "second" {
+			if terminalAction.Command == "second" {
 				hasSecondAction = true
 			}
 		case *types.ObservationEvent:

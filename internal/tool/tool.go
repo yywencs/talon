@@ -94,8 +94,7 @@ func (t *BaseTool[A, O]) Execute(ctx context.Context, rawArgs []byte) Observatio
 		return &types.BaseObservation{
 			Content: []types.Content{
 				types.TextContent{
-					DataType: types.ContentTypeText,
-					Text:     "invalid JSON arguments: " + err.Error(),
+					Text: "invalid JSON arguments: " + err.Error(),
 				},
 			},
 			ErrorStatus: true,

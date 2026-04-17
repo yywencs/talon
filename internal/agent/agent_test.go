@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	toolpkg "github.com/wen/opentalon/internal/tool"
 	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/config"
 )
@@ -85,18 +86,12 @@ func TestThinkingAgentStepReturnsRunActionFromOllama(t *testing.T) {
 		t.Fatalf("expected system + example + user message, got %d messages", len(capturedReq.Messages))
 	}
 
-	runAction, ok := action.(*types.CmdRunAction)
+	runAction, ok := action.(*toolpkg.TerminalAction)
 	if !ok {
-		t.Fatalf("expected CmdRunAction, got %T", action)
+		t.Fatalf("expected TerminalAction, got %T", action)
 	}
 	if runAction.Command != "ls -la" {
 		t.Fatalf("unexpected command %q", runAction.Command)
-	}
-	if runAction.GetBase().LLMMetrics == nil {
-		t.Fatal("expected LLM metrics to be attached")
-	}
-	if runAction.GetBase().LLMMetrics.PromptTokens != 123 || runAction.GetBase().LLMMetrics.CompletionTokens != 45 {
-		t.Fatalf("unexpected metrics %+v", runAction.GetBase().LLMMetrics)
 	}
 }
 
@@ -183,7 +178,7 @@ func TestThinkingAgentStepReturnsRunActionFromOpenAICompatibleLive(t *testing.T)
 	if err != nil {
 		t.Fatalf("step returned error: %v", err)
 	}
-	if _, ok := action.(*types.CmdRunAction); !ok {
-		t.Fatalf("expected CmdRunAction, got %T", action)
+	if _, ok := action.(*toolpkg.TerminalAction); !ok {
+		t.Fatalf("expected TerminalAction, got %T", action)
 	}
 }

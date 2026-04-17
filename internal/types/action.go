@@ -10,8 +10,7 @@ package types
 // Action 接口由所有动作类型实现，表示 Agent 向环境发出的指令或消息。
 // Action 是"由 Agent 主动发起"的事件，与 Observation（被动接收）相对。
 type Action interface {
-	Event
-	isAction()
+	ActionType() ActionType
 }
 
 // ActionType 定义动作的类型，用于区分不同类别的动作。
@@ -32,26 +31,41 @@ type ActionEvent struct {
 	ActionID   string     `json:"action_id"`
 	ActionType ActionType `json:"action_type"`
 	Action     Action     `json:"action"`
+
+	Thought                string                  `json:"thought,omitempty"`
+	ToolCall               *MessageToolCall        `json:"tool_call,omitempty"`
+	ReasoningContent       string                  `json:"reasoning_content,omitempty"`
+	ThinkingBlocks         []ThinkingBlock         `json:"thinking_blocks,omitempty"`
+	RedactedThinkingBlocks []RedactedThinkingBlock `json:"redacted_thinking_blocks,omitempty"`
+	ResponsesReasoningItem *ReasoningItemModel     `json:"responses_reasoning_item,omitempty"`
 }
 
 func (e *ActionEvent) GetBase() *BaseEvent { return &e.BaseEvent }
 func (e *ActionEvent) Kind() EventKind     { return KindAction }
 func (e *ActionEvent) Name() string        { return string(e.ActionType) }
 
-// CmdRunAction 表示需要在环境中执行的一条 shell 命令。
-// 这是当前唯一会挂起 PendingAction 的 Action 类型。
-// Thought 字段承载 Agent 的内部推理说明，供人工审查用，不会发给 LLM。
-type CmdRunAction struct {
-	BaseEvent
-	Command  string `json:"command"`
-	Thought  string `json:"thought,omitempty"`
-	Blocking bool   `json:"blocking,omitempty"`
+func (e *ActionEvent) ToMessage() Message {
+	msg := Message{
+		Role:      RoleAssistant,
+		ToolCalls: []MessageToolCall{},
+	}
+	if e.ToolCall != nil {
+		msg.ToolCalls = append(msg.ToolCalls, *e.ToolCall)
+	}
+	if e.ReasoningContent != "" {
+		msg.ReasoningContent = e.ReasoningContent
+	}
+	if len(e.ThinkingBlocks) > 0 {
+		msg.ThinkingBlocks = e.ThinkingBlocks
+	}
+	if len(e.RedactedThinkingBlocks) > 0 {
+		msg.RedactedThinkingBlocks = e.RedactedThinkingBlocks
+	}
+	if e.ResponsesReasoningItem != nil {
+		msg.ResponsesReasoningItem = e.ResponsesReasoningItem
+	}
+	return msg
 }
-
-func (e *CmdRunAction) GetBase() *BaseEvent { return &e.BaseEvent }
-func (e *CmdRunAction) Kind() EventKind     { return KindAction }
-func (e *CmdRunAction) Name() string        { return string(ActionRun) }
-func (e *CmdRunAction) isAction()           {}
 
 // MessageAction 表示一条需要展示给用户的消息。
 // WaitForResponse=true 表示这条消息期望用户回复后才能继续，通常用于询问 clarification。
@@ -65,7 +79,9 @@ type MessageAction struct {
 func (e *MessageAction) GetBase() *BaseEvent { return &e.BaseEvent }
 func (e *MessageAction) Kind() EventKind     { return KindAction }
 func (e *MessageAction) Name() string        { return string(ActionMessage) }
-func (e *MessageAction) isAction()           {}
+func (e *MessageAction) ActionType() ActionType {
+	return ActionMessage
+}
 
 // FinishAction 表示任务已成功完成。
 // Result 是可选的结果摘要，供外部调用方展示或记录用。
@@ -78,4 +94,6 @@ type FinishAction struct {
 func (e *FinishAction) GetBase() *BaseEvent { return &e.BaseEvent }
 func (e *FinishAction) Kind() EventKind     { return KindAction }
 func (e *FinishAction) Name() string        { return string(ActionFinish) }
-func (e *FinishAction) isAction()           {}
+func (e *FinishAction) ActionType() ActionType {
+	return ActionFinish
+}

@@ -40,7 +40,7 @@ const (
 type State struct {
 	AgentState    AgentState
 	History       []Event
-	PendingAction Action
+	PendingAction *ActionEvent
 	LastError     string
 	CreatedAt     time.Time
 }
