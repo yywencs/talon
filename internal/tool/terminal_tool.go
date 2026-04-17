@@ -61,6 +61,10 @@ type BashAction struct {
 	WorkingDir     string `json:"working_dir,omitempty" jsonschema:"description=命令执行的工作目录,default=当前进程工作目录,examples=[\"/tmp\",\"/home/user\"]"`
 }
 
+func (a BashAction) ActionType() types.ActionType {
+	return types.ActionRun
+}
+
 const (
 	defaultTimeoutSecs = 30
 	maxTimeoutSecs     = 300
@@ -264,10 +268,39 @@ func stringPtr(v string) *string {
 	return &v
 }
 
+const (
+	TOOL_DESCRIPTION = `# 命令执行相关规则完整翻译
+	### 命令执行
+	* 每次一条命令：每次只能执行一条 bash 命令。如果需要依次运行多条命令，使用 "&&" 或 ";" 串联执行。
+	* 会话持久化：命令在持久化的 shell 会话中执行，环境变量、虚拟环境、工作目录在命令之间会保持不变。
+	* 软超时：命令设有 10 秒软超时，达到时限后，你可以选择继续或中断该命令（详见下方章节）。
+	* Shell 选项：请勿在当前环境的 shell 脚本或命令中使用 "set -e"、"set -eu" 或 "set -euo pipefail"。运行环境可能不支持这些配置，并会导致 shell 会话不可用。如果需要执行多行 bash 命令，请将命令写入文件后再运行。
+
+	### 长时间运行的命令
+	* 对于可能无限期运行的命令，将其放到后台执行并将输出重定向到文件，例如："python3 app.py > server.log 2>&1 &"。
+	* 对于可能长时间运行的命令（如安装或测试命令），或固定时长运行的命令（如 sleep），你应该为函数调用设置合适的 "timeout"（超时）参数。
+	* 如果 bash 命令返回退出码 "-1"，表示进程触发了软超时但尚未执行完毕。通过设置 "is_input=true"，你可以：
+	- 发送空的 "command" 以获取更多日志
+	- 向正在运行的进程标准输入（STDIN）发送文本（将 "command" 设为对应文本）
+	- 发送控制命令如 "C-c"（Ctrl+C）、"C-d"（Ctrl+D）或 "C-z"（Ctrl+Z）来中断进程
+	- 如果使用了 "C-c"，可以用更长的超时参数重新启动进程，使其完整运行
+
+	### 最佳实践
+	* 目录校验：在创建新目录或文件前，先确认父目录存在且位置正确。
+	* 目录管理：尽量使用绝对路径维持工作目录，避免频繁使用 "cd"。
+
+	### 输出处理
+	* 输出截断：如果输出超过最大长度，会在返回前被截断。
+
+	### 终端重置
+	* 终端重置：如果终端失去响应，可以设置 "reset=true" 来创建新的终端会话。这会终止当前会话并全新启动。
+	* 警告：重置终端会丢失所有已设置的环境变量、工作目录变更以及正在运行的进程。仅在终端无法响应命令时使用。`
+)
+
 func newBashTool() *BaseTool[BashAction, *TerminalObservation] {
 	return &BaseTool[BashAction, *TerminalObservation]{
 		ToolName: "bash",
-		ToolDesc: "在宿主机的 shell 环境中执行一条 Bash 命令。命令将在 `os.Exec` 中运行，支持管道、重定向等 bash 特性。返回命令的 stdout/stderr 混合输出及退出码。",
+		ToolDesc: TOOL_DESCRIPTION,
 		Executor: bashExecutor,
 	}
 }

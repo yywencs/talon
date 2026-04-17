@@ -34,6 +34,7 @@ type ChatRequest struct {
 // PromptTokens/CompletionTokens 分别统计输入/输出的 token 数量。
 type ChatResponse struct {
 	Content          string
+	ToolCalls        []types.MessageToolCall `json:"tool_calls,omitempty"`
 	PromptTokens     int
 	CompletionTokens int
 }
@@ -301,6 +302,7 @@ type openAIWireRequest struct {
 	Messages       []types.Message `json:"messages"`
 	Temperature    float64         `json:"temperature,omitempty"`
 	ResponseFormat map[string]any  `json:"response_format,omitempty"`
+	Tools          []any           `json:"tools,omitempty"`
 	Stream         bool            `json:"stream"`
 }
 
@@ -308,8 +310,9 @@ type openAIWireRequest struct {
 type openAIWireResponse struct {
 	Choices []struct {
 		Message struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
+			Role      string                  `json:"role"`
+			Content   string                  `json:"content"`
+			ToolCalls []types.MessageToolCall `json:"tool_calls,omitempty"`
 		} `json:"message"`
 	} `json:"choices"`
 	Usage struct {
@@ -344,8 +347,11 @@ func (c *openAICompatibleClient) Chat(ctx context.Context, req ChatRequest) (*Ch
 		return nil, fmt.Errorf("openai-compatible 响应缺少 choices")
 	}
 
+	toolCalls := wireResp.Choices[0].Message.ToolCalls
+
 	return &ChatResponse{
 		Content:          wireResp.Choices[0].Message.Content,
+		ToolCalls:        toolCalls,
 		PromptTokens:     wireResp.Usage.PromptTokens,
 		CompletionTokens: wireResp.Usage.CompletionTokens,
 	}, nil
