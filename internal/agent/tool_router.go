@@ -36,10 +36,24 @@ func (r *ToolRouter) WithMaxParallelism(n int) *ToolRouter {
 	return r
 }
 
+func (r *ToolRouter) ResolveAllTools(ctx context.Context) map[string]tool.Tool {
+	return tool.ResolveAll(ctx)
+}
+
 type ToolCall struct {
 	ID        string          `json:"id"`
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
+}
+
+type ToolCallAction struct {
+	ToolCalls []ToolCall
+	PlainText string
+	Router    *ToolRouter
+}
+
+func (a *ToolCallAction) ActionType() types.ActionType {
+	return types.ActionRun
 }
 
 func (r *ToolRouter) ParseLLMResponse(resp *ChatResponse) ([]ToolCall, string, error) {
@@ -70,7 +84,7 @@ func (r *ToolRouter) ExecuteTools(ctx context.Context, calls []ToolCall) []types
 
 	results := make([]types.Observation, len(calls))
 	var wg sync.WaitGroup
-	var mu sync.Mutex
+
 	sem := make(chan struct{}, r.maxPar)
 
 	for i, call := range calls {
@@ -81,9 +95,9 @@ func (r *ToolRouter) ExecuteTools(ctx context.Context, calls []ToolCall) []types
 			defer func() { <-sem }()
 
 			obs := r.executeSingleTool(ctx, tc)
-			mu.Lock()
+
 			results[idx] = obs
-			mu.Unlock()
+
 		}(i, call)
 	}
 

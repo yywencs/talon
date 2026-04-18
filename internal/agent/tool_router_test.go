@@ -9,6 +9,7 @@ import (
 
 	"github.com/wen/opentalon/internal/tool"
 	"github.com/wen/opentalon/internal/types"
+	"github.com/wen/opentalon/pkg/utils"
 )
 
 func TestToolRouter_SingleBashTool(t *testing.T) {
@@ -42,10 +43,10 @@ func TestToolRouter_SingleBashTool(t *testing.T) {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
 	if results[0].IsError() {
-		t.Fatalf("expected success, got error: %s", types.FlattenTextContent(results[0].GetContent()))
+		t.Fatalf("expected success, got error: %s", utils.FlattenTextContent(results[0].GetContent()))
 	}
-	if !contains(types.FlattenTextContent(results[0].GetContent()), "hello") {
-		t.Fatalf("expected output to contain 'hello', got: %s", types.FlattenTextContent(results[0].GetContent()))
+	if !contains(utils.FlattenTextContent(results[0].GetContent()), "hello") {
+		t.Fatalf("expected output to contain 'hello', got: %s", utils.FlattenTextContent(results[0].GetContent()))
 	}
 }
 
@@ -79,7 +80,7 @@ func TestToolRouter_MultipleTools(t *testing.T) {
 	}
 	for _, obs := range results {
 		if obs.IsError() {
-			t.Fatalf("expected success, got error: %s", types.FlattenTextContent(obs.GetContent()))
+			t.Fatalf("expected success, got error: %s", utils.FlattenTextContent(obs.GetContent()))
 		}
 	}
 }
@@ -123,8 +124,8 @@ func TestToolRouter_UnknownTool(t *testing.T) {
 	if !results[0].IsError() {
 		t.Fatal("expected error for unknown tool")
 	}
-	if !contains(types.FlattenTextContent(results[0].GetContent()), "unknown tool") {
-		t.Fatalf("expected 'unknown tool' error, got: %s", types.FlattenTextContent(results[0].GetContent()))
+	if !contains(utils.FlattenTextContent(results[0].GetContent()), "unknown tool") {
+		t.Fatalf("expected 'unknown tool' error, got: %s", utils.FlattenTextContent(results[0].GetContent()))
 	}
 }
 
@@ -170,7 +171,7 @@ func TestToolRouter_ConcurrentLimit(t *testing.T) {
 	}
 	for _, obs := range results {
 		if obs.IsError() {
-			t.Fatalf("expected success, got error: %s", types.FlattenTextContent(obs.GetContent()))
+			t.Fatalf("expected success, got error: %s", utils.FlattenTextContent(obs.GetContent()))
 		}
 	}
 }
@@ -205,7 +206,7 @@ func TestToolRouter_ConcurrentSafety(t *testing.T) {
 			results := r.ExecuteTools(context.Background(), calls)
 			for _, obs := range results {
 				if obs.IsError() {
-					t.Errorf("concurrent execution error: %s", types.FlattenTextContent(obs.GetContent()))
+					t.Errorf("concurrent execution error: %s", utils.FlattenTextContent(obs.GetContent()))
 				}
 			}
 		}()

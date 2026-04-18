@@ -24,6 +24,7 @@ type EventKind = string
 const (
 	KindAction      EventKind = "action"
 	KindObservation EventKind = "observation"
+	KindMessage     EventKind = "message"
 )
 
 // BaseEvent 仅承载事件信封所需的最小元信息。
@@ -59,12 +60,12 @@ type Event interface {
 	GetID() string
 	GetTimestamp() time.Time
 	GetSource() EventSource
-	Kind() string
+	Kind() EventKind
 	Name() string
 }
 
 // Messager 接口由能够转换为 LLM 对话消息的事件实现。
 // ActionEvent 和 ObservationEvent 通过 ToMessage() 方法提供 LLM 可消费的格式。
-type Messager interface {
+type LLMMessager interface {
 	ToMessage() Message
 }

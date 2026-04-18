@@ -3,8 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"regexp"
-	"strings"
 
 	toolpkg "github.com/wen/opentalon/internal/tool"
 	"github.com/wen/opentalon/internal/types"
@@ -13,7 +11,7 @@ import (
 )
 
 type Agent interface {
-	Step(ctx context.Context, state *types.State) (types.Action, error)
+	Step(ctx context.Context, state *types.SessionState) (types.Action, error)
 }
 
 type BaseAgent struct {
@@ -21,6 +19,8 @@ type BaseAgent struct {
 	promptReg *prompts.Registry
 	promptBld *PromptBuilder
 	model     string
+	router    *ToolRouter
+	tools     []map[string]any // 缓存的工具schema
 }
 
 func NewBaseAgent(cfg config.LLMConfig) (*BaseAgent, error) {
@@ -28,24 +28,36 @@ func NewBaseAgent(cfg config.LLMConfig) (*BaseAgent, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	router := NewToolRouter()
+
+	// 缓存所有工具的schema用于function calling
+	tools, err := toolpkg.ToolsToOpenAITools(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("failed to build tools schema: %w", err)
+	}
+
 	return &BaseAgent{
 		client:    client,
 		promptReg: prompts.NewRegistry(cfg.PromptsDir),
 		promptBld: NewPromptBuilder(),
 		model:     cfg.Model,
+		router:    router,
+		tools:     tools,
 	}, nil
 }
 
-func (a *BaseAgent) Step(ctx context.Context, state *types.State) (types.Action, error) {
+func (a *BaseAgent) Step(ctx context.Context, state *types.SessionState) (types.Action, error) {
 	systemPrompt := a.promptReg.Get("system_prompt").Base()
 	userPrompt := a.promptReg.Get("user_prompt").Base()
-	return stepWithLLM(ctx, a.client, a.promptBld, a.model, state, systemPrompt, userPrompt)
+	return stepWithLLM(ctx, a.client, a.promptBld, a.model, state, systemPrompt, userPrompt, a.router, a.tools)
 }
 
-func stepWithLLM(ctx context.Context, client LLMClient, promptBld *PromptBuilder, model string, state *types.State, systemPrompt string, userPromptExamples string) (types.Action, error) {
+func stepWithLLM(ctx context.Context, client LLMClient, promptBld *PromptBuilder, model string, state *types.SessionState, systemPrompt string, userPromptExamples string, router *ToolRouter, tools []map[string]any) (types.Action, error) {
 	req := ChatRequest{
 		Model:    model,
 		Messages: promptBld.BuildMessages(state, systemPrompt, userPromptExamples),
+		Tools:    tools, // 新增：传递工具schema
 	}
 
 	resp, err := client.Chat(ctx, req)
@@ -53,50 +65,45 @@ func stepWithLLM(ctx context.Context, client LLMClient, promptBld *PromptBuilder
 		return nil, err
 	}
 
-	action := responseToAction(resp)
+	action, err := responseToAction(resp, router)
+	if err != nil {
+		return nil, err
+	}
 	if action == nil {
 		return nil, fmt.Errorf("模型未输出有效动作")
 	}
 	return action, nil
 }
 
-func responseToAction(resp *ChatResponse) types.Action {
-	content := strings.TrimSpace(resp.Content)
-
-	if finish := extractTag(content, "finish"); finish != "" || strings.Contains(content, "<finish>") {
-		return &types.FinishAction{Result: strings.TrimSpace(finish)}
+func responseToAction(resp *ChatResponse, router *ToolRouter) (types.Action, error) {
+	if resp == nil {
+		return nil, nil
 	}
 
-	if bash := extractTag(content, "execute_bash"); bash != "" {
-		return &toolpkg.TerminalAction{Command: strings.TrimSpace(bash)}
-	}
-
-	if python := extractTag(content, "execute_ipython"); python != "" {
-		return &toolpkg.TerminalAction{Command: "python3 -c " + strings.TrimSpace(python)}
-	}
-
-	if browse := extractTag(content, "execute_browse"); browse != "" {
-		return &toolpkg.TerminalAction{Command: "echo 'browse: " + strings.TrimSpace(browse) + "'"}
-	}
-
-	if content != "" {
-		return &types.MessageAction{Content: content, WaitForResponse: true}
-	}
-
-	return nil
-}
-
-func extractTag(content, tagName string) string {
-	patterns := []string{
-		fmt.Sprintf(`<%s>(?s)(.+?)</%s>`, tagName, tagName),
-		fmt.Sprintf(`<%s>(.+)</%s>`, tagName, tagName),
-	}
-	for _, pattern := range patterns {
-		re := regexp.MustCompile(`(?i)` + pattern)
-		matches := re.FindStringSubmatch(content)
-		if len(matches) > 1 {
-			return strings.TrimSpace(matches[1])
+	toolCalls, plainText, err := router.ParseLLMResponse(resp)
+	if err != nil || len(toolCalls) > 0 {
+		if len(toolCalls) > 0 {
+			return &ToolCallAction{
+				ToolCalls: toolCalls,
+				PlainText: plainText,
+				Router:    router,
+			}, nil
 		}
 	}
-	return ""
+
+	if err != nil && plainText == "" {
+		return &types.MessageAction{
+			Content:         "解析工具调用失败: " + err.Error(),
+			WaitForResponse: false,
+		}, nil
+	}
+
+	if plainText != "" {
+		return &types.MessageAction{
+			Content:         plainText,
+			WaitForResponse: true,
+		}, nil
+	}
+
+	return nil, nil
 }

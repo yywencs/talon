@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/wen/opentalon/internal/types"
+	"github.com/wen/opentalon/pkg/utils"
 )
 
 type CmdOutputMetadata struct {
@@ -44,7 +45,7 @@ func (o *TerminalObservation) OutputText() string {
 	if o == nil {
 		return ""
 	}
-	return types.FlattenTextContent(o.GetContent())
+	return utils.FlattenTextContent(o.GetContent())
 }
 
 func (o *TerminalObservation) ExitCodeValue() int {

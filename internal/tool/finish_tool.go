@@ -16,6 +16,18 @@ func (a FinishAction) ActionType() types.ActionType {
 	return types.ActionFinish
 }
 
+func (a FinishAction) GetBase() *types.BaseEvent {
+	return nil
+}
+
+func (a FinishAction) Kind() string {
+	return "finish"
+}
+
+func (a FinishAction) Name() string {
+	return "finish_action"
+}
+
 type FinishObservation struct {
 	types.BaseObservation
 }

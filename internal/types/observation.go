@@ -41,9 +41,8 @@ type ObservationEvent struct {
 	ToolCallID      string `json:"tool_call_id,omitempty"`
 }
 
-func (e *ObservationEvent) GetBase() *BaseEvent { return &e.BaseEvent }
-func (e *ObservationEvent) Kind() EventKind     { return KindObservation }
-func (e *ObservationEvent) Name() string        { return "observation_event" }
+func (e *ObservationEvent) Kind() EventKind { return KindObservation }
+func (e *ObservationEvent) Name() string    { return "observation_event" }
 
 func (e *ObservationEvent) ToMessage() Message {
 	msg := Message{

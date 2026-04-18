@@ -17,8 +17,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wen/opentalon/internal/serializer"
 	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/config"
+	"github.com/wen/opentalon/pkg/utils"
 )
 
 // ChatRequest 是发给 LLM 的请求结构，Model/Messages 为必填字段，
@@ -28,6 +30,7 @@ type ChatRequest struct {
 	Messages    []types.Message
 	Temperature float64
 	Stream      bool
+	Tools       []map[string]any // 新增：function calling tools
 }
 
 // ChatResponse 是 LLM 返回的响应结构，Content 为实际文本回复，
@@ -126,6 +129,15 @@ func normalizeProvider(provider string) string {
 	}
 }
 
+// convertToolsToAny 将 []map[string]any 转换为 []any
+func convertToolsToAny(tools []map[string]any) []any {
+	result := make([]any, len(tools))
+	for i, tool := range tools {
+		result[i] = tool
+	}
+	return result
+}
+
 // ------------------------------------------------------------------
 // ollamaClient 实现原生 Ollama /api/chat 接口。
 // Ollama 原生协议使用 "format" 字段声明 JSON schema（而不是 tools 或 response_format），
@@ -162,7 +174,7 @@ type ollamaWireResponse struct {
 func toOllamaMessages(messages []types.Message) []any {
 	out := make([]any, 0, len(messages))
 	for _, msg := range messages {
-		content := types.FlattenTextContent(msg.Content)
+		content := utils.FlattenTextContent(msg.Content)
 		if msg.ToolCalls != nil && len(msg.ToolCalls) > 0 {
 			content = ""
 		}
@@ -298,12 +310,22 @@ func newOpenAIClient(endpoint, apiKey string) *openAICompatibleClient {
 
 // openAIWireRequest 是发给 OpenAI-compatible 接口的 wire 协议请求。
 type openAIWireRequest struct {
-	Model          string          `json:"model"`
-	Messages       []types.Message `json:"messages"`
-	Temperature    float64         `json:"temperature,omitempty"`
-	ResponseFormat map[string]any  `json:"response_format,omitempty"`
-	Tools          []any           `json:"tools,omitempty"`
-	Stream         bool            `json:"stream"`
+	Model          string         `json:"model"`
+	Messages       []any          `json:"messages"`
+	Temperature    float64        `json:"temperature,omitempty"`
+	ResponseFormat map[string]any `json:"response_format,omitempty"`
+	Tools          []any          `json:"tools,omitempty"`
+	Stream         bool           `json:"stream"`
+}
+
+func serializeOpenAIChatMessages(messages []types.Message) ([]any, error) {
+	messageSerializer := &serializer.OpenAIChatSerializer{
+		CacheEnabled:           true,
+		VisionEnabled:          true,
+		FunctionCallingEnabled: true,
+		SendReasoningContent:   true,
+	}
+	return serializer.SerializeMessages(messageSerializer, messages)
 }
 
 // openAIWireResponse 是 OpenAI-compatible 接口返回的 wire 协议响应。
@@ -332,13 +354,18 @@ func (c *openAICompatibleClient) Chat(ctx context.Context, req ChatRequest) (*Ch
 
 	wireReq := openAIWireRequest{
 		Model:       req.Model,
-		Messages:    req.Messages,
 		Temperature: req.Temperature,
 		Stream:      false,
+		Tools:       convertToolsToAny(req.Tools), // 新增：传递工具
 	}
+	messages, err := serializeOpenAIChatMessages(req.Messages)
+	if err != nil {
+		return nil, fmt.Errorf("序列化消息失败: %w", err)
+	}
+	wireReq.Messages = messages
 
 	var wireResp openAIWireResponse
-	err := doJSONRequest(ctx, sharedLLMHTTPClient, resolveOpenAIEndpoint(c.endpoint), wireReq, headers, &wireResp)
+	err = doJSONRequest(ctx, sharedLLMHTTPClient, resolveOpenAIEndpoint(c.endpoint), wireReq, headers, &wireResp)
 	if err != nil {
 		return nil, fmt.Errorf("请求 openai-compatible 接口失败: %w", err)
 	}
@@ -367,10 +394,15 @@ func (c *openAICompatibleClient) StreamChat(ctx context.Context, req ChatRequest
 
 	wireReq := openAIWireRequest{
 		Model:       req.Model,
-		Messages:    req.Messages,
 		Temperature: req.Temperature,
 		Stream:      true,
+		Tools:       convertToolsToAny(req.Tools), // 新增：传递工具
 	}
+	messages, err := serializeOpenAIChatMessages(req.Messages)
+	if err != nil {
+		return fmt.Errorf("序列化消息失败: %w", err)
+	}
+	wireReq.Messages = messages
 
 	body, err := json.Marshal(wireReq)
 	if err != nil {

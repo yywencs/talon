@@ -219,17 +219,26 @@ func TestStripCacheControl(t *testing.T) {
 	}
 }
 
-func TestChatMessageMarshalJSONWithCacheControl(t *testing.T) {
-	msg := types.Message{
-		Role: types.RoleSystem,
-		Content: []types.Content{
-			types.TextContent{Text: "system prompt", BaseContent: types.BaseContent{CachePrompt: true}},
+func TestSerializeOpenAIChatMessagesWithCacheControl(t *testing.T) {
+	messages, err := serializeOpenAIChatMessages([]types.Message{
+		{
+			Role: types.RoleSystem,
+			Content: []types.Content{
+				types.TextContent{Text: "system prompt", BaseContent: types.BaseContent{CachePrompt: true}},
+			},
 		},
+	})
+	if err != nil {
+		t.Fatalf("serialize messages failed: %v", err)
 	}
 
-	data, err := json.Marshal(msg)
+	wireReq := openAIWireRequest{
+		Model:    "gpt-test",
+		Messages: messages,
+	}
+	data, err := json.Marshal(wireReq)
 	if err != nil {
-		t.Fatalf("marshal message failed: %v", err)
+		t.Fatalf("marshal wire request failed: %v", err)
 	}
 
 	var payload map[string]any
@@ -237,11 +246,20 @@ func TestChatMessageMarshalJSONWithCacheControl(t *testing.T) {
 		t.Fatalf("unmarshal payload failed: %v", err)
 	}
 
-	if _, exists := payload["cache_control"]; exists {
+	wireMessages, ok := payload["messages"].([]any)
+	if !ok || len(wireMessages) != 1 {
+		t.Fatalf("messages should be a single item array: %s", string(data))
+	}
+
+	messagePayload, ok := wireMessages[0].(map[string]any)
+	if !ok {
+		t.Fatalf("message payload should be an object: %s", string(data))
+	}
+	if _, exists := messagePayload["cache_control"]; exists {
 		t.Fatalf("cache_control should not appear on message top level: %s", string(data))
 	}
 
-	content, ok := payload["content"].([]any)
+	content, ok := messagePayload["content"].([]any)
 	if !ok || len(content) != 1 {
 		t.Fatalf("content should be a single text block array: %s", string(data))
 	}

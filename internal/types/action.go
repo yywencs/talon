@@ -13,6 +13,11 @@ type Action interface {
 	ActionType() ActionType
 }
 
+type ActionMetadata struct {
+	Summary      string       `json:"summary" jsonschema:"description=动作摘要"`
+	SecurityRisk SecurityRisk `json:"security_risk" jsonschema:"description=风险等级"`
+}
+
 // ActionType 定义动作的类型，用于区分不同类别的动作。
 type ActionType string
 
@@ -65,35 +70,4 @@ func (e *ActionEvent) ToMessage() Message {
 		msg.ResponsesReasoningItem = e.ResponsesReasoningItem
 	}
 	return msg
-}
-
-// MessageAction 表示一条需要展示给用户的消息。
-// WaitForResponse=true 表示这条消息期望用户回复后才能继续，通常用于询问 clarification。
-// 注意：MessageAction 不会挂起 PendingAction，循环不会在发送后停止。
-type MessageAction struct {
-	BaseEvent
-	Content         string `json:"content"`
-	WaitForResponse bool   `json:"wait_for_response,omitempty"`
-}
-
-func (e *MessageAction) GetBase() *BaseEvent { return &e.BaseEvent }
-func (e *MessageAction) Kind() EventKind     { return KindAction }
-func (e *MessageAction) Name() string        { return string(ActionMessage) }
-func (e *MessageAction) ActionType() ActionType {
-	return ActionMessage
-}
-
-// FinishAction 表示任务已成功完成。
-// Result 是可选的结果摘要，供外部调用方展示或记录用。
-// FinishAction 不会挂起 PendingAction，即使在语义上它"结束"了因果链也不需要等待。
-type FinishAction struct {
-	BaseEvent
-	Result string `json:"result,omitempty"`
-}
-
-func (e *FinishAction) GetBase() *BaseEvent { return &e.BaseEvent }
-func (e *FinishAction) Kind() EventKind     { return KindAction }
-func (e *FinishAction) Name() string        { return string(ActionFinish) }
-func (e *FinishAction) ActionType() ActionType {
-	return ActionFinish
 }

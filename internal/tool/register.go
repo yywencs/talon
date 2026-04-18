@@ -33,6 +33,10 @@ func Resolve(name string, ctx context.Context) (Tool, error) {
 	return defaultRegistry.Resolve(name, ctx)
 }
 
+func ResolveAll(ctx context.Context) map[string]Tool {
+	return defaultRegistry.ResolveAll(ctx)
+}
+
 func Get(name string) (ToolFactory, bool) {
 	return defaultRegistry.Get(name)
 }
@@ -57,6 +61,17 @@ func (r *toolRegistry) Resolve(name string, ctx context.Context) (Tool, error) {
 	}
 
 	return factory(ctx), nil
+}
+
+func (r *toolRegistry) ResolveAll(ctx context.Context) map[string]Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	result := make(map[string]Tool, len(r.factories))
+	for name, factory := range r.factories {
+		result[name] = factory(ctx)
+	}
+	return result
 }
 
 func (r *toolRegistry) Get(name string) (ToolFactory, bool) {

@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/wen/opentalon/internal/types"
 )
 
 var ErrWorkspaceNotFound = errors.New("无法定位 Workspace 根目录（未找到 go.mod 文件夹）")
@@ -29,4 +32,31 @@ func FindWorkspaceRoot() (string, error) {
 	}
 
 	return "", ErrWorkspaceNotFound
+}
+
+func FlattenTextContent(contents []types.Content) string {
+	var parts []string
+	for _, item := range contents {
+		switch c := item.(type) {
+		case types.TextContent:
+			if strings.TrimSpace(c.Text) != "" {
+				parts = append(parts, c.Text)
+			}
+		case *types.TextContent:
+			if c != nil && strings.TrimSpace(c.Text) != "" {
+				parts = append(parts, c.Text)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+const DefaultTextContentLimit = 10000
+
+func MaybeTruncateToolText(text string) string {
+	if len(text) <= DefaultTextContentLimit {
+		return text
+	}
+	// 这里可以加日志
+	return text[:DefaultTextContentLimit] + "... [truncated]"
 }

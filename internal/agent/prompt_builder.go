@@ -10,10 +10,9 @@
 package agent
 
 import (
-	"fmt"
+	"encoding/json"
 	"strings"
 
-	toolpkg "github.com/wen/opentalon/internal/tool"
 	"github.com/wen/opentalon/internal/types"
 )
 
@@ -23,11 +22,11 @@ func NewPromptBuilder() *PromptBuilder {
 	return &PromptBuilder{}
 }
 
-func (b *PromptBuilder) BuildMessages(state *types.State, systemPrompt string, userPromptExamples string) []types.Message {
+func (b *PromptBuilder) BuildMessages(state *types.SessionState, systemPrompt string, userPromptExamples string) []types.Message {
 	return b.BuildPromptMessages(state, systemPrompt, userPromptExamples)
 }
 
-func (b *PromptBuilder) BuildPromptMessages(state *types.State, systemPrompt string, userPromptExamples string) []types.Message {
+func (b *PromptBuilder) BuildPromptMessages(state *types.SessionState, systemPrompt string, userPromptExamples string) []types.Message {
 	messages := []types.Message{
 		{
 			Role: types.RoleSystem,
@@ -46,58 +45,16 @@ func (b *PromptBuilder) BuildPromptMessages(state *types.State, systemPrompt str
 		})
 	}
 
-	for _, evt := range state.History {
-		switch e := evt.(type) {
-		case *types.MessageAction:
-			messages = append(messages, types.Message{
-				Role: roleForSourceMessage(e.GetSource()),
-				Content: []types.Content{
-					types.TextContent{Text: e.Content},
-				},
-			})
-		case *types.ActionEvent:
-			terminalAction, ok := e.Action.(*toolpkg.TerminalAction)
+	if state.Events != nil {
+		for _, evt := range state.Events.GetEvents() {
+			jsonStr, ok := eventToJSON(evt)
 			if !ok {
-				break
+				continue
 			}
 			messages = append(messages, types.Message{
-				Role: roleForSourceMessage(e.GetSource()),
+				Role: types.RoleUser,
 				Content: []types.Content{
-					types.TextContent{Text: fmt.Sprintf("Run command: %s", terminalAction.Command)},
-				},
-			})
-		case *types.ObservationEvent:
-			if cmdObs, ok := e.Observation.(*toolpkg.TerminalObservation); ok {
-				messages = append(messages, types.Message{
-					Role: types.RoleUser,
-					Content: []types.Content{
-						types.TextContent{
-							Text: fmt.Sprintf(
-								"Command result for action %s (exit_code=%d):\n%s",
-								e.ActionID,
-								cmdObs.ExitCodeValue(),
-								cmdObs.OutputText(),
-							),
-						},
-					},
-				})
-				break
-			}
-
-			text := types.FlattenTextContent(e.Observation.GetContent())
-			if text != "" {
-				messages = append(messages, types.Message{
-					Role: types.RoleUser,
-					Content: []types.Content{
-						types.TextContent{Text: text},
-					},
-				})
-			}
-		case *types.FinishAction:
-			messages = append(messages, types.Message{
-				Role: types.RoleAssistant,
-				Content: []types.Content{
-					types.TextContent{Text: "Finished task: " + e.Result},
+					types.TextContent{Text: jsonStr},
 				},
 			})
 		}
@@ -155,13 +112,6 @@ func applyEphemeralCacheControls(messages []types.Message, hasExamples bool) {
 	}
 }
 
-func roleForSource(source types.EventSource) string {
-	if source == types.SourceUser {
-		return "user"
-	}
-	return "assistant"
-}
-
 func roleForSourceMessage(source types.EventSource) types.MessageRole {
 	if source == types.SourceUser {
 		return types.RoleUser
@@ -191,4 +141,34 @@ func hasCachePrompt(contents []types.Content) bool {
 		}
 	}
 	return false
+}
+
+func eventToMessage(evt types.Event) (types.Message, bool) {
+	switch evt.Kind() {
+	case types.KindAction:
+		if e, ok := evt.(*types.ActionEvent); ok {
+			return e.ToMessage(), true
+		}
+	case types.KindObservation:
+		if e, ok := evt.(*types.ObservationEvent); ok {
+			return e.ToMessage(), true
+		}
+	case types.KindMessage:
+		if e, ok := evt.(*types.MessageEvent); ok {
+			return e.ToMessage(), true
+		}
+	}
+	return types.Message{}, false
+}
+
+func eventToJSON(evt types.Event) (string, bool) {
+	msg, ok := eventToMessage(evt)
+	if !ok {
+		return "", false
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return "", false
+	}
+	return string(data), true
 }
