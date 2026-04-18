@@ -7,7 +7,7 @@ import (
 )
 
 type FinishAction struct {
-	ActionMetadata
+	types.ActionMetadata
 	Message string `json:"message" jsonschema:"description=任务完成的总结信息,required"`
 	Success bool   `json:"success" jsonschema:"description=任务是否成功完成,required"`
 }

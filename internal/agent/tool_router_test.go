@@ -3,16 +3,14 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sync"
 	"testing"
 
 	"github.com/wen/opentalon/internal/tool"
 	"github.com/wen/opentalon/internal/types"
-	"github.com/wen/opentalon/pkg/utils"
 )
 
-func TestToolRouter_SingleBashTool(t *testing.T) {
+func TestToolRouter_ParseLLMResponse_SingleBashTool(t *testing.T) {
 	router := NewToolRouter()
 	factory, ok := tool.Get("bash")
 	if !ok {
@@ -21,9 +19,12 @@ func TestToolRouter_SingleBashTool(t *testing.T) {
 	router.Register("bash", factory)
 
 	resp := &ChatResponse{
-		Content: "这里执行一个命令",
-		ToolCalls: []types.MessageToolCall{
-			{ID: "call_001", Name: "bash", Arguments: `{"command":"echo hello","ActionMetadata":{"Summary":"test","SecurityRisk":"HIGH"}}`},
+		Message: types.Message{
+			Role:    types.RoleAssistant,
+			Content: []types.Content{types.TextContent{Text: "这里执行一个命令"}},
+			ToolCalls: []types.MessageToolCall{
+				{ID: "call_001", Name: "bash", Arguments: `{"command":"echo hello","summary":"test","security_risk":"HIGH"}`},
+			},
 		},
 	}
 
@@ -37,20 +38,9 @@ func TestToolRouter_SingleBashTool(t *testing.T) {
 	if len(calls) != 1 || calls[0].Name != "bash" {
 		t.Fatalf("expected 1 bash call, got %d", len(calls))
 	}
-
-	results := router.ExecuteTools(context.Background(), calls)
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if results[0].IsError() {
-		t.Fatalf("expected success, got error: %s", utils.FlattenTextContent(results[0].GetContent()))
-	}
-	if !contains(utils.FlattenTextContent(results[0].GetContent()), "hello") {
-		t.Fatalf("expected output to contain 'hello', got: %s", utils.FlattenTextContent(results[0].GetContent()))
-	}
 }
 
-func TestToolRouter_MultipleTools(t *testing.T) {
+func TestToolRouter_ParseLLMResponse_MultipleTools(t *testing.T) {
 	router := NewToolRouter()
 	factory, ok := tool.Get("bash")
 	if !ok {
@@ -59,10 +49,12 @@ func TestToolRouter_MultipleTools(t *testing.T) {
 	router.Register("bash", factory)
 
 	resp := &ChatResponse{
-		Content: "",
-		ToolCalls: []types.MessageToolCall{
-			{ID: "call_001", Name: "bash", Arguments: `{"command":"echo 1","ActionMetadata":{"Summary":"test","SecurityRisk":"HIGH"}}`},
-			{ID: "call_002", Name: "bash", Arguments: `{"command":"echo 2","ActionMetadata":{"Summary":"test","SecurityRisk":"HIGH"}}`},
+		Message: types.Message{
+			Role: types.RoleAssistant,
+			ToolCalls: []types.MessageToolCall{
+				{ID: "call_001", Name: "bash", Arguments: `{"command":"echo 1","summary":"test","security_risk":"HIGH"}`},
+				{ID: "call_002", Name: "bash", Arguments: `{"command":"echo 2","summary":"test","security_risk":"HIGH"}`},
+			},
 		},
 	}
 
@@ -73,22 +65,17 @@ func TestToolRouter_MultipleTools(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("expected 2 calls, got %d", len(calls))
 	}
-
-	results := router.ExecuteTools(context.Background(), calls)
-	if len(results) != 2 {
-		t.Fatalf("expected 2 results, got %d", len(results))
-	}
-	for _, obs := range results {
-		if obs.IsError() {
-			t.Fatalf("expected success, got error: %s", utils.FlattenTextContent(obs.GetContent()))
-		}
-	}
 }
 
 func TestToolRouter_PlainMessage(t *testing.T) {
 	router := NewToolRouter()
 
-	resp := &ChatResponse{Content: "这是一条普通消息", ToolCalls: nil}
+	resp := &ChatResponse{
+		Message: types.Message{
+			Role:    types.RoleAssistant,
+			Content: []types.Content{types.TextContent{Text: "这是一条普通消息"}},
+		},
+	}
 
 	calls, plainText, err := router.ParseLLMResponse(resp)
 	if err != nil {
@@ -102,37 +89,24 @@ func TestToolRouter_PlainMessage(t *testing.T) {
 	}
 }
 
-func TestToolRouter_UnknownTool(t *testing.T) {
+func TestToolRouter_BuildActionEvents_UnknownTool(t *testing.T) {
 	router := NewToolRouter()
-
-	resp := &ChatResponse{
-		Content: "",
-		ToolCalls: []types.MessageToolCall{
-			{ID: "call_001", Name: "unknown_tool", Arguments: `{}`},
+	_, err := router.BuildActionEvents(context.Background(), []ToolCall{
+		{
+			ID:        "call_001",
+			Name:      "unknown_tool",
+			Arguments: json.RawMessage(`{}`),
 		},
-	}
-
-	calls, _, err := router.ParseLLMResponse(resp)
-	if err != nil {
-		t.Fatalf("ParseLLMResponse failed: %v", err)
-	}
-
-	results := router.ExecuteTools(context.Background(), calls)
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	if !results[0].IsError() {
+	})
+	if err == nil {
 		t.Fatal("expected error for unknown tool")
-	}
-	if !contains(utils.FlattenTextContent(results[0].GetContent()), "unknown tool") {
-		t.Fatalf("expected 'unknown tool' error, got: %s", utils.FlattenTextContent(results[0].GetContent()))
 	}
 }
 
 func TestToolRouter_EmptyToolCalls(t *testing.T) {
 	router := NewToolRouter()
 
-	resp := &ChatResponse{Content: "", ToolCalls: []types.MessageToolCall{}}
+	resp := &ChatResponse{Message: types.Message{Role: types.RoleAssistant, ToolCalls: []types.MessageToolCall{}}}
 
 	calls, plainText, err := router.ParseLLMResponse(resp)
 	if err != nil {
@@ -146,41 +120,57 @@ func TestToolRouter_EmptyToolCalls(t *testing.T) {
 	}
 }
 
-func TestToolRouter_ConcurrentLimit(t *testing.T) {
-	router := NewToolRouter().WithMaxParallelism(2)
+func TestToolRouter_ResolveTool(t *testing.T) {
+	router := NewToolRouter()
 	factory, ok := tool.Get("bash")
 	if !ok {
 		t.Fatal("bash tool not registered")
 	}
 	router.Register("bash", factory)
 
-	var calls []ToolCall
-	for i := 1; i <= 5; i++ {
-		calls = append(calls, ToolCall{
-			ID:   fmt.Sprintf("call_%d", i),
-			Name: "bash",
-			Arguments: json.RawMessage(fmt.Sprintf(
-				`{"command":"echo %d","ActionMetadata":{"Summary":"test","SecurityRisk":"HIGH"}}`, i,
-			)),
-		})
+	resolved, err := router.ResolveTool(context.Background(), "bash")
+	if err != nil {
+		t.Fatalf("ResolveTool failed: %v", err)
 	}
-
-	results := router.ExecuteTools(context.Background(), calls)
-	if len(results) != 5 {
-		t.Fatalf("expected 5 results, got %d", len(results))
-	}
-	for _, obs := range results {
-		if obs.IsError() {
-			t.Fatalf("expected success, got error: %s", utils.FlattenTextContent(obs.GetContent()))
-		}
+	if resolved == nil || resolved.Name() != "bash" {
+		t.Fatalf("expected bash tool, got %+v", resolved)
 	}
 }
 
-func TestToolRouter_EmptyCalls(t *testing.T) {
+func TestToolRouter_BuildActionEvents(t *testing.T) {
 	router := NewToolRouter()
-	results := router.ExecuteTools(context.Background(), nil)
-	if results != nil {
-		t.Fatalf("expected nil for empty calls, got %d results", len(results))
+	factory, ok := tool.Get("bash")
+	if !ok {
+		t.Fatal("bash tool not registered")
+	}
+	router.Register("bash", factory)
+
+	actionEvents, err := router.BuildActionEvents(context.Background(), []ToolCall{
+		{
+			ID:        "call_001",
+			Name:      "bash",
+			Arguments: json.RawMessage(`{"command":"echo hello","summary":"test","security_risk":"HIGH"}`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildActionEvents failed: %v", err)
+	}
+	if len(actionEvents) != 1 {
+		t.Fatalf("expected 1 action event, got %d", len(actionEvents))
+	}
+	if actionEvents[0].ActionID == "" {
+		t.Fatal("expected action id to be set")
+	}
+	if actionEvents[0].ToolCall == nil || actionEvents[0].ToolCall.ID != "call_001" {
+		t.Fatalf("unexpected tool call metadata: %+v", actionEvents[0].ToolCall)
+	}
+
+	action, ok := actionEvents[0].Action.(*tool.BashAction)
+	if !ok {
+		t.Fatalf("expected bash action, got %T", actionEvents[0].Action)
+	}
+	if action.Command != "echo hello" {
+		t.Fatalf("unexpected action command: %q", action.Command)
 	}
 }
 
@@ -191,38 +181,23 @@ func TestToolRouter_ConcurrentSafety(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	for g := 0; g < 10; g++ {
+	for range 10 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			r := NewToolRouter()
 			r.Register("bash", factory)
-			calls, _, _ := r.ParseLLMResponse(&ChatResponse{
-				Content: "",
-				ToolCalls: []types.MessageToolCall{
-					{ID: "call_001", Name: "bash", Arguments: `{"command":"echo ok","ActionMetadata":{"Summary":"test","SecurityRisk":"HIGH"}}`},
+			_, err := r.BuildActionEvents(context.Background(), []ToolCall{
+				{
+					ID:        "call_001",
+					Name:      "bash",
+					Arguments: json.RawMessage(`{"command":"echo ok","summary":"test","security_risk":"HIGH"}`),
 				},
 			})
-			results := r.ExecuteTools(context.Background(), calls)
-			for _, obs := range results {
-				if obs.IsError() {
-					t.Errorf("concurrent execution error: %s", utils.FlattenTextContent(obs.GetContent()))
-				}
+			if err != nil {
+				t.Errorf("concurrent BuildActionEvents failed: %v", err)
 			}
 		}()
 	}
 	wg.Wait()
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsAt(s, substr))
-}
-
-func containsAt(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

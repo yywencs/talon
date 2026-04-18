@@ -10,6 +10,7 @@ import (
 
 	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/config"
+	"github.com/wen/opentalon/pkg/utils"
 )
 
 func TestOllamaStreamChat(t *testing.T) {
@@ -126,11 +127,11 @@ func TestOllamaChat(t *testing.T) {
 		t.Fatalf("Chat 请求失败: %v", err)
 	}
 
-	if resp.Content == "" {
+	if len(resp.Message.Content) == 0 {
 		t.Error("未收到任何内容")
 	}
 
-	t.Logf("响应内容: %s", resp.Content)
+	t.Logf("响应内容: %s", utils.FlattenTextContent(resp.Message.Content))
 	t.Logf("Prompt tokens: %d, Completion tokens: %d", resp.PromptTokens, resp.CompletionTokens)
 }
 
@@ -163,11 +164,11 @@ func TestOpenAICompatibleChat(t *testing.T) {
 		t.Fatalf("Chat 请求失败: %v", err)
 	}
 
-	if resp.Content == "" {
+	if len(resp.Message.Content) == 0 {
 		t.Error("未收到任何内容")
 	}
 
-	t.Logf("响应内容: %s", resp.Content)
+	t.Logf("响应内容: %s", utils.FlattenTextContent(resp.Message.Content))
 	t.Logf("Prompt tokens: %d, Completion tokens: %d", resp.PromptTokens, resp.CompletionTokens)
 }
 
@@ -278,5 +279,41 @@ func TestSerializeOpenAIChatMessagesWithCacheControl(t *testing.T) {
 	cacheControl, ok := block["cache_control"].(map[string]any)
 	if !ok || cacheControl["type"] != "ephemeral" {
 		t.Fatalf("cache_control should appear inside content block: %s", string(data))
+	}
+}
+
+func TestMessageFromOpenAIChoice(t *testing.T) {
+	msg, err := messageFromOpenAIChoice(openAIWireMessage{
+		Role:             "assistant",
+		Content:          "这里是说明",
+		ReasoningContent: "这是推理",
+		ToolCalls: []types.ChatToolCallInput{
+			{
+				ID:   "call_1",
+				Type: "function",
+				Function: &types.ChatToolCallFunction{
+					Name:      "bash",
+					Arguments: `{"command":"pwd"}`,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("messageFromOpenAIChoice failed: %v", err)
+	}
+	if msg.Role != types.RoleAssistant {
+		t.Fatalf("expected assistant role, got %q", msg.Role)
+	}
+	if utils.FlattenTextContent(msg.Content) != "这里是说明" {
+		t.Fatalf("unexpected content: %+v", msg.Content)
+	}
+	if msg.ReasoningContent != "这是推理" {
+		t.Fatalf("unexpected reasoning_content: %q", msg.ReasoningContent)
+	}
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(msg.ToolCalls))
+	}
+	if msg.ToolCalls[0].Name != "bash" || msg.ToolCalls[0].Arguments != `{"command":"pwd"}` {
+		t.Fatalf("unexpected tool call: %+v", msg.ToolCalls[0])
 	}
 }

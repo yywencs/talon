@@ -56,10 +56,10 @@ func (o *TerminalObservation) ExitCodeValue() int {
 }
 
 type BashAction struct {
-	ActionMetadata `json:",inline"`
-	Command        string `json:"command" jsonschema:"description=要执行的 bash 命令完整文本,examples=[\"ls -la\",\"find . -name *.go | head -20\"]"`
-	TimeoutSecs    *int   `json:"timeout_secs,omitempty" jsonschema:"description=命令超时秒数,default=30,minimum=1,maximum=300"`
-	WorkingDir     string `json:"working_dir,omitempty" jsonschema:"description=命令执行的工作目录,default=当前进程工作目录,examples=[\"/tmp\",\"/home/user\"]"`
+	types.ActionMetadata `json:",inline"`
+	Command              string `json:"command" jsonschema:"description=要执行的 bash 命令完整文本,examples=[\"ls -la\",\"find . -name *.go | head -20\"]"`
+	TimeoutSecs          *int   `json:"timeout_secs,omitempty" jsonschema:"description=命令超时秒数,default=30,minimum=1,maximum=300"`
+	WorkingDir           string `json:"working_dir,omitempty" jsonschema:"description=命令执行的工作目录,default=当前进程工作目录,examples=[\"/tmp\",\"/home/user\"]"`
 }
 
 func (a BashAction) ActionType() types.ActionType {

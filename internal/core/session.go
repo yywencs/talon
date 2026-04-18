@@ -40,12 +40,10 @@ func (s *Session) Run(ctx context.Context) error {
 			break
 		}
 
-		observation, err := s.agent.Step(ctx, s.state)
+		err := s.agent.Step(ctx, s.state, s.on_event.Handle)
 		if err != nil {
 			return err
 		}
-
-		s.on_event.Handle(&observation)
 	}
 	return nil
 }

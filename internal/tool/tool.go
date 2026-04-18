@@ -11,53 +11,6 @@ import (
 
 type Observation = types.Observation
 
-type SecurityRisk string
-
-const (
-	SecurityRisk_UNKNOWN SecurityRisk = "UNKNOWN"
-	SecurityRisk_LOW     SecurityRisk = "LOW"
-	SecurityRisk_MEDIUM  SecurityRisk = "MEDIUM"
-	SecurityRisk_HIGH    SecurityRisk = "HIGH"
-)
-
-func (s SecurityRisk) weight() int {
-	switch s {
-	case SecurityRisk_LOW:
-		return 1
-	case SecurityRisk_MEDIUM:
-		return 2
-	case SecurityRisk_HIGH:
-		return 3
-	default:
-		return 0 // UNKNOWN 或其他非法值
-	}
-}
-
-func (s SecurityRisk) IsRiskierOrEqual(other SecurityRisk) bool {
-	if s == SecurityRisk_UNKNOWN || other == SecurityRisk_UNKNOWN {
-		return false
-	}
-	return s.weight() >= other.weight()
-}
-
-func (s SecurityRisk) Color() string {
-	switch s {
-	case SecurityRisk_LOW:
-		return "\033[32m" // Green
-	case SecurityRisk_MEDIUM:
-		return "\033[33m" // Yellow
-	case SecurityRisk_HIGH:
-		return "\033[31m" // Red
-	default:
-		return "\033[37m" // White
-	}
-}
-
-type ActionMetadata struct {
-	Summary      string       `json:"summary" jsonschema:"description=动作摘要"`
-	SecurityRisk SecurityRisk `json:"security_risk" jsonschema:"description=风险等级"`
-}
-
 type Tool interface {
 	Name() string
 	Description() string

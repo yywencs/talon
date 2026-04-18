@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wen/opentalon/internal/types"
 )
 
 func iptr(i int) *int {
@@ -17,9 +18,9 @@ func iptr(i int) *int {
 func TestBash_SimpleEcho(t *testing.T) {
 	tool := NewBashTool()
 	rawArgs, _ := json.Marshal(BashAction{
-		ActionMetadata: ActionMetadata{
+		ActionMetadata: types.ActionMetadata{
 			Summary:      "test",
-			SecurityRisk: SecurityRisk_HIGH,
+			SecurityRisk: types.SecurityRisk_HIGH,
 		},
 		Command: "echo hello",
 	})
@@ -40,9 +41,9 @@ func TestBash_SimpleEcho(t *testing.T) {
 func TestBash_WithTimeout(t *testing.T) {
 	tool := NewBashTool()
 	rawArgs, _ := json.Marshal(BashAction{
-		ActionMetadata: ActionMetadata{
+		ActionMetadata: types.ActionMetadata{
 			Summary:      "test with timeout",
-			SecurityRisk: SecurityRisk_HIGH,
+			SecurityRisk: types.SecurityRisk_HIGH,
 		},
 		Command:     "sleep 1",
 		TimeoutSecs: iptr(5),
@@ -67,9 +68,9 @@ func TestBash_WithTimeout(t *testing.T) {
 func TestBash_NonZeroExit(t *testing.T) {
 	tool := NewBashTool()
 	rawArgs, _ := json.Marshal(BashAction{
-		ActionMetadata: ActionMetadata{
+		ActionMetadata: types.ActionMetadata{
 			Summary:      "test non-zero exit",
-			SecurityRisk: SecurityRisk_HIGH,
+			SecurityRisk: types.SecurityRisk_HIGH,
 		},
 		Command: "exit 1",
 	})
@@ -87,9 +88,9 @@ func TestBash_NonZeroExit(t *testing.T) {
 func TestBash_EmptyCommand(t *testing.T) {
 	tool := NewBashTool()
 	rawArgs, _ := json.Marshal(BashAction{
-		ActionMetadata: ActionMetadata{
+		ActionMetadata: types.ActionMetadata{
 			Summary:      "test empty command",
-			SecurityRisk: SecurityRisk_HIGH,
+			SecurityRisk: types.SecurityRisk_HIGH,
 		},
 		Command: "",
 	})
@@ -110,9 +111,9 @@ func TestBash_EmptyCommand(t *testing.T) {
 func TestBash_InvalidTimeout_Zero(t *testing.T) {
 	tool := NewBashTool()
 	rawArgs, _ := json.Marshal(BashAction{
-		ActionMetadata: ActionMetadata{
+		ActionMetadata: types.ActionMetadata{
 			Summary:      "test zero timeout",
-			SecurityRisk: SecurityRisk_HIGH,
+			SecurityRisk: types.SecurityRisk_HIGH,
 		},
 		Command:     "echo hi",
 		TimeoutSecs: iptr(0),
@@ -134,9 +135,9 @@ func TestBash_InvalidTimeout_Zero(t *testing.T) {
 func TestBash_InvalidTimeout_Negative(t *testing.T) {
 	tool := NewBashTool()
 	rawArgs, _ := json.Marshal(BashAction{
-		ActionMetadata: ActionMetadata{
+		ActionMetadata: types.ActionMetadata{
 			Summary:      "test negative timeout",
-			SecurityRisk: SecurityRisk_HIGH,
+			SecurityRisk: types.SecurityRisk_HIGH,
 		},
 		Command:     "echo hi",
 		TimeoutSecs: iptr(-1),
@@ -158,9 +159,9 @@ func TestBash_InvalidTimeout_Negative(t *testing.T) {
 func TestBash_InvalidTimeout_TooLarge(t *testing.T) {
 	tool := NewBashTool()
 	rawArgs, _ := json.Marshal(BashAction{
-		ActionMetadata: ActionMetadata{
+		ActionMetadata: types.ActionMetadata{
 			Summary:      "test too large timeout",
-			SecurityRisk: SecurityRisk_HIGH,
+			SecurityRisk: types.SecurityRisk_HIGH,
 		},
 		Command:     "echo hi",
 		TimeoutSecs: iptr(301),
@@ -182,9 +183,9 @@ func TestBash_InvalidTimeout_TooLarge(t *testing.T) {
 func TestBash_TimeoutExceeded(t *testing.T) {
 	tool := NewBashTool()
 	rawArgs, _ := json.Marshal(BashAction{
-		ActionMetadata: ActionMetadata{
+		ActionMetadata: types.ActionMetadata{
 			Summary:      "test timeout exceeded",
-			SecurityRisk: SecurityRisk_HIGH,
+			SecurityRisk: types.SecurityRisk_HIGH,
 		},
 		Command:     "sleep 10",
 		TimeoutSecs: iptr(1),
@@ -212,9 +213,9 @@ func TestBash_TimeoutExceeded(t *testing.T) {
 func TestBash_NonexistentWorkingDir(t *testing.T) {
 	tool := NewBashTool()
 	rawArgs, _ := json.Marshal(BashAction{
-		ActionMetadata: ActionMetadata{
+		ActionMetadata: types.ActionMetadata{
 			Summary:      "test nonexistent working dir",
-			SecurityRisk: SecurityRisk_HIGH,
+			SecurityRisk: types.SecurityRisk_HIGH,
 		},
 		Command:     "echo hi",
 		WorkingDir:  "/nonexistent/path/that/does/not/exist",
@@ -239,9 +240,9 @@ func TestBash_CtxCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	rawArgs, _ := json.Marshal(BashAction{
-		ActionMetadata: ActionMetadata{
+		ActionMetadata: types.ActionMetadata{
 			Summary:      "test context cancelled",
-			SecurityRisk: SecurityRisk_HIGH,
+			SecurityRisk: types.SecurityRisk_HIGH,
 		},
 		Command:     "sleep 10",
 		TimeoutSecs: iptr(30),
@@ -268,9 +269,9 @@ func TestBash_CtxCancelled(t *testing.T) {
 func TestBash_OutputTruncation(t *testing.T) {
 	tool := NewBashTool()
 	rawArgs, _ := json.Marshal(BashAction{
-		ActionMetadata: ActionMetadata{
+		ActionMetadata: types.ActionMetadata{
 			Summary:      "test output truncation",
-			SecurityRisk: SecurityRisk_HIGH,
+			SecurityRisk: types.SecurityRisk_HIGH,
 		},
 		Command:     "yes | head -c 2000000",
 		TimeoutSecs: iptr(30),
@@ -317,9 +318,9 @@ func TestBash_ConcurrentExec(t *testing.T) {
 		go func(idx int, command string) {
 			defer wg.Done()
 			rawArgs, _ := json.Marshal(BashAction{
-				ActionMetadata: ActionMetadata{
+				ActionMetadata: types.ActionMetadata{
 					Summary:      "concurrent test",
-					SecurityRisk: SecurityRisk_HIGH,
+					SecurityRisk: types.SecurityRisk_HIGH,
 				},
 				Command: command,
 			})
@@ -365,9 +366,9 @@ func TestBash_NameAndDescription(t *testing.T) {
 func TestBash_ValidWorkingDir(t *testing.T) {
 	tool := NewBashTool()
 	rawArgs, _ := json.Marshal(BashAction{
-		ActionMetadata: ActionMetadata{
+		ActionMetadata: types.ActionMetadata{
 			Summary:      "test valid working dir",
-			SecurityRisk: SecurityRisk_HIGH,
+			SecurityRisk: types.SecurityRisk_HIGH,
 		},
 		Command:     "pwd",
 		WorkingDir:  "/tmp",
@@ -390,9 +391,9 @@ func TestBash_ValidWorkingDir(t *testing.T) {
 func TestBash_PipeCommand(t *testing.T) {
 	tool := NewBashTool()
 	rawArgs, _ := json.Marshal(BashAction{
-		ActionMetadata: ActionMetadata{
+		ActionMetadata: types.ActionMetadata{
 			Summary:      "test pipe command",
-			SecurityRisk: SecurityRisk_HIGH,
+			SecurityRisk: types.SecurityRisk_HIGH,
 		},
 		Command:     "echo 'hello world' | tr 'a-z' 'A-Z'",
 		TimeoutSecs: iptr(30),
@@ -415,9 +416,9 @@ func TestBash_PipeCommand(t *testing.T) {
 func TestBash_CommandNotFound(t *testing.T) {
 	tool := NewBashTool()
 	rawArgs, _ := json.Marshal(BashAction{
-		ActionMetadata: ActionMetadata{
+		ActionMetadata: types.ActionMetadata{
 			Summary:      "test command not found",
-			SecurityRisk: SecurityRisk_HIGH,
+			SecurityRisk: types.SecurityRisk_HIGH,
 		},
 		Command:     "nonexistent_command_12345",
 		TimeoutSecs: iptr(30),

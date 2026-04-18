@@ -33,11 +33,10 @@ type ChatRequest struct {
 	Tools       []map[string]any // 新增：function calling tools
 }
 
-// ChatResponse 是 LLM 返回的响应结构，Content 为实际文本回复，
+// ChatResponse 是 LLM 返回的响应结构，Message 为模型输出的统一消息格式，
 // PromptTokens/CompletionTokens 分别统计输入/输出的 token 数量。
 type ChatResponse struct {
-	Content          string
-	ToolCalls        []types.MessageToolCall `json:"tool_calls,omitempty"`
+	Message          types.Message
 	PromptTokens     int
 	CompletionTokens int
 }
@@ -204,7 +203,7 @@ func (c *ollamaClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 	}
 
 	return &ChatResponse{
-		Content:          wireResp.Message.Content,
+		Message:          buildAssistantMessage(wireResp.Message.Role, wireResp.Message.Content, nil, ""),
 		PromptTokens:     wireResp.PromptEvalCount,
 		CompletionTokens: wireResp.EvalCount,
 	}, nil
@@ -328,14 +327,17 @@ func serializeOpenAIChatMessages(messages []types.Message) ([]any, error) {
 	return serializer.SerializeMessages(messageSerializer, messages)
 }
 
+type openAIWireMessage struct {
+	Role             string                    `json:"role"`
+	Content          string                    `json:"content"`
+	ToolCalls        []types.ChatToolCallInput `json:"tool_calls,omitempty"`
+	ReasoningContent string                    `json:"reasoning_content,omitempty"`
+}
+
 // openAIWireResponse 是 OpenAI-compatible 接口返回的 wire 协议响应。
 type openAIWireResponse struct {
 	Choices []struct {
-		Message struct {
-			Role      string                  `json:"role"`
-			Content   string                  `json:"content"`
-			ToolCalls []types.MessageToolCall `json:"tool_calls,omitempty"`
-		} `json:"message"`
+		Message openAIWireMessage `json:"message"`
 	} `json:"choices"`
 	Usage struct {
 		PromptTokens     int `json:"prompt_tokens"`
@@ -374,11 +376,13 @@ func (c *openAICompatibleClient) Chat(ctx context.Context, req ChatRequest) (*Ch
 		return nil, fmt.Errorf("openai-compatible 响应缺少 choices")
 	}
 
-	toolCalls := wireResp.Choices[0].Message.ToolCalls
+	message, err := messageFromOpenAIChoice(wireResp.Choices[0].Message)
+	if err != nil {
+		return nil, fmt.Errorf("解析 openai-compatible 消息失败: %w", err)
+	}
 
 	return &ChatResponse{
-		Content:          wireResp.Choices[0].Message.Content,
-		ToolCalls:        toolCalls,
+		Message:          message,
 		PromptTokens:     wireResp.Usage.PromptTokens,
 		CompletionTokens: wireResp.Usage.CompletionTokens,
 	}, nil
@@ -614,6 +618,35 @@ func resolveOpenAIEndpoint(endpoint string) string {
 		return endpoint + "/chat/completions"
 	}
 	return endpoint + "/chat/completions"
+}
+
+func buildAssistantMessage(role string, content string, toolCalls []types.MessageToolCall, reasoningContent string) types.Message {
+	msg := types.Message{
+		Role:             types.MessageRole(role),
+		ToolCalls:        toolCalls,
+		ReasoningContent: reasoningContent,
+	}
+	if msg.Role == "" {
+		msg.Role = types.RoleAssistant
+	}
+	if content != "" {
+		msg.Content = []types.Content{
+			types.TextContent{Text: content},
+		}
+	}
+	return msg
+}
+
+func messageFromOpenAIChoice(wireMsg openAIWireMessage) (types.Message, error) {
+	toolCalls := make([]types.MessageToolCall, 0, len(wireMsg.ToolCalls))
+	for _, toolCall := range wireMsg.ToolCalls {
+		converted, err := types.MessageToolCallFromChatToolCall(toolCall)
+		if err != nil {
+			return types.Message{}, err
+		}
+		toolCalls = append(toolCalls, *converted)
+	}
+	return buildAssistantMessage(wireMsg.Role, wireMsg.Content, toolCalls, wireMsg.ReasoningContent), nil
 }
 
 func stripCacheControl(messages []types.Message) []types.Message {

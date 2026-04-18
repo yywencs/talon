@@ -10,9 +10,12 @@ import (
 
 func TestPromptBuilderBuildMessages(t *testing.T) {
 	eventLog := types.NewEventLog()
-	eventLog.Append(&types.MessageAction{
+	eventLog.Append(&types.MessageEvent{
 		BaseEvent: types.BaseEvent{Source: types.SourceUser},
-		Content:   "请看看目录",
+		LLMMessage: types.Message{
+			Role:    types.RoleUser,
+			Content: []types.Content{types.TextContent{Text: "请看看目录"}},
+		},
 	})
 	eventLog.Append(&types.ActionEvent{
 		BaseEvent:  types.BaseEvent{Source: types.SourceAgent},
