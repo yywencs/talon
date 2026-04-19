@@ -112,13 +112,6 @@ func applyEphemeralCacheControls(messages []types.Message, hasExamples bool) {
 	}
 }
 
-func roleForSourceMessage(source types.EventSource) types.MessageRole {
-	if source == types.SourceUser {
-		return types.RoleUser
-	}
-	return types.RoleAssistant
-}
-
 func hasCachePrompt(contents []types.Content) bool {
 	for _, content := range contents {
 		switch c := content.(type) {

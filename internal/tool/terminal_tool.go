@@ -55,14 +55,14 @@ func (o *TerminalObservation) ExitCodeValue() int {
 	return *o.ExitCode
 }
 
-type BashAction struct {
-	types.ActionMetadata `json:",inline"`
-	Command              string `json:"command" jsonschema:"description=要执行的 bash 命令完整文本,examples=[\"ls -la\",\"find . -name *.go | head -20\"]"`
-	TimeoutSecs          *int   `json:"timeout_secs,omitempty" jsonschema:"description=命令超时秒数,default=30,minimum=1,maximum=300"`
-	WorkingDir           string `json:"working_dir,omitempty" jsonschema:"description=命令执行的工作目录,default=当前进程工作目录,examples=[\"/tmp\",\"/home/user\"]"`
+type BashTool struct {
+	types.ToolMetadata `json:",inline"`
+	Command            string `json:"command" jsonschema:"description=要执行的 bash 命令完整文本,examples=[\"ls -la\",\"find . -name *.go | head -20\"]"`
+	TimeoutSecs        *int   `json:"timeout_secs,omitempty" jsonschema:"description=命令超时秒数,default=30,minimum=1,maximum=300"`
+	WorkingDir         string `json:"working_dir,omitempty" jsonschema:"description=命令执行的工作目录,default=当前进程工作目录,examples=[\"/tmp\",\"/home/user\"]"`
 }
 
-func (a BashAction) ActionType() types.ActionType {
+func (a BashTool) ActionType() types.ActionType {
 	return types.ActionRun
 }
 
@@ -72,7 +72,7 @@ const (
 	maxOutputSize      = 1024 * 1024
 )
 
-func bashExecutor(ctx context.Context, action BashAction) *TerminalObservation {
+func bashExecutor(ctx context.Context, action BashTool) *TerminalObservation {
 	if err := validateAction(&action); err != nil {
 		return errorOutput(action.Command, action.WorkingDir, nil, false, -1, err.Error())
 	}
@@ -90,7 +90,7 @@ func bashExecutor(ctx context.Context, action BashAction) *TerminalObservation {
 	return NewTerminalObservation(action.Command, action.WorkingDir, result.PID, result.TimedOut, result.ExitCode, result.Output)
 }
 
-func validateAction(action *BashAction) error {
+func validateAction(action *BashTool) error {
 	if strings.TrimSpace(action.Command) == "" {
 		return fmt.Errorf("command is empty")
 	}
@@ -298,15 +298,15 @@ const (
 	* 警告：重置终端会丢失所有已设置的环境变量、工作目录变更以及正在运行的进程。仅在终端无法响应命令时使用。`
 )
 
-func newBashTool() *BaseTool[BashAction, *TerminalObservation] {
-	return &BaseTool[BashAction, *TerminalObservation]{
+func newBashTool() *BaseTool[BashTool, *TerminalObservation] {
+	return &BaseTool[BashTool, *TerminalObservation]{
 		ToolName: "bash",
 		ToolDesc: TOOL_DESCRIPTION,
 		Executor: bashExecutor,
 	}
 }
 
-func NewBashTool() *BaseTool[BashAction, *TerminalObservation] {
+func NewBashTool() *BaseTool[BashTool, *TerminalObservation] {
 	return newBashTool()
 }
 

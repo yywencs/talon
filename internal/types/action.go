@@ -55,7 +55,7 @@ func (s SecurityRisk) Color() string {
 	}
 }
 
-type ActionMetadata struct {
+type ToolMetadata struct {
 	Summary      string       `json:"summary" jsonschema:"description=动作摘要"`
 	SecurityRisk SecurityRisk `json:"security_risk" jsonschema:"description=风险等级"`
 }
@@ -78,6 +78,12 @@ type ActionEvent struct {
 	ActionID   string     `json:"action_id"`
 	ActionType ActionType `json:"action_type"`
 	Action     Action     `json:"action"`
+	ToolName   string     `json:"tool_name,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+
+	LLMResponseID string       `json:"llm_response_id,omitempty"`
+	Summary       string       `json:"summary,omitempty"`
+	SecurityRisk  SecurityRisk `json:"security_risk,omitempty"`
 
 	Thought                string                  `json:"thought,omitempty"`
 	ToolCall               *MessageToolCall        `json:"tool_call,omitempty"`

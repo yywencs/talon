@@ -44,7 +44,7 @@ type ChatResponse struct {
 // LLMClient 接口抽象了所有 LLM provider 的 chat 能力。
 type LLMClient interface {
 	Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
-	StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) error
+	StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) (*ChatResponse, error)
 }
 
 var sharedLLMHTTPClient = &http.Client{
@@ -209,7 +209,7 @@ func (c *ollamaClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 	}, nil
 }
 
-func (c *ollamaClient) StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) error {
+func (c *ollamaClient) StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) (*ChatResponse, error) {
 	wireReq := ollamaWireRequest{
 		Model:    req.Model,
 		Messages: toOllamaMessages(stripCacheControl(req.Messages)),
@@ -221,34 +221,37 @@ func (c *ollamaClient) StreamChat(ctx context.Context, req ChatRequest, onToken 
 
 	body, err := json.Marshal(wireReq)
 	if err != nil {
-		return fmt.Errorf("序列化请求失败: %w", err)
+		return nil, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveOllamaEndpoint(c.endpoint), bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("创建请求失败: %w", err)
+		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := sharedLLMHTTPClient.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("请求 ollama 失败: %w", err)
+		return nil, fmt.Errorf("请求 ollama 失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("Ollama 流式请求失败，状态码: %d，响应: %s", resp.StatusCode, string(respBytes))
+		return nil, fmt.Errorf("Ollama 流式请求失败，状态码: %d，响应: %s", resp.StatusCode, string(respBytes))
 	}
 
 	reader := bufio.NewReader(resp.Body)
+	var contentBuilder strings.Builder
+	promptTokens := 0
+	completionTokens := 0
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
-			return fmt.Errorf("读取流式响应失败: %w", err)
+			return nil, fmt.Errorf("读取流式响应失败: %w", err)
 		}
 
 		line = bytes.TrimSpace(line)
@@ -262,7 +265,14 @@ func (c *ollamaClient) StreamChat(ctx context.Context, req ChatRequest, onToken 
 		}
 
 		if chunk.Message.Content != "" {
+			contentBuilder.WriteString(chunk.Message.Content)
 			onToken(chunk.Message.Content)
+		}
+		if chunk.PromptEvalCount > 0 {
+			promptTokens = chunk.PromptEvalCount
+		}
+		if chunk.EvalCount > 0 {
+			completionTokens = chunk.EvalCount
 		}
 
 		if chunk.Done {
@@ -270,7 +280,11 @@ func (c *ollamaClient) StreamChat(ctx context.Context, req ChatRequest, onToken 
 		}
 	}
 
-	return nil
+	return &ChatResponse{
+		Message:          buildAssistantMessage(string(types.RoleAssistant), contentBuilder.String(), nil, ""),
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+	}, nil
 }
 
 type ollamaStreamChunk struct {
@@ -388,7 +402,7 @@ func (c *openAICompatibleClient) Chat(ctx context.Context, req ChatRequest) (*Ch
 	}, nil
 }
 
-func (c *openAICompatibleClient) StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) error {
+func (c *openAICompatibleClient) StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) (*ChatResponse, error) {
 	headers := map[string]string{
 		"Content-Type": "application/json",
 	}
@@ -404,18 +418,18 @@ func (c *openAICompatibleClient) StreamChat(ctx context.Context, req ChatRequest
 	}
 	messages, err := serializeOpenAIChatMessages(req.Messages)
 	if err != nil {
-		return fmt.Errorf("序列化消息失败: %w", err)
+		return nil, fmt.Errorf("序列化消息失败: %w", err)
 	}
 	wireReq.Messages = messages
 
 	body, err := json.Marshal(wireReq)
 	if err != nil {
-		return fmt.Errorf("序列化请求失败: %w", err)
+		return nil, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveOpenAIEndpoint(c.endpoint), bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("创建请求失败: %w", err)
+		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
 	for k, v := range headers {
 		httpReq.Header.Set(k, v)
@@ -423,23 +437,30 @@ func (c *openAICompatibleClient) StreamChat(ctx context.Context, req ChatRequest
 
 	resp, err := sharedLLMHTTPClient.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("请求 openai-compatible 失败: %w", err)
+		return nil, fmt.Errorf("请求 openai-compatible 失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("OpenAI-compatible 流式请求失败，状态码: %d，响应: %s", resp.StatusCode, string(respBytes))
+		return nil, fmt.Errorf("OpenAI-compatible 流式请求失败，状态码: %d，响应: %s", resp.StatusCode, string(respBytes))
 	}
 
 	reader := bufio.NewReader(resp.Body)
+	var contentBuilder strings.Builder
+	role := string(types.RoleAssistant)
+	reasoningContent := ""
+	var toolCalls []types.MessageToolCall
+	var promptTokens int
+	var completionTokens int
+	streamToolCalls := make(map[int]*types.MessageToolCall)
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
-			return fmt.Errorf("读取流式响应失败: %w", err)
+			return nil, fmt.Errorf("读取流式响应失败: %w", err)
 		}
 
 		line = bytes.TrimSpace(line)
@@ -458,18 +479,83 @@ func (c *openAICompatibleClient) StreamChat(ctx context.Context, req ChatRequest
 		}
 
 		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
+			contentBuilder.WriteString(chunk.Choices[0].Delta.Content)
 			onToken(chunk.Choices[0].Delta.Content)
+		}
+		if len(chunk.Choices) > 0 {
+			delta := chunk.Choices[0].Delta
+			if delta.Role != "" {
+				role = delta.Role
+			}
+			if delta.ReasoningContent != "" {
+				reasoningContent += delta.ReasoningContent
+			}
+			for _, toolCall := range delta.ToolCalls {
+				existing := streamToolCalls[toolCall.Index]
+				if existing == nil {
+					existing = &types.MessageToolCall{}
+					streamToolCalls[toolCall.Index] = existing
+				}
+				if toolCall.ID != "" {
+					existing.ID = toolCall.ID
+				}
+				if toolCall.Function != nil {
+					if toolCall.Function.Name != "" {
+						existing.Name = toolCall.Function.Name
+					}
+					if toolCall.Function.Arguments != "" {
+						existing.Arguments += toolCall.Function.Arguments
+					}
+				}
+			}
+		}
+		if chunk.Usage.PromptTokens > 0 {
+			promptTokens = chunk.Usage.PromptTokens
+		}
+		if chunk.Usage.CompletionTokens > 0 {
+			completionTokens = chunk.Usage.CompletionTokens
 		}
 	}
 
-	return nil
+	if len(streamToolCalls) > 0 {
+		maxIndex := -1
+		for idx := range streamToolCalls {
+			if idx > maxIndex {
+				maxIndex = idx
+			}
+		}
+		toolCalls = make([]types.MessageToolCall, 0, maxIndex+1)
+		for idx := 0; idx <= maxIndex; idx++ {
+			toolCall := streamToolCalls[idx]
+			if toolCall == nil {
+				continue
+			}
+			toolCalls = append(toolCalls, *toolCall)
+		}
+	}
+
+	return &ChatResponse{
+		Message:          buildAssistantMessage(role, contentBuilder.String(), toolCalls, reasoningContent),
+		PromptTokens:     promptTokens,
+		CompletionTokens: completionTokens,
+	}, nil
 }
 
 type openAIStreamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
+			Role             string `json:"role"`
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
+			ToolCalls        []struct {
+				Index    int    `json:"index"`
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function *struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function,omitempty"`
+			} `json:"tool_calls,omitempty"`
 		} `json:"delta"`
 	} `json:"choices"`
 	Usage struct {

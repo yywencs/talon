@@ -30,3 +30,23 @@ func (h *Callbacks) Handle(e types.Event) {
 		cb(e)
 	}
 }
+
+type StreamCallbacks struct {
+	onTextDelta []func(text string)
+}
+
+func NewStreamCallbacks() *StreamCallbacks {
+	return &StreamCallbacks{
+		onTextDelta: make([]func(text string), 0),
+	}
+}
+
+func (h *StreamCallbacks) AddTextDelta(callbacks ...func(text string)) {
+	h.onTextDelta = append(h.onTextDelta, callbacks...)
+}
+
+func (h *StreamCallbacks) HandleTextDelta(text string) {
+	for _, cb := range h.onTextDelta {
+		cb(text)
+	}
+}

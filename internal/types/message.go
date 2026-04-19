@@ -76,7 +76,7 @@ func (e *MessageEvent) ToMessage() Message {
 			EncryptedContent: src.ResponsesReasoningItem.EncryptedContent,
 			Status:           src.ResponsesReasoningItem.Status,
 		}
-		
+
 		if dst.ResponsesReasoningItem.Summary != nil {
 			newItem.Summary = make([]string, len(src.ResponsesReasoningItem.Summary))
 			copy(newItem.Summary, src.ResponsesReasoningItem.Summary)

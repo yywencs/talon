@@ -38,7 +38,7 @@ func TestOllamaStreamChat(t *testing.T) {
 	}
 
 	var fullResponse string
-	err = client.StreamChat(ctx, req, func(token string) {
+	resp, err := client.StreamChat(ctx, req, func(token string) {
 		fmt.Print(token)
 		fullResponse += token
 	})
@@ -49,6 +49,9 @@ func TestOllamaStreamChat(t *testing.T) {
 
 	if len(fullResponse) == 0 {
 		t.Error("未收到任何 token")
+	}
+	if resp == nil {
+		t.Fatal("expected final response")
 	}
 
 	t.Logf("\n总共收到 %d 个字符", len(fullResponse))
@@ -82,7 +85,7 @@ func TestOpenAICompatibleStreamChat(t *testing.T) {
 	}
 
 	var fullResponse string
-	err = client.StreamChat(ctx, req, func(token string) {
+	resp, err := client.StreamChat(ctx, req, func(token string) {
 		fmt.Print(token)
 		fullResponse += token
 	})
@@ -93,6 +96,9 @@ func TestOpenAICompatibleStreamChat(t *testing.T) {
 
 	if len(fullResponse) == 0 {
 		t.Error("未收到任何 token")
+	}
+	if resp == nil {
+		t.Fatal("expected final response")
 	}
 
 	t.Logf("\n总共收到 %d 个字符", len(fullResponse))
