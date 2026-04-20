@@ -14,6 +14,7 @@ import (
 	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/config"
 	"github.com/wen/opentalon/pkg/logger"
+	"github.com/wen/opentalon/pkg/observability"
 	"github.com/wen/opentalon/pkg/utils"
 )
 
@@ -24,6 +25,15 @@ func main() {
 	config.Load()
 	logger.LogDir = config.Global.LogDir
 	logger.SetupLogger()
+	if err := observability.Init(context.Background(), observability.LoadConfigFromEnv()); err != nil {
+		fmt.Fprintf(os.Stderr, "初始化 observability 失败: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := observability.Shutdown(context.Background()); err != nil {
+			fmt.Fprintf(os.Stderr, "关闭 observability 失败: %v\n", err)
+		}
+	}()
 	cfg := config.Global
 
 	fmt.Println("")

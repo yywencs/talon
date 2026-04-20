@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/wen/opentalon/internal/types"
+	"github.com/wen/opentalon/pkg/observability"
 )
 
 type Session struct {
@@ -85,6 +86,17 @@ func (s *Session) SubmitUserMessage(text string) error {
 }
 
 func (s *Session) Run(ctx context.Context) error {
+	tracer := observability.TracerFor("internal/core/session")
+	ctx, span := tracer.StartSpan(ctx, "session.run",
+		observability.WithSpanKind(observability.SpanKindInternal),
+		observability.WithAttributes(
+			observability.String("session.id", s.state.ID),
+			observability.String("session.status.initial", string(s.state.Status)),
+			observability.String("agent.type", fmt.Sprintf("%T", s.agent)),
+		),
+	)
+	defer span.End()
+
 	for {
 		if s.state.Status == types.StatusPaused || s.state.Status == types.StatusStuck {
 			break
@@ -96,10 +108,13 @@ func (s *Session) Run(ctx context.Context) error {
 
 		result, err := s.agent.StreamStep(ctx, s.state, s.handleAgentOutput)
 		if err != nil {
+			span.RecordError(err, observability.StatusFromError(err))
 			return err
 		}
 		if result == nil {
-			return fmt.Errorf("session run: agent returned nil turn result")
+			err := fmt.Errorf("session run: agent returned nil turn result")
+			span.RecordError(err, observability.SpanStatusLLMInvalidResponse)
+			return err
 		}
 		if result.Message != nil {
 			s.emit(s.eventFactory.NewMessageEvent(*result.Message, types.SourceAgent))
@@ -107,7 +122,9 @@ func (s *Session) Run(ctx context.Context) error {
 
 		actionEvents, err := s.eventFactory.BuildActionEvents(result.ToolCalls, types.SourceAgent, result.ActionReasoningContent)
 		if err != nil {
-			return fmt.Errorf("session run: build action events failed: %w", err)
+			wrappedErr := fmt.Errorf("session run: build action events failed: %w", err)
+			span.RecordError(wrappedErr, observability.SpanStatusError)
+			return wrappedErr
 		}
 		actionEvents = hasFinishAction(actionEvents)
 		if len(actionEvents) == 0 {
@@ -115,13 +132,17 @@ func (s *Session) Run(ctx context.Context) error {
 				s.state.Status = types.StatusFinished
 				continue
 			}
-			return fmt.Errorf("session run: agent returned no actions and did not finish")
+			err := fmt.Errorf("session run: agent returned no actions and did not finish")
+			span.RecordError(err, observability.SpanStatusLLMInvalidResponse)
+			return err
 		}
 		for _, actionEvent := range actionEvents {
 			s.emit(actionEvent)
 		}
 		s.executeActionEvents(ctx, actionEvents)
 	}
+	span.SetAttributes(observability.String("session.status.final", string(s.state.Status)))
+	span.SetStatus(observability.SpanStatusOK, "session completed")
 	return nil
 }
 

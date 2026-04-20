@@ -7,6 +7,7 @@ import (
 	toolpkg "github.com/wen/opentalon/internal/tool"
 	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/config"
+	"github.com/wen/opentalon/pkg/observability"
 	"github.com/wen/opentalon/pkg/prompts"
 	"github.com/wen/opentalon/pkg/utils"
 )
@@ -63,19 +64,41 @@ func NewAgent(cfg config.LLMConfig) (*Agent, error) {
 
 // StreamStep 执行一次完整的 LLM 循环，并通过回调输出增量语义结果。
 func (a *Agent) StreamStep(ctx context.Context, state *types.SessionState, onOutput func(types.AgentOutput)) (*types.AgentTurnResult, error) {
+	tracer := observability.TracerFor("internal/agent/agent")
+	ctx, span := tracer.StartSpan(ctx, "agent.stream_step",
+		observability.WithSpanKind(observability.SpanKindInternal),
+		observability.WithAttributes(
+			observability.String("session.id", state.ID),
+			observability.String("agent.model", a.model),
+			observability.Int("tool.count", len(a.tools)),
+		),
+	)
+	defer span.End()
+
 	systemPrompt := a.promptReg.Get("system_prompt").Base()
 	userPrompt := a.promptReg.Get("user_prompt").Base()
+	promptCtx, promptSpan := tracer.StartSpan(ctx, "prompt.build", observability.WithSpanKind(observability.SpanKindInternal))
+	messages := a.promptBld.BuildMessages(state, systemPrompt, userPrompt)
+	promptSpan.SetAttributes(observability.Int("message.count", len(messages)))
+	promptSpan.SetStatus(observability.SpanStatusOK, "prompt built")
+	promptSpan.End()
+	_ = promptCtx
 
 	req := ChatRequest{
 		Model:    a.model,
-		Messages: a.promptBld.BuildMessages(state, systemPrompt, userPrompt),
+		Messages: messages,
 		Tools:    a.tools,
 		Stream:   true,
 	}
 
+	firstTokenSeen := false
 	resp, err := a.client.StreamChat(ctx, req, func(token string) {
 		if onOutput == nil || token == "" {
 			return
+		}
+		if !firstTokenSeen {
+			firstTokenSeen = true
+			span.AddEvent("first_token_received")
 		}
 		onOutput(types.AgentOutput{
 			Kind:      types.AgentOutputMessageDelta,
@@ -83,19 +106,30 @@ func (a *Agent) StreamStep(ctx context.Context, state *types.SessionState, onOut
 		})
 	})
 	if err != nil {
+		span.RecordError(err, observability.StatusFromError(err))
 		return nil, err
 	}
 
 	result, err := a.responseToTurnResult(resp)
 	if err != nil {
+		span.RecordError(err, observability.SpanStatusLLMInvalidResponse)
 		return nil, err
 	}
 	if result == nil {
-		return nil, fmt.Errorf("模型未输出有效结果")
+		err := fmt.Errorf("模型未输出有效结果")
+		span.RecordError(err, observability.SpanStatusLLMInvalidResponse)
+		return nil, err
 	}
 	if result.Message == nil && len(result.ToolCalls) == 0 {
-		return nil, fmt.Errorf("模型未输出有效结果")
+		err := fmt.Errorf("模型未输出有效结果")
+		span.RecordError(err, observability.SpanStatusLLMInvalidResponse)
+		return nil, err
 	}
+	span.SetAttributes(
+		observability.Bool("agent.finished", result.Finished),
+		observability.Int("tool_call.count", len(result.ToolCalls)),
+	)
+	span.SetStatus(observability.SpanStatusOK, "agent step completed")
 	return result, nil
 }
 

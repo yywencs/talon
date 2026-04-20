@@ -7,6 +7,7 @@ import (
 
 	"github.com/wen/opentalon/internal/tool"
 	"github.com/wen/opentalon/internal/types"
+	"github.com/wen/opentalon/pkg/observability"
 )
 
 type ToolRouter struct {
@@ -82,6 +83,18 @@ func (r *ToolRouter) ExecuteActionEvent(ctx context.Context, event *types.Action
 		return nil
 	}
 
+	tracer := observability.TracerFor("internal/core/tool_router")
+	ctx, span := tracer.StartSpan(ctx, "tool.execute",
+		observability.WithSpanKind(observability.SpanKindInternal),
+		observability.WithAttributes(
+			observability.String("action.id", event.ActionID),
+			observability.String("tool.name", event.ToolName),
+			observability.String("tool.call_id", event.ToolCallID),
+			observability.String("tool.summary", event.Summary),
+		),
+	)
+	defer span.End()
+
 	toolCallID := event.ToolCallID
 	toolName := event.ToolName
 	args := []byte("{}")
@@ -96,6 +109,14 @@ func (r *ToolRouter) ExecuteActionEvent(ctx context.Context, event *types.Action
 	}
 
 	observation := r.executeSingleTool(ctx, toolName, args)
+	if observation != nil {
+		span.SetAttributes(observability.Bool("observation.error", observation.IsError()))
+		if observation.IsError() {
+			span.SetStatus(observability.SpanStatusError, "tool returned error observation")
+		} else {
+			span.SetStatus(observability.SpanStatusOK, "tool executed")
+		}
+	}
 	return r.eventFactory.NewObservationEvent(event, observation, toolName, toolCallID)
 }
 
@@ -107,6 +128,16 @@ func (r *ToolRouter) ExecuteBatch(ctx context.Context, actionEvents []*types.Act
 	if parallelism <= 0 {
 		parallelism = 1
 	}
+
+	tracer := observability.TracerFor("internal/core/tool_router")
+	ctx, span := tracer.StartSpan(ctx, "action.dispatch.batch",
+		observability.WithSpanKind(observability.SpanKindInternal),
+		observability.WithAttributes(
+			observability.Int("action.count", len(actionEvents)),
+			observability.Int("action.parallelism", parallelism),
+		),
+	)
+	defer span.End()
 
 	sem := make(chan struct{}, parallelism)
 	results := make([]*types.ObservationEvent, len(actionEvents))
@@ -130,8 +161,11 @@ func (r *ToolRouter) ExecuteBatch(ctx context.Context, actionEvents []*types.Act
 
 // executeSingleTool 执行单个工具调用，并统一兜底 unknown/panic 场景。
 func (r *ToolRouter) executeSingleTool(ctx context.Context, toolName string, arguments []byte) types.Observation {
+	span := observability.SpanFromContext(ctx)
+
 	toolInstance, err := r.ResolveTool(ctx, toolName)
 	if err != nil {
+		span.RecordError(err, observability.SpanStatusError)
 		return &types.BaseObservation{
 			ErrorStatus: true,
 			Content: []types.Content{
@@ -144,6 +178,7 @@ func (r *ToolRouter) executeSingleTool(ctx context.Context, toolName string, arg
 	func() {
 		defer func() {
 			if p := recover(); p != nil {
+				span.RecordError(fmt.Errorf("panic recovered: %v", p), observability.SpanStatusPanicRecovered)
 				observation = &types.BaseObservation{
 					ErrorStatus: true,
 					Content: []types.Content{
@@ -154,6 +189,9 @@ func (r *ToolRouter) executeSingleTool(ctx context.Context, toolName string, arg
 		}()
 		observation = toolInstance.Execute(ctx, arguments)
 	}()
+	if ctx.Err() != nil {
+		span.RecordError(ctx.Err(), observability.StatusFromError(ctx.Err()))
+	}
 
 	return observation
 }

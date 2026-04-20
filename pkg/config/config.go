@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/joho/godotenv"
 	"github.com/wen/opentalon/pkg/utils"
@@ -61,20 +60,4 @@ func Load() {
 
 func IsDebug() bool {
 	return Global.Debug
-}
-
-// 辅助函数：简化获取环境变量的逻辑
-func getEnv(key, fallback string) string {
-	if value, ok := os.LookupEnv(key); ok {
-		return value
-	}
-	return fallback
-}
-
-func getEnvAsBool(key string, fallback bool) bool {
-	val := getEnv(key, "")
-	if val == "" {
-		return fallback
-	}
-	return strings.ToLower(val) == "true"
 }

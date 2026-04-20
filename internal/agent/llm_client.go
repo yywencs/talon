@@ -20,6 +20,7 @@ import (
 	"github.com/wen/opentalon/internal/serializer"
 	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/config"
+	"github.com/wen/opentalon/pkg/observability"
 	"github.com/wen/opentalon/pkg/utils"
 )
 
@@ -48,7 +49,7 @@ type LLMClient interface {
 }
 
 var sharedLLMHTTPClient = &http.Client{
-	Transport: newTraceRoundTripper(http.DefaultTransport),
+	Transport: http.DefaultTransport,
 }
 
 const (
@@ -128,6 +129,18 @@ func normalizeProvider(provider string) string {
 	}
 }
 
+func startLLMRequestSpan(ctx context.Context, provider, model, endpoint string, stream bool) (context.Context, observability.Span) {
+	return observability.TracerFor("internal/agent/llm_client").StartSpan(ctx, "llm.request",
+		observability.WithSpanKind(observability.SpanKindClient),
+		observability.WithAttributes(
+			observability.String("llm.provider", provider),
+			observability.String("llm.model", model),
+			observability.String("llm.endpoint", endpoint),
+			observability.Bool("llm.request.stream", stream),
+		),
+	)
+}
+
 // convertToolsToAny 将 []map[string]any 转换为 []any
 func convertToolsToAny(tools []map[string]any) []any {
 	result := make([]any, len(tools))
@@ -174,7 +187,7 @@ func toOllamaMessages(messages []types.Message) []any {
 	out := make([]any, 0, len(messages))
 	for _, msg := range messages {
 		content := utils.FlattenTextContent(msg.Content)
-		if msg.ToolCalls != nil && len(msg.ToolCalls) > 0 {
+		if len(msg.ToolCalls) > 0 {
 			content = ""
 		}
 		m := map[string]any{
@@ -188,6 +201,9 @@ func toOllamaMessages(messages []types.Message) []any {
 
 // Chat 向 Ollama 发起 chat 请求。
 func (c *ollamaClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+	ctx, span := startLLMRequestSpan(ctx, "ollama", req.Model, resolveOllamaEndpoint(c.endpoint), false)
+	defer span.End()
+
 	wireReq := ollamaWireRequest{
 		Model:    req.Model,
 		Messages: toOllamaMessages(stripCacheControl(req.Messages)),
@@ -199,9 +215,15 @@ func (c *ollamaClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 
 	var wireResp ollamaWireResponse
 	if err := doJSONRequest(ctx, sharedLLMHTTPClient, resolveOllamaEndpoint(c.endpoint), wireReq, nil, &wireResp); err != nil {
+		span.RecordError(err, observability.StatusFromError(err))
 		return nil, fmt.Errorf("请求 ollama 失败: %w", err)
 	}
 
+	span.SetAttributes(
+		observability.Int("llm.usage.input_tokens", wireResp.PromptEvalCount),
+		observability.Int("llm.usage.output_tokens", wireResp.EvalCount),
+	)
+	span.SetStatus(observability.SpanStatusOK, "llm request completed")
 	return &ChatResponse{
 		Message:          buildAssistantMessage(wireResp.Message.Role, wireResp.Message.Content, nil, ""),
 		PromptTokens:     wireResp.PromptEvalCount,
@@ -210,6 +232,13 @@ func (c *ollamaClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 }
 
 func (c *ollamaClient) StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) (*ChatResponse, error) {
+	ctx, span := startLLMRequestSpan(ctx, "ollama", req.Model, resolveOllamaEndpoint(c.endpoint), true)
+	defer span.End()
+	streamCtx, streamSpan := observability.TracerFor("internal/agent/llm_client").StartSpan(ctx, "llm.stream",
+		observability.WithSpanKind(observability.SpanKindInternal),
+	)
+	defer streamSpan.End()
+
 	wireReq := ollamaWireRequest{
 		Model:    req.Model,
 		Messages: toOllamaMessages(stripCacheControl(req.Messages)),
@@ -221,36 +250,43 @@ func (c *ollamaClient) StreamChat(ctx context.Context, req ChatRequest, onToken 
 
 	body, err := json.Marshal(wireReq)
 	if err != nil {
+		span.RecordError(err, observability.SpanStatusError)
 		return nil, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveOllamaEndpoint(c.endpoint), bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(streamCtx, http.MethodPost, resolveOllamaEndpoint(c.endpoint), bytes.NewReader(body))
 	if err != nil {
+		span.RecordError(err, observability.SpanStatusError)
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := sharedLLMHTTPClient.Do(httpReq)
 	if err != nil {
+		span.RecordError(err, observability.StatusFromError(err))
 		return nil, fmt.Errorf("请求 ollama 失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("Ollama 流式请求失败，状态码: %d，响应: %s", resp.StatusCode, string(respBytes))
+		err := fmt.Errorf("Ollama 流式请求失败，状态码: %d，响应: %s", resp.StatusCode, string(respBytes))
+		span.RecordError(err, observability.SpanStatusError)
+		return nil, err
 	}
 
 	reader := bufio.NewReader(resp.Body)
 	var contentBuilder strings.Builder
 	promptTokens := 0
 	completionTokens := 0
+	firstTokenEventSent := false
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
+			span.RecordError(err, observability.StatusFromError(err))
 			return nil, fmt.Errorf("读取流式响应失败: %w", err)
 		}
 
@@ -266,6 +302,10 @@ func (c *ollamaClient) StreamChat(ctx context.Context, req ChatRequest, onToken 
 
 		if chunk.Message.Content != "" {
 			contentBuilder.WriteString(chunk.Message.Content)
+			if !firstTokenEventSent {
+				firstTokenEventSent = true
+				streamSpan.AddEvent("first_token_received", observability.Int("token.length", len(chunk.Message.Content)))
+			}
 			onToken(chunk.Message.Content)
 		}
 		if chunk.PromptEvalCount > 0 {
@@ -280,6 +320,16 @@ func (c *ollamaClient) StreamChat(ctx context.Context, req ChatRequest, onToken 
 		}
 	}
 
+	streamSpan.SetAttributes(
+		observability.Int("llm.usage.input_tokens", promptTokens),
+		observability.Int("llm.usage.output_tokens", completionTokens),
+	)
+	streamSpan.SetStatus(observability.SpanStatusOK, "llm stream completed")
+	span.SetAttributes(
+		observability.Int("llm.usage.input_tokens", promptTokens),
+		observability.Int("llm.usage.output_tokens", completionTokens),
+	)
+	span.SetStatus(observability.SpanStatusOK, "llm request completed")
 	return &ChatResponse{
 		Message:          buildAssistantMessage(string(types.RoleAssistant), contentBuilder.String(), nil, ""),
 		PromptTokens:     promptTokens,
@@ -361,6 +411,9 @@ type openAIWireResponse struct {
 
 // Chat 向 OpenAI-compatible 接口发起 chat 请求。
 func (c *openAICompatibleClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+	ctx, span := startLLMRequestSpan(ctx, "openai", req.Model, resolveOpenAIEndpoint(c.endpoint), false)
+	defer span.End()
+
 	headers := map[string]string{
 		"Content-Type": "application/json",
 	}
@@ -376,6 +429,7 @@ func (c *openAICompatibleClient) Chat(ctx context.Context, req ChatRequest) (*Ch
 	}
 	messages, err := serializeOpenAIChatMessages(req.Messages)
 	if err != nil {
+		span.RecordError(err, observability.SpanStatusError)
 		return nil, fmt.Errorf("序列化消息失败: %w", err)
 	}
 	wireReq.Messages = messages
@@ -383,18 +437,27 @@ func (c *openAICompatibleClient) Chat(ctx context.Context, req ChatRequest) (*Ch
 	var wireResp openAIWireResponse
 	err = doJSONRequest(ctx, sharedLLMHTTPClient, resolveOpenAIEndpoint(c.endpoint), wireReq, headers, &wireResp)
 	if err != nil {
+		span.RecordError(err, observability.StatusFromError(err))
 		return nil, fmt.Errorf("请求 openai-compatible 接口失败: %w", err)
 	}
 
 	if len(wireResp.Choices) == 0 {
-		return nil, fmt.Errorf("openai-compatible 响应缺少 choices")
+		err := fmt.Errorf("openai-compatible 响应缺少 choices")
+		span.RecordError(err, observability.SpanStatusLLMInvalidResponse)
+		return nil, err
 	}
 
 	message, err := messageFromOpenAIChoice(wireResp.Choices[0].Message)
 	if err != nil {
+		span.RecordError(err, observability.SpanStatusLLMInvalidResponse)
 		return nil, fmt.Errorf("解析 openai-compatible 消息失败: %w", err)
 	}
 
+	span.SetAttributes(
+		observability.Int("llm.usage.input_tokens", wireResp.Usage.PromptTokens),
+		observability.Int("llm.usage.output_tokens", wireResp.Usage.CompletionTokens),
+	)
+	span.SetStatus(observability.SpanStatusOK, "llm request completed")
 	return &ChatResponse{
 		Message:          message,
 		PromptTokens:     wireResp.Usage.PromptTokens,
@@ -403,6 +466,13 @@ func (c *openAICompatibleClient) Chat(ctx context.Context, req ChatRequest) (*Ch
 }
 
 func (c *openAICompatibleClient) StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) (*ChatResponse, error) {
+	ctx, span := startLLMRequestSpan(ctx, "openai", req.Model, resolveOpenAIEndpoint(c.endpoint), true)
+	defer span.End()
+	streamCtx, streamSpan := observability.TracerFor("internal/agent/llm_client").StartSpan(ctx, "llm.stream",
+		observability.WithSpanKind(observability.SpanKindInternal),
+	)
+	defer streamSpan.End()
+
 	headers := map[string]string{
 		"Content-Type": "application/json",
 	}
@@ -418,17 +488,20 @@ func (c *openAICompatibleClient) StreamChat(ctx context.Context, req ChatRequest
 	}
 	messages, err := serializeOpenAIChatMessages(req.Messages)
 	if err != nil {
+		span.RecordError(err, observability.SpanStatusError)
 		return nil, fmt.Errorf("序列化消息失败: %w", err)
 	}
 	wireReq.Messages = messages
 
 	body, err := json.Marshal(wireReq)
 	if err != nil {
+		span.RecordError(err, observability.SpanStatusError)
 		return nil, fmt.Errorf("序列化请求失败: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, resolveOpenAIEndpoint(c.endpoint), bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(streamCtx, http.MethodPost, resolveOpenAIEndpoint(c.endpoint), bytes.NewReader(body))
 	if err != nil {
+		span.RecordError(err, observability.SpanStatusError)
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
 	for k, v := range headers {
@@ -437,13 +510,16 @@ func (c *openAICompatibleClient) StreamChat(ctx context.Context, req ChatRequest
 
 	resp, err := sharedLLMHTTPClient.Do(httpReq)
 	if err != nil {
+		span.RecordError(err, observability.StatusFromError(err))
 		return nil, fmt.Errorf("请求 openai-compatible 失败: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("OpenAI-compatible 流式请求失败，状态码: %d，响应: %s", resp.StatusCode, string(respBytes))
+		err := fmt.Errorf("OpenAI-compatible 流式请求失败，状态码: %d，响应: %s", resp.StatusCode, string(respBytes))
+		span.RecordError(err, observability.SpanStatusError)
+		return nil, err
 	}
 
 	reader := bufio.NewReader(resp.Body)
@@ -453,6 +529,7 @@ func (c *openAICompatibleClient) StreamChat(ctx context.Context, req ChatRequest
 	var toolCalls []types.MessageToolCall
 	var promptTokens int
 	var completionTokens int
+	firstTokenEventSent := false
 	streamToolCalls := make(map[int]*types.MessageToolCall)
 	for {
 		line, err := reader.ReadBytes('\n')
@@ -460,6 +537,7 @@ func (c *openAICompatibleClient) StreamChat(ctx context.Context, req ChatRequest
 			if err == io.EOF {
 				break
 			}
+			span.RecordError(err, observability.StatusFromError(err))
 			return nil, fmt.Errorf("读取流式响应失败: %w", err)
 		}
 
@@ -480,6 +558,10 @@ func (c *openAICompatibleClient) StreamChat(ctx context.Context, req ChatRequest
 
 		if len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
 			contentBuilder.WriteString(chunk.Choices[0].Delta.Content)
+			if !firstTokenEventSent {
+				firstTokenEventSent = true
+				streamSpan.AddEvent("first_token_received", observability.Int("token.length", len(chunk.Choices[0].Delta.Content)))
+			}
 			onToken(chunk.Choices[0].Delta.Content)
 		}
 		if len(chunk.Choices) > 0 {
@@ -534,6 +616,18 @@ func (c *openAICompatibleClient) StreamChat(ctx context.Context, req ChatRequest
 		}
 	}
 
+	streamSpan.SetAttributes(
+		observability.Int("llm.usage.input_tokens", promptTokens),
+		observability.Int("llm.usage.output_tokens", completionTokens),
+		observability.Int("llm.tool_call.count", len(toolCalls)),
+	)
+	streamSpan.SetStatus(observability.SpanStatusOK, "llm stream completed")
+	span.SetAttributes(
+		observability.Int("llm.usage.input_tokens", promptTokens),
+		observability.Int("llm.usage.output_tokens", completionTokens),
+		observability.Int("llm.tool_call.count", len(toolCalls)),
+	)
+	span.SetStatus(observability.SpanStatusOK, "llm request completed")
 	return &ChatResponse{
 		Message:          buildAssistantMessage(role, contentBuilder.String(), toolCalls, reasoningContent),
 		PromptTokens:     promptTokens,
@@ -571,8 +665,10 @@ func doJSONRequest(ctx context.Context, client *http.Client, endpoint string, re
 }
 
 func doRequestWithRetry(ctx context.Context, client *http.Client, method, endpoint string, reqBody any, headers map[string]string, respBody any) error {
+	span := observability.SpanFromContext(ctx)
 	body, err := json.Marshal(reqBody)
 	if err != nil {
+		span.RecordError(err, observability.SpanStatusError)
 		return fmt.Errorf("序列化请求失败: %w", err)
 	}
 
@@ -580,8 +676,13 @@ func doRequestWithRetry(ctx context.Context, client *http.Client, method, endpoi
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
 			backoff := calculateBackoff(attempt, lastErr)
+			span.AddEvent("retry.scheduled",
+				observability.Int("retry.attempt", attempt),
+				observability.String("retry.backoff", backoff.String()),
+			)
 			select {
 			case <-ctx.Done():
+				span.RecordError(ctx.Err(), observability.StatusFromError(ctx.Err()))
 				return ctx.Err()
 			case <-time.After(backoff):
 			}
@@ -589,6 +690,7 @@ func doRequestWithRetry(ctx context.Context, client *http.Client, method, endpoi
 
 		httpReq, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(body))
 		if err != nil {
+			span.RecordError(err, observability.SpanStatusError)
 			return fmt.Errorf("创建请求失败: %w", err)
 		}
 		httpReq.Header.Set("Content-Type", "application/json")
@@ -600,6 +702,7 @@ func doRequestWithRetry(ctx context.Context, client *http.Client, method, endpoi
 		if err != nil {
 			lastErr = err
 			if ctx.Err() != nil {
+				span.RecordError(ctx.Err(), observability.StatusFromError(ctx.Err()))
 				return ctx.Err()
 			}
 			continue
@@ -608,6 +711,7 @@ func doRequestWithRetry(ctx context.Context, client *http.Client, method, endpoi
 		respBytes, readErr := io.ReadAll(httpResp.Body)
 		httpResp.Body.Close()
 		if readErr != nil {
+			span.RecordError(readErr, observability.SpanStatusError)
 			lastErr = fmt.Errorf("读取响应失败: %w", readErr)
 			continue
 		}
@@ -619,6 +723,7 @@ func doRequestWithRetry(ctx context.Context, client *http.Client, method, endpoi
 
 		if statusCode >= 200 && statusCode < 300 {
 			if unmarshalErr := json.Unmarshal(respBytes, respBody); unmarshalErr != nil {
+				span.RecordError(unmarshalErr, observability.SpanStatusLLMInvalidResponse)
 				return fmt.Errorf("解析响应失败: %w", unmarshalErr)
 			}
 			return nil
