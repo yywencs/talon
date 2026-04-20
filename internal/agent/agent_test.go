@@ -47,3 +47,38 @@ func TestActionBatchTruncateAtFinish_NoFinish(t *testing.T) {
 		t.Fatalf("expected no truncation, got %d events", len(batch.calls))
 	}
 }
+
+// TestResponseToTurnResult_MoveReasoningToAction 验证工具调用前的推理内容会挂到 ActionEvent，而不是单独消息。
+func TestResponseToTurnResult_MoveReasoningToAction(t *testing.T) {
+	agent := &Agent{}
+	resp := &ChatResponse{
+		Message: types.Message{
+			Role:             types.RoleAssistant,
+			ReasoningContent: "用户想查看当前目录内容，应该调用 ls。",
+			ToolCalls: []types.MessageToolCall{
+				{
+					ID:        "call_1",
+					Name:      "bash",
+					Arguments: `{"command":"ls -la"}`,
+				},
+			},
+		},
+	}
+
+	result, err := agent.responseToTurnResult(resp)
+	if err != nil {
+		t.Fatalf("responseToTurnResult failed: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Message != nil {
+		t.Fatalf("expected no standalone assistant message, got %+v", result.Message)
+	}
+	if result.ActionReasoningContent != "用户想查看当前目录内容，应该调用 ls。" {
+		t.Fatalf("unexpected action reasoning content: %q", result.ActionReasoningContent)
+	}
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+}

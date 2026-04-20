@@ -12,10 +12,6 @@ type FinishTool struct {
 	Success bool   `json:"success" jsonschema:"description=任务是否成功完成,required"`
 }
 
-func (a FinishTool) ActionType() types.ActionType {
-	return types.ActionFinish
-}
-
 func (a FinishTool) GetBase() *types.BaseEvent {
 	return nil
 }

@@ -61,7 +61,7 @@ func (r *ToolRouter) BuildActionEvents(ctx context.Context, calls []ToolCall) ([
 			Arguments: call.Arguments,
 		})
 	}
-	return r.eventFactory.BuildActionEvents(messageToolCalls, types.SourceAgent)
+	return r.eventFactory.BuildActionEvents(messageToolCalls, types.SourceAgent, "")
 }
 
 // ResolveTool 根据工具名解析出可执行实例，执行由 Session 负责。

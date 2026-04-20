@@ -107,6 +107,11 @@ func (a *Agent) responseToTurnResult(resp *ChatResponse) (*types.AgentTurnResult
 
 	toolCalls, plainText, err := a.ParseLLMResponse(resp)
 	message := buildAssistantOutputMessage(resp.Message, plainText)
+	actionReasoningContent := ""
+	if len(toolCalls) > 0 {
+		actionReasoningContent = resp.Message.ReasoningContent
+		message = stripActionReasoningMessage(message)
+	}
 
 	if err != nil && plainText == "" {
 		return nil, fmt.Errorf("responseToTurnResult: parse llm response failed: %w", err)
@@ -115,9 +120,10 @@ func (a *Agent) responseToTurnResult(resp *ChatResponse) (*types.AgentTurnResult
 	batch := &toolCallBatch{calls: toolCalls}
 	batch.truncateAtFinish()
 	return &types.AgentTurnResult{
-		Message:   message,
-		ToolCalls: batch.calls,
-		Finished:  batch.finished || (message != nil && len(batch.calls) == 0),
+		Message:                message,
+		ToolCalls:              batch.calls,
+		ActionReasoningContent: actionReasoningContent,
+		Finished:               batch.finished || (message != nil && len(batch.calls) == 0),
 	}, nil
 }
 
@@ -155,6 +161,18 @@ func buildAssistantOutputMessage(msg types.Message, plainText string) *types.Mes
 		return nil
 	}
 	cloned := msg
+	return &cloned
+}
+
+func stripActionReasoningMessage(msg *types.Message) *types.Message {
+	if msg == nil {
+		return nil
+	}
+	cloned := *msg
+	cloned.ReasoningContent = ""
+	if !hasAssistantMessagePayload(cloned) {
+		return nil
+	}
 	return &cloned
 }
 

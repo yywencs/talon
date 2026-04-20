@@ -63,7 +63,6 @@ func (s *OpenAIChatSerializer) serializeString(msg types.Message) (map[string]an
 
 func (s *OpenAIChatSerializer) serializeList(msg types.Message) (map[string]any, error) {
 	content := make([]map[string]any, 0)
-	roleToolWithPromptCaching := false
 
 	// 处理思考块
 	thinkingBlocks := s.serializeThinkingBlocks(msg)
@@ -75,12 +74,6 @@ func (s *OpenAIChatSerializer) serializeList(msg types.Message) (map[string]any,
 		// 工具内容特殊处理
 		if msg.Role == types.RoleTool {
 			itemDicts = s.processToolContent(itemDicts)
-			if hasCachePrompt(c) {
-				roleToolWithPromptCaching = true
-				for i := range itemDicts {
-					delete(itemDicts[i], "cache_control")
-				}
-			}
 		}
 
 		// 图像内容过滤
@@ -95,8 +88,8 @@ func (s *OpenAIChatSerializer) serializeList(msg types.Message) (map[string]any,
 		"role":    msg.Role,
 		"content": content,
 	}
-	if roleToolWithPromptCaching {
-		result["cache_control"] = map[string]string{"type": "ephemeral"}
+	if s.SendReasoningContent && msg.ReasoningContent != "" {
+		result["reasoning_content"] = msg.ReasoningContent
 	}
 	if len(thinkingBlocks) > 0 {
 		result["thinking_blocks"] = thinkingBlocks
@@ -226,17 +219,6 @@ func serializeContentBlocks(content types.Content) []map[string]any {
 		return items
 	default:
 		return nil
-	}
-}
-
-func hasCachePrompt(content types.Content) bool {
-	switch c := content.(type) {
-	case types.TextContent:
-		return c.CachePrompt
-	case types.ImageContent:
-		return c.CachePrompt
-	default:
-		return false
 	}
 }
 

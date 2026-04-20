@@ -45,8 +45,23 @@ func (e *ObservationEvent) Kind() EventKind { return KindObservation }
 func (e *ObservationEvent) Name() string    { return "observation_event" }
 
 func (e *ObservationEvent) ToMessage() Message {
+	if e == nil {
+		return Message{}
+	}
+
+	content := []Content(nil)
+	if e.Observation != nil {
+		content = e.Observation.GetContent()
+	}
+	if len(content) == 0 {
+		content = []Content{
+			TextContent{Text: "Command executed successfully with no output."},
+		}
+	}
+
 	msg := Message{
 		Role:       RoleTool,
+		Content:    content,
 		ToolCallID: e.ToolCallID,
 		Name:       e.ToolName,
 	}

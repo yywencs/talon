@@ -84,6 +84,35 @@ func TestSerializeResponsesToolCall(t *testing.T) {
 	}
 }
 
+func TestSerializeListWithReasoningContent(t *testing.T) {
+	messageSerializer := &OpenAIChatSerializer{
+		FunctionCallingEnabled: true,
+		SendReasoningContent:   true,
+	}
+
+	item, err := messageSerializer.Serialize(types.Message{
+		Role:             types.RoleAssistant,
+		ReasoningContent: "先分析目录，再决定是否调用工具。",
+	})
+	if err != nil {
+		t.Fatalf("serialize message failed: %v", err)
+	}
+
+	payload, ok := item.(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected payload: %#v", item)
+	}
+	if payload["role"] != types.RoleAssistant {
+		t.Fatalf("unexpected role: %#v", payload["role"])
+	}
+	if payload["reasoning_content"] != "先分析目录，再决定是否调用工具。" {
+		t.Fatalf("unexpected reasoning_content: %#v", payload["reasoning_content"])
+	}
+	if _, exists := payload["content"]; exists {
+		t.Fatalf("content should be omitted for reasoning-only assistant message: %#v", payload)
+	}
+}
+
 func TestSerializeImageContentCacheControl(t *testing.T) {
 	messageSerializer := &OpenAIChatSerializer{
 		VisionEnabled: true,

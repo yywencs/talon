@@ -18,7 +18,7 @@ type Tool interface {
 	Execute(ctx context.Context, rawArgs []byte) Observation
 }
 
-type BaseTool[A types.Action, O types.Observation] struct {
+type BaseTool[A any, O types.Observation] struct {
 	ToolName string
 	ToolDesc string
 	Executor func(ctx context.Context, action A) O

@@ -47,16 +47,11 @@ func (b *PromptBuilder) BuildPromptMessages(state *types.SessionState, systemPro
 
 	if state.Events != nil {
 		for _, evt := range state.Events.GetEvents() {
-			jsonStr, ok := eventToJSON(evt)
+			msg, ok := eventToMessage(evt)
 			if !ok {
 				continue
 			}
-			messages = append(messages, types.Message{
-				Role: types.RoleUser,
-				Content: []types.Content{
-					types.TextContent{Text: jsonStr},
-				},
-			})
+			messages = append(messages, msg)
 		}
 	}
 
@@ -137,18 +132,33 @@ func hasCachePrompt(contents []types.Content) bool {
 }
 
 func eventToMessage(evt types.Event) (types.Message, bool) {
+	filter := func(msg types.Message) (types.Message, bool) {
+		if msg.Role == "" {
+			return types.Message{}, false
+		}
+		if len(msg.Content) == 0 &&
+			len(msg.ToolCalls) == 0 &&
+			msg.ReasoningContent == "" &&
+			len(msg.ThinkingBlocks) == 0 &&
+			len(msg.RedactedThinkingBlocks) == 0 &&
+			msg.ResponsesReasoningItem == nil {
+			return types.Message{}, false
+		}
+		return msg, true
+	}
+
 	switch evt.Kind() {
 	case types.KindAction:
 		if e, ok := evt.(*types.ActionEvent); ok {
-			return e.ToMessage(), true
+			return filter(e.ToMessage())
 		}
 	case types.KindObservation:
 		if e, ok := evt.(*types.ObservationEvent); ok {
-			return e.ToMessage(), true
+			return filter(e.ToMessage())
 		}
 	case types.KindMessage:
 		if e, ok := evt.(*types.MessageEvent); ok {
-			return e.ToMessage(), true
+			return filter(e.ToMessage())
 		}
 	}
 	return types.Message{}, false

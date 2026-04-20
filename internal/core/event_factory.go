@@ -22,20 +22,21 @@ func (f *EventFactory) NewMessageEvent(msg types.Message, source types.EventSour
 	if !hasMessagePayload(msg) {
 		return nil
 	}
-	msg.ToolCalls = nil
 	return &types.MessageEvent{
 		BaseEvent: types.BaseEvent{
 			ID:        newEventID(),
 			Timestamp: time.Now(),
 			Source:    source,
 		},
-		Source:     source,
-		LLMMessage: msg,
+		Source:           source,
+		Role:             msg.Role,
+		Content:          msg.Content,
+		ReasoningContent: msg.ReasoningContent,
 	}
 }
 
 // BuildActionEvents 将工具调用包装为标准 ActionEvent。
-func (f *EventFactory) BuildActionEvents(calls []types.MessageToolCall, source types.EventSource) ([]*types.ActionEvent, error) {
+func (f *EventFactory) BuildActionEvents(calls []types.MessageToolCall, source types.EventSource, reasoningContent string) ([]*types.ActionEvent, error) {
 	if len(calls) == 0 {
 		return nil, nil
 	}
@@ -54,13 +55,14 @@ func (f *EventFactory) BuildActionEvents(calls []types.MessageToolCall, source t
 				Timestamp: time.Now(),
 				Source:    source,
 			},
-			ActionID:     actionID,
-			ActionType:   actionTypeForToolCall(call.Name),
-			ToolName:     call.Name,
-			ToolCallID:   call.ID,
-			ToolCall:     &toolCall,
-			Summary:      metadata.Summary,
-			SecurityRisk: metadata.SecurityRisk,
+			ActionID:         actionID,
+			ActionType:       actionTypeForToolCall(call.Name),
+			ToolName:         call.Name,
+			ToolCallID:       call.ID,
+			ToolCall:         &toolCall,
+			ReasoningContent: reasoningContent,
+			Summary:          metadata.Summary,
+			SecurityRisk:     metadata.SecurityRisk,
 		})
 	}
 	return events, nil

@@ -93,7 +93,7 @@ func (r *cliRenderer) HandleEvent(event types.Event) {
 		if r.streaming {
 			return
 		}
-		text := utils.FlattenTextContent(e.LLMMessage.Content)
+		text := utils.FlattenTextContent(e.Content)
 		if strings.TrimSpace(text) == "" {
 			return
 		}

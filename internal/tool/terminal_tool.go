@@ -62,10 +62,6 @@ type BashTool struct {
 	WorkingDir         string `json:"working_dir,omitempty" jsonschema:"description=命令执行的工作目录,default=当前进程工作目录,examples=[\"/tmp\",\"/home/user\"]"`
 }
 
-func (a BashTool) ActionType() types.ActionType {
-	return types.ActionRun
-}
-
 const (
 	defaultTimeoutSecs = 30
 	maxTimeoutSecs     = 300

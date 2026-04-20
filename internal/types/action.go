@@ -7,12 +7,6 @@
 //   - PendingAction 机制要求每个 Action 的 ID 在整个会话内唯一，用于因果匹配。
 package types
 
-// Action 接口由所有动作类型实现，表示 Agent 向环境发出的指令或消息。
-// Action 是"由 Agent 主动发起"的事件，与 Observation（被动接收）相对。
-type Action interface {
-	ActionType() ActionType
-}
-
 type SecurityRisk string
 
 const (
@@ -77,7 +71,6 @@ type ActionEvent struct {
 	BaseEvent
 	ActionID   string     `json:"action_id"`
 	ActionType ActionType `json:"action_type"`
-	Action     Action     `json:"action"`
 	ToolName   string     `json:"tool_name,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 
@@ -85,6 +78,7 @@ type ActionEvent struct {
 	Summary       string       `json:"summary,omitempty"`
 	SecurityRisk  SecurityRisk `json:"security_risk,omitempty"`
 
+	Content                TextContent             `json:"text_content,omitempty"`
 	Thought                string                  `json:"thought,omitempty"`
 	ToolCall               *MessageToolCall        `json:"tool_call,omitempty"`
 	ReasoningContent       string                  `json:"reasoning_content,omitempty"`
@@ -98,12 +92,19 @@ func (e *ActionEvent) Kind() EventKind     { return KindAction }
 func (e *ActionEvent) Name() string        { return string(e.ActionType) }
 
 func (e *ActionEvent) ToMessage() Message {
+	if e == nil {
+		return Message{}
+	}
+
 	msg := Message{
 		Role:      RoleAssistant,
 		ToolCalls: []MessageToolCall{},
 	}
 	if e.ToolCall != nil {
 		msg.ToolCalls = append(msg.ToolCalls, *e.ToolCall)
+	}
+	if e.Content.Text != "" {
+		msg.Content = append(msg.Content, e.Content)
 	}
 	if e.ReasoningContent != "" {
 		msg.ReasoningContent = e.ReasoningContent
@@ -117,5 +118,15 @@ func (e *ActionEvent) ToMessage() Message {
 	if e.ResponsesReasoningItem != nil {
 		msg.ResponsesReasoningItem = e.ResponsesReasoningItem
 	}
+
+	if len(msg.ToolCalls) == 0 &&
+		len(msg.Content) == 0 &&
+		msg.ReasoningContent == "" &&
+		len(msg.ThinkingBlocks) == 0 &&
+		len(msg.RedactedThinkingBlocks) == 0 &&
+		msg.ResponsesReasoningItem == nil {
+		return Message{}
+	}
+
 	return msg
 }

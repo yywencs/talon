@@ -21,9 +21,10 @@ type AgentOutput struct {
 // AgentTurnResult 表示 Agent 单轮推理的最终结果。
 // Message 用于展示最终助手消息，ToolCalls 用于后续生成 ActionEvent。
 type AgentTurnResult struct {
-	Message   *Message
-	ToolCalls []MessageToolCall
-	Finished  bool
+	Message                *Message
+	ToolCalls              []MessageToolCall
+	ActionReasoningContent string
+	Finished               bool
 }
 
 // Agent 定义会话执行时的智能体行为接口。

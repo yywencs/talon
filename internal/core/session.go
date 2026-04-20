@@ -105,7 +105,7 @@ func (s *Session) Run(ctx context.Context) error {
 			s.emit(s.eventFactory.NewMessageEvent(*result.Message, types.SourceAgent))
 		}
 
-		actionEvents, err := s.eventFactory.BuildActionEvents(result.ToolCalls, types.SourceAgent)
+		actionEvents, err := s.eventFactory.BuildActionEvents(result.ToolCalls, types.SourceAgent, result.ActionReasoningContent)
 		if err != nil {
 			return fmt.Errorf("session run: build action events failed: %w", err)
 		}
