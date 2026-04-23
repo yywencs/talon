@@ -1,4 +1,4 @@
-package tool
+package file_editor
 
 import (
 	"context"
@@ -64,7 +64,7 @@ func runFileEditorExecutor(t *testing.T, action FileEditorAction) *FileEditorObs
 		}
 	}()
 
-	return fileEditorExecutor(context.Background(), action)
+	return Execute(context.Background(), action)
 }
 
 func TestFileEditorActionType(t *testing.T) {
@@ -124,7 +124,7 @@ func TestFileEditorErrors_AsAndFormatting(t *testing.T) {
 	t.Parallel()
 
 	cause := errors.New("disk failure")
-	err := newFileValidationError("/tmp/demo.txt", "读取失败", cause)
+	err := NewFileValidationError("/tmp/demo.txt", "读取失败", cause)
 
 	var fileErr *FileValidationError
 	if !errors.As(err, &fileErr) {
@@ -137,7 +137,7 @@ func TestFileEditorErrors_AsAndFormatting(t *testing.T) {
 		t.Fatal("expected wrapped cause to be discoverable with errors.Is")
 	}
 
-	got := buildFileEditorErrorMessage(err)
+	got := BuildErrorMessage(err)
 	if !strings.Contains(got, "文件校验失败") {
 		t.Fatalf("buildFileEditorErrorMessage() = %q, want contains 文件校验失败", got)
 	}
@@ -214,7 +214,7 @@ func TestValidateFileEditorAction_CurrentValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := validateFileEditorAction(tc.action)
+			err := ValidateAction(tc.action)
 			if err == nil {
 				t.Fatal("expected validation error, got nil")
 			}
@@ -228,7 +228,7 @@ func TestValidateFileEditorAction_CurrentValidation(t *testing.T) {
 func TestValidatePath_EmptyPath(t *testing.T) {
 	t.Parallel()
 
-	_, err := validatePath("   ")
+	_, err := ValidatePath("   ")
 	if err == nil {
 		t.Fatal("expected error for empty path")
 	}
@@ -248,7 +248,7 @@ func TestValidatePath_ShouldSuggestAbsolutePathForRelativeInput(t *testing.T) {
 	}
 
 	input := "../../etc/passwd"
-	_, err = validatePath(input)
+	_, err = ValidatePath(input)
 	if err == nil {
 		t.Fatal("expected relative path to be rejected")
 	}
@@ -317,7 +317,7 @@ func TestValidateFileEditorAction_SpecBoundaries(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			err := validateFileEditorAction(tc.action)
+			err := ValidateAction(tc.action)
 			if err == nil {
 				t.Fatal("expected validation error for boundary case, got nil")
 			}
