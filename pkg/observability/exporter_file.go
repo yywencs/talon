@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
@@ -19,17 +18,22 @@ func (fileExporterFactory) kind() ExporterKind {
 
 func (fileExporterFactory) build(ctx context.Context, cfg Config, redactor *Redactor) (sdktrace.SpanExporter, error) {
 	_ = ctx
-	dir := filepath.Join(cfg.TraceDir, "spans")
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("create span dir: %w", err)
+	dirManager, err := newTraceDirectoryManager(cfg.TraceDir)
+	if err != nil {
+		return nil, fmt.Errorf("create file exporter directories: %w", err)
 	}
-	return &fileSpanExporter{dir: dir, redactor: redactor}, nil
+	return &fileSpanExporter{
+		dirManager: dirManager,
+		records:    make(map[string]map[string]spanRecord),
+		redactor:   redactor,
+	}, nil
 }
 
 type fileSpanExporter struct {
-	mu       sync.Mutex
-	dir      string
-	redactor *Redactor
+	mu         sync.Mutex
+	dirManager *traceDirectoryManager
+	records    map[string]map[string]spanRecord
+	redactor   *Redactor
 }
 
 func (e *fileSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
@@ -38,13 +42,20 @@ func (e *fileSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.Rea
 	defer e.mu.Unlock()
 	for _, span := range spans {
 		record := spanRecordFromReadOnlySpan(span, e.redactor)
-		payload, err := marshalSpanRecord(record)
+		payload, err := marshalSpanRecordJSON(record)
 		if err != nil {
 			return err
 		}
-		fileName := fmt.Sprintf("%s-%s-%d.json", record.TraceID, record.SpanID, time.Now().UnixNano())
-		filePath := filepath.Join(e.dir, fileName)
+		traceDir, err := e.dirManager.TraceDir(record)
+		if err != nil {
+			return err
+		}
+		filePath := filepath.Join(traceDir, buildSpanFileName(record))
 		if err := os.WriteFile(filePath, payload, 0644); err != nil {
+			return err
+		}
+		e.upsertRecord(traceDir, record)
+		if err := writeTraceArtifacts(traceDir, sortedTraceRecords(e.records[traceDir])); err != nil {
 			return err
 		}
 	}
@@ -54,4 +65,14 @@ func (e *fileSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.Rea
 func (e *fileSpanExporter) Shutdown(ctx context.Context) error {
 	_ = ctx
 	return nil
+}
+
+func (e *fileSpanExporter) upsertRecord(traceDir string, record spanRecord) {
+	if e.records == nil {
+		e.records = make(map[string]map[string]spanRecord)
+	}
+	if _, ok := e.records[traceDir]; !ok {
+		e.records[traceDir] = make(map[string]spanRecord)
+	}
+	e.records[traceDir][record.SpanID] = record
 }

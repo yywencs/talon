@@ -2,6 +2,8 @@ package tool
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/wen/opentalon/internal/types"
+	"github.com/wen/opentalon/pkg/logger"
 	"github.com/wen/opentalon/pkg/utils"
 )
 
@@ -70,6 +73,14 @@ const (
 
 func bashExecutor(ctx context.Context, action BashTool) *TerminalObservation {
 	if err := validateAction(&action); err != nil {
+		logger.WarnWithCtx(ctx, "审计: bash 命令校验失败",
+			"tool_name", "bash",
+			"command_name", auditCommandName(action.Command),
+			"command_sha256", auditCommandHash(action.Command),
+			"working_dir", action.WorkingDir,
+			"security_risk", string(action.SecurityRisk),
+			"error", err.Error(),
+		)
 		return errorOutput(action.Command, action.WorkingDir, nil, false, -1, err.Error())
 	}
 
@@ -78,11 +89,21 @@ func bashExecutor(ctx context.Context, action BashTool) *TerminalObservation {
 		timeout = *action.TimeoutSecs
 	}
 
+	logger.InfoWithCtx(ctx, "审计: bash 命令开始执行",
+		"tool_name", "bash",
+		"command_name", auditCommandName(action.Command),
+		"command_sha256", auditCommandHash(action.Command),
+		"working_dir", action.WorkingDir,
+		"timeout_secs", timeout,
+		"security_risk", string(action.SecurityRisk),
+	)
+
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
 	result := runBash(execCtx, action.Command, action.WorkingDir)
-	result.Output = truncateIfNeeded(result.Output)
+	result.Output, result.OutputTruncated = truncateIfNeeded(result.Output)
+	logTerminalCommandCompletion(ctx, action, timeout, result)
 	return NewTerminalObservation(action.Command, action.WorkingDir, result.PID, result.TimedOut, result.ExitCode, result.Output)
 }
 
@@ -109,10 +130,11 @@ func validateAction(action *BashTool) error {
 }
 
 type commandResult struct {
-	Output   string
-	ExitCode int
-	TimedOut bool
-	PID      *int
+	Output          string
+	ExitCode        int
+	TimedOut        bool
+	PID             *int
+	OutputTruncated bool
 }
 
 func runBash(ctx context.Context, command, workingDir string) commandResult {
@@ -125,14 +147,32 @@ func runBash(ctx context.Context, command, workingDir string) commandResult {
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		logger.ErrorWithCtx(ctx, "bash 子进程创建 stdout 管道失败",
+			"command_name", auditCommandName(command),
+			"command_sha256", auditCommandHash(command),
+			"working_dir", workingDir,
+			"error", err.Error(),
+		)
 		return commandResult{Output: fmt.Sprintf("failed to create stdout pipe: %v", err), ExitCode: -1}
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		logger.ErrorWithCtx(ctx, "bash 子进程创建 stderr 管道失败",
+			"command_name", auditCommandName(command),
+			"command_sha256", auditCommandHash(command),
+			"working_dir", workingDir,
+			"error", err.Error(),
+		)
 		return commandResult{Output: fmt.Sprintf("failed to create stderr pipe: %v", err), ExitCode: -1}
 	}
 
 	if err := cmd.Start(); err != nil {
+		logger.ErrorWithCtx(ctx, "bash 子进程启动失败",
+			"command_name", auditCommandName(command),
+			"command_sha256", auditCommandHash(command),
+			"working_dir", workingDir,
+			"error", err.Error(),
+		)
 		return commandResult{Output: fmt.Sprintf("failed to start: %v", err), ExitCode: -1}
 	}
 
@@ -182,7 +222,14 @@ func runBash(ctx context.Context, command, workingDir string) commandResult {
 		}
 	case <-ctx.Done():
 		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+				logger.ErrorWithCtx(ctx, "bash 子进程终止失败",
+					"command_name", auditCommandName(command),
+					"command_sha256", auditCommandHash(command),
+					"pid", cmd.Process.Pid,
+					"error", err.Error(),
+				)
+			}
 		}
 		<-done
 		copyWG.Wait()
@@ -220,11 +267,11 @@ func appendProcessMessage(output, msg string) string {
 	return output + "\n" + msg
 }
 
-func truncateIfNeeded(output string) string {
+func truncateIfNeeded(output string) (string, bool) {
 	if len(output) <= maxOutputSize {
-		return output
+		return output, false
 	}
-	return output[:maxOutputSize] + "[output truncated]"
+	return output[:maxOutputSize] + "[output truncated]", true
 }
 
 func errorOutput(command, workingDir string, pid *int, timeout bool, exitCode int, msg string) *TerminalObservation {
@@ -263,6 +310,50 @@ func stringPtr(v string) *string {
 		return nil
 	}
 	return &v
+}
+
+func auditCommandName(command string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return ""
+	}
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func auditCommandHash(command string) string {
+	sum := sha256.Sum256([]byte(command))
+	return hex.EncodeToString(sum[:])
+}
+
+func logTerminalCommandCompletion(ctx context.Context, action BashTool, timeout int, result commandResult) {
+	args := []any{
+		"tool_name", "bash",
+		"command_name", auditCommandName(action.Command),
+		"command_sha256", auditCommandHash(action.Command),
+		"working_dir", action.WorkingDir,
+		"timeout_secs", timeout,
+		"security_risk", string(action.SecurityRisk),
+		"exit_code", result.ExitCode,
+		"timed_out", result.TimedOut,
+		"output_truncated", result.OutputTruncated,
+		"output_size", len(result.Output),
+	}
+	if result.PID != nil {
+		args = append(args, "pid", *result.PID)
+	}
+	if result.TimedOut {
+		logger.WarnWithCtx(ctx, "审计: bash 命令执行超时", args...)
+		return
+	}
+	if result.ExitCode != 0 {
+		logger.WarnWithCtx(ctx, "审计: bash 命令执行异常结束", args...)
+		return
+	}
+	logger.InfoWithCtx(ctx, "审计: bash 命令执行完成", args...)
 }
 
 const (

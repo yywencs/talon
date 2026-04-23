@@ -7,6 +7,7 @@ import (
 
 	"github.com/wen/opentalon/internal/tool"
 	"github.com/wen/opentalon/internal/types"
+	"github.com/wen/opentalon/pkg/logger"
 	"github.com/wen/opentalon/pkg/observability"
 )
 
@@ -17,16 +18,19 @@ type ToolRouter struct {
 }
 
 func NewToolRouter() *ToolRouter {
-	return &ToolRouter{
+	router := &ToolRouter{
 		registry:     make(map[string]tool.ToolFactory),
 		eventFactory: NewEventFactory(),
 	}
+	logger.Info("工具路由器已初始化")
+	return router
 }
 
 func (r *ToolRouter) Register(name string, factory tool.ToolFactory) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.registry[name] = factory
+	logger.Info("工具路由器已注册工具工厂", "tool_name", name)
 }
 
 func (r *ToolRouter) ResolveAllTools(ctx context.Context) map[string]tool.Tool {
@@ -84,7 +88,7 @@ func (r *ToolRouter) ExecuteActionEvent(ctx context.Context, event *types.Action
 	}
 
 	tracer := observability.TracerFor("internal/core/tool_router")
-	ctx, span := tracer.StartSpan(ctx, "tool.execute",
+	ctx, span := tracer.StartSpan(ctx, "tool.execute"+event.ToolName,
 		observability.WithSpanKind(observability.SpanKindInternal),
 		observability.WithAttributes(
 			observability.String("action.id", event.ActionID),
@@ -178,6 +182,10 @@ func (r *ToolRouter) executeSingleTool(ctx context.Context, toolName string, arg
 	func() {
 		defer func() {
 			if p := recover(); p != nil {
+				logger.ErrorWithCtx(ctx, "工具执行发生 panic，已恢复",
+					"tool_name", toolName,
+					"panic", fmt.Sprintf("%v", p),
+				)
 				span.RecordError(fmt.Errorf("panic recovered: %v", p), observability.SpanStatusPanicRecovered)
 				observation = &types.BaseObservation{
 					ErrorStatus: true,

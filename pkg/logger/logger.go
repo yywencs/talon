@@ -12,9 +12,14 @@ import (
 	"time"
 
 	"github.com/wen/opentalon/pkg/config"
+	"github.com/wen/opentalon/pkg/observability"
 )
 
 var LogDir string
+
+type traceContextHandler struct {
+	handler slog.Handler
+}
 
 type SimpleJSONHandler struct {
 	slog.JSONHandler
@@ -25,22 +30,40 @@ func (h *SimpleJSONHandler) Handle(ctx context.Context, r slog.Record) error {
 	return h.JSONHandler.Handle(ctx, r)
 }
 
-func getCaller() (string, int) {
-	pc, file, line, ok := runtime.Caller(2)
-	if !ok {
-		return "unknown", 0
+func (h *traceContextHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	if h == nil || h.handler == nil {
+		return false
 	}
-	fn := runtime.FuncForPC(pc)
-	funcName := ""
-	if fn != nil {
-		funcName = fn.Name()
-		parts := strings.Split(funcName, ".")
-		if len(parts) > 0 {
-			funcName = parts[len(parts)-1]
-		}
+	return h.handler.Enabled(ctx, level)
+}
+
+func (h *traceContextHandler) Handle(ctx context.Context, r slog.Record) error {
+	if h == nil || h.handler == nil {
+		return nil
 	}
-	shortFile := filepath.Base(file)
-	return shortFile + ":" + funcName, line
+	traceID := observability.TraceIDFromContext(ctx)
+	spanID := observability.SpanIDFromContext(ctx)
+	if traceID != "" {
+		r.AddAttrs(slog.String("trace_id", traceID))
+	}
+	if spanID != "" {
+		r.AddAttrs(slog.String("span_id", spanID))
+	}
+	return h.handler.Handle(ctx, r)
+}
+
+func (h *traceContextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	if h == nil || h.handler == nil {
+		return h
+	}
+	return &traceContextHandler{handler: h.handler.WithAttrs(attrs)}
+}
+
+func (h *traceContextHandler) WithGroup(name string) slog.Handler {
+	if h == nil || h.handler == nil {
+		return h
+	}
+	return &traceContextHandler{handler: h.handler.WithGroup(name)}
 }
 
 func SetupLogger() {
@@ -89,12 +112,12 @@ func SetupLogger() {
 		if err != nil {
 			log.Fatal("failed to open log file")
 		}
-		handler = slog.NewJSONHandler(fd, opts)
+		handler = &traceContextHandler{handler: slog.NewJSONHandler(fd, opts)}
 		slog.SetDefault(slog.New(handler))
 		return
 	}
 
-	handler = slog.NewTextHandler(os.Stdout, opts)
+	handler = &traceContextHandler{handler: slog.NewTextHandler(os.Stdout, opts)}
 	slog.SetDefault(slog.New(handler))
 }
 

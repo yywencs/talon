@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/wen/opentalon/internal/types"
+	"github.com/wen/opentalon/pkg/logger"
 	"github.com/wen/opentalon/pkg/observability"
 )
 
@@ -37,6 +38,12 @@ func NewSession(agent types.Agent, on_event *Callbacks, persistenceDir string) *
 		on_event:     on_event,
 		onStream:     NewStreamCallbacks(),
 	}
+
+	logger.Info("会话运行时已初始化",
+		"session_id", sessionState.ID,
+		"persistence_dir", persistenceDir,
+		"agent_type", fmt.Sprintf("%T", agent),
+	)
 
 	return s
 }
@@ -112,9 +119,9 @@ func (s *Session) Run(ctx context.Context) error {
 			return err
 		}
 		if result == nil {
-			err := fmt.Errorf("session run: agent returned nil turn result")
-			span.RecordError(err, observability.SpanStatusLLMInvalidResponse)
-			return err
+			nilResultErr := fmt.Errorf("session run: agent returned nil turn result")
+			span.RecordError(nilResultErr, observability.SpanStatusLLMInvalidResponse)
+			return nilResultErr
 		}
 		if result.Message != nil {
 			s.emit(s.eventFactory.NewMessageEvent(*result.Message, types.SourceAgent))
