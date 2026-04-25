@@ -43,16 +43,6 @@ type ToolCall struct {
 	Arguments string `json:"arguments"`
 }
 
-type ToolCallAction struct {
-	ToolCalls []ToolCall
-	PlainText string
-	Router    *ToolRouter
-}
-
-func (a *ToolCallAction) ActionType() types.ActionType {
-	return types.ActionRun
-}
-
 func (r *ToolRouter) BuildActionEvents(ctx context.Context, calls []ToolCall) ([]*types.ActionEvent, error) {
 	if len(calls) == 0 {
 		return nil, nil

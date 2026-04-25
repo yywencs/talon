@@ -44,10 +44,6 @@ func newFinishTool() *BaseTool[FinishTool, *FinishObservation] {
 	}
 }
 
-func NewFinishTool() *BaseTool[FinishTool, *FinishObservation] {
-	return newFinishTool()
-}
-
 func init() {
 	Register("finish", func(ctx context.Context) Tool {
 		return newFinishTool()

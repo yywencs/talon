@@ -393,10 +393,6 @@ func newBashTool() *BaseTool[BashTool, *TerminalObservation] {
 	}
 }
 
-func NewBashTool() *BaseTool[BashTool, *TerminalObservation] {
-	return newBashTool()
-}
-
 func init() {
 	Register("bash", func(ctx context.Context) Tool {
 		return newBashTool()

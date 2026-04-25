@@ -16,7 +16,7 @@ func iptr(i int) *int {
 }
 
 func TestBash_SimpleEcho(t *testing.T) {
-	tool := NewBashTool()
+	tool := newBashTool()
 	rawArgs, _ := json.Marshal(BashTool{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
@@ -39,7 +39,7 @@ func TestBash_SimpleEcho(t *testing.T) {
 }
 
 func TestBash_WithTimeout(t *testing.T) {
-	tool := NewBashTool()
+	tool := newBashTool()
 	rawArgs, _ := json.Marshal(BashTool{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test with timeout",
@@ -66,7 +66,7 @@ func TestBash_WithTimeout(t *testing.T) {
 }
 
 func TestBash_NonZeroExit(t *testing.T) {
-	tool := NewBashTool()
+	tool := newBashTool()
 	rawArgs, _ := json.Marshal(BashTool{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test non-zero exit",
@@ -86,7 +86,7 @@ func TestBash_NonZeroExit(t *testing.T) {
 }
 
 func TestBash_EmptyCommand(t *testing.T) {
-	tool := NewBashTool()
+	tool := newBashTool()
 	rawArgs, _ := json.Marshal(BashTool{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test empty command",
@@ -109,7 +109,7 @@ func TestBash_EmptyCommand(t *testing.T) {
 }
 
 func TestBash_InvalidTimeout_Zero(t *testing.T) {
-	tool := NewBashTool()
+	tool := newBashTool()
 	rawArgs, _ := json.Marshal(BashTool{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test zero timeout",
@@ -133,7 +133,7 @@ func TestBash_InvalidTimeout_Zero(t *testing.T) {
 }
 
 func TestBash_InvalidTimeout_Negative(t *testing.T) {
-	tool := NewBashTool()
+	tool := newBashTool()
 	rawArgs, _ := json.Marshal(BashTool{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test negative timeout",
@@ -157,7 +157,7 @@ func TestBash_InvalidTimeout_Negative(t *testing.T) {
 }
 
 func TestBash_InvalidTimeout_TooLarge(t *testing.T) {
-	tool := NewBashTool()
+	tool := newBashTool()
 	rawArgs, _ := json.Marshal(BashTool{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test too large timeout",
@@ -181,7 +181,7 @@ func TestBash_InvalidTimeout_TooLarge(t *testing.T) {
 }
 
 func TestBash_TimeoutExceeded(t *testing.T) {
-	tool := NewBashTool()
+	tool := newBashTool()
 	rawArgs, _ := json.Marshal(BashTool{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test timeout exceeded",
@@ -211,7 +211,7 @@ func TestBash_TimeoutExceeded(t *testing.T) {
 }
 
 func TestBash_NonexistentWorkingDir(t *testing.T) {
-	tool := NewBashTool()
+	tool := newBashTool()
 	rawArgs, _ := json.Marshal(BashTool{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test nonexistent working dir",
@@ -236,7 +236,7 @@ func TestBash_NonexistentWorkingDir(t *testing.T) {
 }
 
 func TestBash_CtxCancelled(t *testing.T) {
-	tool := NewBashTool()
+	tool := newBashTool()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	rawArgs, _ := json.Marshal(BashTool{
@@ -267,7 +267,7 @@ func TestBash_CtxCancelled(t *testing.T) {
 }
 
 func TestBash_OutputTruncation(t *testing.T) {
-	tool := NewBashTool()
+	tool := newBashTool()
 	rawArgs, _ := json.Marshal(BashTool{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test output truncation",
@@ -295,7 +295,7 @@ func TestBash_OutputTruncation(t *testing.T) {
 }
 
 func TestBash_ConcurrentExec(t *testing.T) {
-	tool := NewBashTool()
+	tool := newBashTool()
 	commands := []string{
 		"echo 1",
 		"echo 2",
@@ -354,7 +354,7 @@ func TestBash_ConcurrentExec(t *testing.T) {
 }
 
 func TestBash_NameAndDescription(t *testing.T) {
-	tool := NewBashTool()
+	tool := newBashTool()
 	if tool.Name() != "bash" {
 		t.Fatalf("expected name 'bash', got %q", tool.Name())
 	}
@@ -364,7 +364,7 @@ func TestBash_NameAndDescription(t *testing.T) {
 }
 
 func TestBash_ValidWorkingDir(t *testing.T) {
-	tool := NewBashTool()
+	tool := newBashTool()
 	rawArgs, _ := json.Marshal(BashTool{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test valid working dir",
@@ -389,7 +389,7 @@ func TestBash_ValidWorkingDir(t *testing.T) {
 }
 
 func TestBash_PipeCommand(t *testing.T) {
-	tool := NewBashTool()
+	tool := newBashTool()
 	rawArgs, _ := json.Marshal(BashTool{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test pipe command",
@@ -414,7 +414,7 @@ func TestBash_PipeCommand(t *testing.T) {
 }
 
 func TestBash_CommandNotFound(t *testing.T) {
-	tool := NewBashTool()
+	tool := newBashTool()
 	rawArgs, _ := json.Marshal(BashTool{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test command not found",
