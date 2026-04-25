@@ -64,7 +64,11 @@ func runFileEditorExecutor(t *testing.T, action FileEditorAction) *FileEditorObs
 		}
 	}()
 
-	return Execute(context.Background(), action)
+	editor, err := DefaultFileEditor()
+	if err != nil {
+		t.Fatalf("DefaultFileEditor() error = %v", err)
+	}
+	return editor.Execute(context.Background(), action)
 }
 
 func TestFileEditorActionType(t *testing.T) {
@@ -371,6 +375,14 @@ func TestFileEditorExecutor_StrReplaceSpec(t *testing.T) {
 		path := filepath.Join(dir, "replace.txt")
 		writeTestFile(t, path, "abc")
 
+		editor, err := DefaultFileEditor()
+		if err != nil {
+			t.Fatalf("DefaultFileEditor() error = %v", err)
+		}
+		if deleteErr := editor.historyManager.delete(path); deleteErr != nil {
+			t.Fatalf("history delete error = %v", deleteErr)
+		}
+
 		obs := runFileEditorExecutor(t, FileEditorAction{
 			Command: FileEditorCommandStrReplace,
 			Path:    path,
@@ -379,6 +391,20 @@ func TestFileEditorExecutor_StrReplaceSpec(t *testing.T) {
 		})
 		if obs == nil || obs.IsError() {
 			t.Fatalf("expected replace at first character to succeed, got content=%q", observationText(obs))
+		}
+		metadata, loadErr := editor.historyManager.loadMetadata(path)
+		if loadErr != nil {
+			t.Fatalf("loadMetadata() error = %v", loadErr)
+		}
+		if metadata.VersionCount != 1 {
+			t.Fatalf("VersionCount = %d, want 1", metadata.VersionCount)
+		}
+		got, ok, popErr := editor.historyManager.pop(path)
+		if popErr != nil {
+			t.Fatalf("pop() error = %v", popErr)
+		}
+		if !ok || got != "abc" {
+			t.Fatalf("pop() = (%q, %v), want (%q, true)", got, ok, "abc")
 		}
 	})
 
@@ -397,6 +423,61 @@ func TestFileEditorExecutor_StrReplaceSpec(t *testing.T) {
 		})
 		if obs == nil || obs.IsError() {
 			t.Fatalf("expected replace at last character to succeed, got content=%q", observationText(obs))
+		}
+		if !strings.Contains(observationText(obs), "1| abz") {
+			t.Fatalf("replace success message = %q, want changed line preview", observationText(obs))
+		}
+		if strings.Contains(observationText(obs), "匹配内容") {
+			t.Fatalf("replace success message = %q, should not expose raw matched fragment description", observationText(obs))
+		}
+		if !strings.Contains(observationText(obs), "检查一下看是否符合预期，否则可以重新编辑") {
+			t.Fatalf("replace success message = %q, want reminder", observationText(obs))
+		}
+	})
+
+	t.Run("trim whitespace and retry regex", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		path := filepath.Join(dir, "replace-trim.txt")
+		writeTestFile(t, path, "hello world")
+
+		editor, err := DefaultFileEditor()
+		if err != nil {
+			t.Fatalf("DefaultFileEditor() error = %v", err)
+		}
+		if deleteErr := editor.historyManager.delete(path); deleteErr != nil {
+			t.Fatalf("history delete error = %v", deleteErr)
+		}
+
+		obs := runFileEditorExecutor(t, FileEditorAction{
+			Command: FileEditorCommandStrReplace,
+			Path:    path,
+			OldStr:  strptr("  hello  "),
+			NewStr:  strptr("  world  "),
+		})
+		if obs == nil || obs.IsError() {
+			t.Fatalf("expected trim-retry replace to succeed, got content=%q", observationText(obs))
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatalf("ReadFile() error = %v", readErr)
+		}
+		if string(data) != "world world" {
+			t.Fatalf("file content = %q, want %q", string(data), "world world")
+		}
+		if !strings.Contains(observationText(obs), "1| world world") {
+			t.Fatalf("replace success message = %q, want changed line preview", observationText(obs))
+		}
+		if !strings.Contains(observationText(obs), "去除首尾空白后的 old_str 和 new_str") {
+			t.Fatalf("replace success message = %q, want trim-retry hint", observationText(obs))
+		}
+		got, ok, popErr := editor.historyManager.pop(path)
+		if popErr != nil {
+			t.Fatalf("pop() error = %v", popErr)
+		}
+		if !ok || got != "hello world" {
+			t.Fatalf("pop() = (%q, %v), want (%q, true)", got, ok, "hello world")
 		}
 	})
 }
@@ -655,6 +736,61 @@ func TestFileEditorExecutor_OtherEdgeSpecs(t *testing.T) {
 		})
 		if obs == nil || !obs.IsError() {
 			t.Fatal("expected create on existing file to return error observation")
+		}
+	})
+
+	t.Run("create should create file and append undo history", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		path := filepath.Join(dir, "created.txt")
+		content := "new content"
+
+		historyManager, err := newDefaultFileHistoryManager()
+		if err != nil {
+			t.Fatalf("newDefaultFileHistoryManager() error = %v", err)
+		}
+		_ = historyManager.delete(path)
+
+		obs := runFileEditorExecutor(t, FileEditorAction{
+			Command:  FileEditorCommandCreate,
+			Path:     path,
+			FileText: strptr(content),
+		})
+		if obs == nil || obs.IsError() {
+			t.Fatalf("expected create success, got content=%q", observationText(obs))
+		}
+		if obs.PrevExist {
+			t.Fatal("PrevExist = true, want false")
+		}
+		if obs.NewContent == nil || *obs.NewContent != content {
+			t.Fatalf("NewContent = %v, want %q", obs.NewContent, content)
+		}
+
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatalf("ReadFile() error = %v", readErr)
+		}
+		if string(data) != content {
+			t.Fatalf("file content = %q, want %q", string(data), content)
+		}
+
+		metadata, err := historyManager.loadMetadata(path)
+		if err != nil {
+			t.Fatalf("loadMetadata() error = %v", err)
+		}
+		if metadata.VersionCount != 1 {
+			t.Fatalf("VersionCount = %d, want 1", metadata.VersionCount)
+		}
+		if len(metadata.Versions) != 1 {
+			t.Fatalf("len(Versions) = %d, want 1", len(metadata.Versions))
+		}
+		got, ok, err := historyManager.pop(path)
+		if err != nil {
+			t.Fatalf("pop() error = %v", err)
+		}
+		if !ok || got != "" {
+			t.Fatalf("pop() = (%q, %v), want (\"\", true)", got, ok)
 		}
 	})
 

@@ -34,13 +34,13 @@ type cacheFileMeta struct {
 // newFileCache 初始化文件缓存目录，并根据现有文件重新计算当前占用空间。
 func newFileCache(directory string, sizeLimit int64) (*fileCache, error) {
 	if err := os.MkdirAll(directory, 0o755); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create cache directory %q: %w", directory, err)
 	}
 
 	currentSize := int64(0)
 	entries, err := os.ReadDir(directory)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read cache directory %q: %w", directory, err)
 	}
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
@@ -48,7 +48,7 @@ func newFileCache(directory string, sizeLimit int64) (*fileCache, error) {
 		}
 		info, err := entry.Info()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("read cache file info %q: %w", filepath.Join(directory, entry.Name()), err)
 		}
 		currentSize += info.Size()
 	}
@@ -77,12 +77,12 @@ func (c *fileCache) get(key string) (string, bool, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", false, nil
 		}
-		return "", false, err
+		return "", false, fmt.Errorf("read cache file for key %q at %q: %w", key, path, err)
 	}
 
 	var entry cacheEntry
 	if err := json.Unmarshal(data, &entry); err != nil {
-		return "", false, err
+		return "", false, fmt.Errorf("unmarshal cache entry for key %q at %q: %w", key, path, err)
 	}
 	now := time.Now()
 	if err := os.Chtimes(path, now, now); err != nil {
@@ -107,7 +107,7 @@ func (c *fileCache) set(key, value string) error {
 		// 文件不存在时按新建处理，后续由 os.WriteFile 创建缓存文件。
 		oldSize = 0
 	} else {
-		return err
+		return fmt.Errorf("stat cache file for key %q at %q: %w", key, path, err)
 	}
 
 	entry := cacheEntry{
@@ -116,23 +116,23 @@ func (c *fileCache) set(key, value string) error {
 	}
 	data, err := json.Marshal(entry)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal cache entry for key %q: %w", key, err)
 	}
 
 	newSize := int64(len(data))
 	projectedSize := c.currentSize - oldSize + newSize
 	if c.sizeLimit > 0 && projectedSize > c.sizeLimit {
 		if err := c.evictLRU(projectedSize-c.sizeLimit, path); err != nil {
-			return err
+			return fmt.Errorf("evict LRU cache files before writing key %q: %w", key, err)
 		}
 		projectedSize = c.currentSize - oldSize + newSize
 		if projectedSize > c.sizeLimit {
-			return fmt.Errorf("cache entry exceeds size limit after LRU eviction")
+			return fmt.Errorf("cache entry for key %q exceeds size limit after LRU eviction: projected_size=%d size_limit=%d", key, projectedSize, c.sizeLimit)
 		}
 	}
 
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return err
+	if err := writeFileAtomically(path, data, 0o644); err != nil {
+		return fmt.Errorf("write cache file for key %q at %q: %w", key, path, err)
 	}
 
 	c.currentSize = projectedSize
@@ -150,11 +150,11 @@ func (c *fileCache) delete(key string) error {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		return err
+		return fmt.Errorf("stat cache file for delete key %q at %q: %w", key, path, err)
 	}
 
 	if err := os.Remove(path); err != nil {
-		return err
+		return fmt.Errorf("remove cache file for key %q at %q: %w", key, path, err)
 	}
 
 	c.currentSize -= info.Size()
@@ -171,11 +171,11 @@ func (c *fileCache) clear() error {
 
 	files, err := c.listCacheFiles()
 	if err != nil {
-		return err
+		return fmt.Errorf("list cache files for clear in %q: %w", c.directory, err)
 	}
 	for _, file := range files {
 		if err := os.Remove(file.path); err != nil {
-			return err
+			return fmt.Errorf("remove cache file during clear %q: %w", file.path, err)
 		}
 	}
 	c.currentSize = 0
@@ -191,7 +191,7 @@ func (c *fileCache) cacheFilePath(key string) string {
 func (c *fileCache) evictLRU(requiredFreeSize int64, excludePath string) error {
 	files, err := c.listCacheFiles()
 	if err != nil {
-		return err
+		return fmt.Errorf("list cache files for LRU eviction in %q: %w", c.directory, err)
 	}
 
 	sort.Slice(files, func(i, j int) bool {
@@ -234,7 +234,7 @@ func (c *fileCache) listCacheFiles() ([]cacheFileMeta, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("read cache directory %q for file listing: %w", c.directory, err)
 	}
 
 	files := make([]cacheFileMeta, 0, len(entries))
@@ -244,7 +244,7 @@ func (c *fileCache) listCacheFiles() ([]cacheFileMeta, error) {
 		}
 		info, err := entry.Info()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("read cache file info %q during listing: %w", filepath.Join(c.directory, entry.Name()), err)
 		}
 		files = append(files, cacheFileMeta{
 			path:    filepath.Join(c.directory, entry.Name()),
@@ -253,4 +253,42 @@ func (c *fileCache) listCacheFiles() ([]cacheFileMeta, error) {
 		})
 	}
 	return files, nil
+}
+
+func writeFileAtomically(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tempFile, err := os.CreateTemp(dir, ".tmp-cache-*")
+	if err != nil {
+		return fmt.Errorf("create temp file in %q: %w", dir, err)
+	}
+
+	tempPath := tempFile.Name()
+	cleanupTempFile := true
+	defer func() {
+		if cleanupTempFile {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	if err := tempFile.Chmod(perm); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("chmod temp file %q: %w", tempPath, err)
+	}
+	if _, err := tempFile.Write(data); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("write temp file %q: %w", tempPath, err)
+	}
+	if err := tempFile.Sync(); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("sync temp file %q: %w", tempPath, err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("close temp file %q: %w", tempPath, err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("rename temp file %q to %q: %w", tempPath, path, err)
+	}
+
+	cleanupTempFile = false
+	return nil
 }

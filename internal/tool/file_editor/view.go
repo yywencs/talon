@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/wen/opentalon/internal/types"
 )
@@ -24,7 +23,7 @@ var supportedImageMIMEs = map[string]string{
 }
 
 // executeView 执行文件查看命令。
-func executeView(ctx context.Context, action FileEditorAction) *FileEditorObservation {
+func (e *FileEditor) executeView(ctx context.Context, action FileEditorAction) *FileEditorObservation {
 	_ = ctx
 
 	info, err := os.Stat(action.Path)
@@ -44,29 +43,30 @@ func executeView(ctx context.Context, action FileEditorAction) *FileEditorObserv
 	}
 
 	if imageMIME, ok := detectSupportedImageMIME(action.Path); ok {
-		return executeViewImage(action, info, imageMIME)
+		return e.executeViewImage(action, info, imageMIME)
 	}
 
-	if info.Size() > maxViewTextFileSizeBytes {
-		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, fmt.Sprintf("文件太大：%.2fMB，最大允许 %.2fMB", bytesToMB(info.Size()), bytesToMB(maxViewTextFileSizeBytes)), nil))
+	if info.Size() > e.maxFileSize {
+		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, fmt.Sprintf("文件太大：%.2fMB，最大允许 %dMB", bytesToMB(info.Size()), e.MAX_FILE_SIZE_MB), nil))
 	}
 
-	data, err := os.ReadFile(action.Path)
+	text, fileEncoding, err := readTextFile(action.Path)
 	if err != nil {
-		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "读取文件失败", err))
-	}
-	if isBinaryContent(data) {
-		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "检测到二进制文件，且不是受支持的图像文件", nil))
+		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, fmt.Sprintf("读取文本文件失败: %v", err), err))
 	}
 
-	textContent, err := buildTextFileViewContent(action.Path, string(data), action.ViewRange)
+	textContent, err := buildTextFileViewContent(action.Path, text, action.ViewRange)
 	if err != nil {
 		return NewErrorObservation(action.Command, action.Path, err)
+	}
+	if !fileEncoding.Editable && fileEncoding.Reason != "" {
+		textContent = fmt.Sprintf("注意：文件编码为 %s，%s；当前仅允许查看，不允许编辑。\n\n%s", fileEncoding.Name, fileEncoding.Reason, textContent)
 	}
 	return NewObservation(action.Command, action.Path, true, nil, nil, types.TextContent{Text: textContent})
 }
 
-func executeViewImage(action FileEditorAction, info os.FileInfo, imageMIME string) *FileEditorObservation {
+func (e *FileEditor) executeViewImage(action FileEditorAction, info os.FileInfo, imageMIME string) *FileEditorObservation {
+	_ = e
 	if info.Size() > maxViewImageFileSizeBytes {
 		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, fmt.Sprintf("图片太大：%.2fMB，最大允许 %.2fMB", bytesToMB(info.Size()), bytesToMB(maxViewImageFileSizeBytes)), nil))
 	}
@@ -237,10 +237,20 @@ func isBinaryContent(data []byte) bool {
 		return false
 	}
 	sample := data[:minInt(len(data), 8192)]
+	if _, ok := detectUTF16WithoutBOM(sample); ok {
+		return false
+	}
 	if strings.IndexByte(string(sample), 0) >= 0 {
 		return true
 	}
-	return !utf8.Valid(sample)
+
+	controlCount := 0
+	for _, b := range sample {
+		if b < 0x20 && b != '\n' && b != '\r' && b != '\t' {
+			controlCount++
+		}
+	}
+	return float64(controlCount)/float64(len(sample)) >= 0.1
 }
 
 func isHiddenName(name string) bool {
