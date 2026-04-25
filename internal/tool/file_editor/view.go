@@ -156,21 +156,11 @@ func buildTextFileViewContent(path, content string, viewRange []int) (string, er
 		return "", NewFileValidationError(path, err.Error(), nil)
 	}
 
-	var builder strings.Builder
+	description := "全部内容如下"
 	if len(viewRange) == 2 {
-		_, _ = fmt.Fprintf(&builder, "文件 %q 第 %d-%d 行内容如下：\n", path, selectedStart, selectedEnd)
-	} else {
-		_, _ = fmt.Fprintf(&builder, "文件 %q 全部内容如下：\n", path)
+		description = fmt.Sprintf("第 %d-%d 行内容如下", selectedStart, selectedEnd)
 	}
-
-	if len(lines) == 0 {
-		builder.WriteString("(空文件)")
-		return builder.String(), nil
-	}
-
-	numberedContent := formatLinesWithNumbers(lines[selectedStart-1:selectedEnd], selectedStart)
-	builder.WriteString(numberedContent)
-	return truncateViewContent(builder.String()), nil
+	return buildFilePreviewMessage(path, description, content, selectedStart, selectedEnd-selectedStart+1), nil
 }
 
 func splitTextLines(content string) []string {
@@ -223,13 +213,6 @@ func formatLinesWithNumbers(lines []string, startLine int) string {
 		formatted = append(formatted, fmt.Sprintf("%*d| %s", width, startLine+idx, line))
 	}
 	return strings.Join(formatted, "\n")
-}
-
-func truncateViewContent(content string) string {
-	if len(content) <= maxViewOutputBytes {
-		return content
-	}
-	return content[:maxViewOutputBytes] + "\n...[truncated]"
 }
 
 func isBinaryContent(data []byte) bool {

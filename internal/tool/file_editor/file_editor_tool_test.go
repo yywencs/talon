@@ -732,6 +732,65 @@ func TestFileEditorExecutor_InsertAndViewSpec(t *testing.T) {
 func TestFileEditorExecutor_UndoSpec(t *testing.T) {
 	t.Parallel()
 
+	t.Run("undo restores latest version and returns preview", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		path := filepath.Join(dir, "undo-success.txt")
+		writeTestFile(t, path, "before\n")
+
+		editor, err := DefaultFileEditor()
+		if err != nil {
+			t.Fatalf("DefaultFileEditor() error = %v", err)
+		}
+		if deleteErr := editor.historyManager.delete(path); deleteErr != nil {
+			t.Fatalf("history delete error = %v", deleteErr)
+		}
+
+		replaceObs := runFileEditorExecutor(t, FileEditorAction{
+			Command: FileEditorCommandStrReplace,
+			Path:    path,
+			OldStr:  strptr("before"),
+			NewStr:  strptr("after"),
+		})
+		if replaceObs == nil || replaceObs.IsError() {
+			t.Fatalf("expected replace success before undo, got content=%q", observationText(replaceObs))
+		}
+
+		undoObs := runFileEditorExecutor(t, FileEditorAction{
+			Command: FileEditorCommandUndoEdit,
+			Path:    path,
+		})
+		if undoObs == nil || undoObs.IsError() {
+			t.Fatalf("expected undo success, got content=%q", observationText(undoObs))
+		}
+		if undoObs.OldContent == nil || *undoObs.OldContent != "after\n" {
+			t.Fatalf("OldContent = %v, want %q", undoObs.OldContent, "after\n")
+		}
+		if undoObs.NewContent == nil || *undoObs.NewContent != "before\n" {
+			t.Fatalf("NewContent = %v, want %q", undoObs.NewContent, "before\n")
+		}
+
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatalf("ReadFile() error = %v", readErr)
+		}
+		if string(data) != "before\n" {
+			t.Fatalf("file content = %q, want %q", string(data), "before\n")
+		}
+
+		text := observationText(undoObs)
+		if !strings.Contains(text, "已撤销最近一次编辑") {
+			t.Fatalf("undo success message = %q, want undo summary", text)
+		}
+		if !strings.Contains(text, path) {
+			t.Fatalf("undo success message = %q, want file path", text)
+		}
+		if !strings.Contains(text, "1| before") {
+			t.Fatalf("undo success message = %q, want content preview", text)
+		}
+	})
+
 	t.Run("undo more than snapshot limit", func(t *testing.T) {
 		t.Parallel()
 
@@ -766,6 +825,33 @@ func TestFileEditorExecutor_UndoSpec(t *testing.T) {
 		})
 		if obs == nil || !obs.IsError() {
 			t.Fatal("expected undo on deleted file to return error observation")
+		}
+	})
+
+	t.Run("undo without history returns tool error", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		path := filepath.Join(dir, "undo-empty.txt")
+		writeTestFile(t, path, "plain\n")
+
+		editor, err := DefaultFileEditor()
+		if err != nil {
+			t.Fatalf("DefaultFileEditor() error = %v", err)
+		}
+		if deleteErr := editor.historyManager.delete(path); deleteErr != nil {
+			t.Fatalf("history delete error = %v", deleteErr)
+		}
+
+		obs := runFileEditorExecutor(t, FileEditorAction{
+			Command: FileEditorCommandUndoEdit,
+			Path:    path,
+		})
+		if obs == nil || !obs.IsError() {
+			t.Fatal("expected undo without history to return error observation")
+		}
+		if !strings.Contains(observationText(obs), "没有编辑历史") {
+			t.Fatalf("undo empty history message = %q, want no-history error", observationText(obs))
 		}
 	})
 }

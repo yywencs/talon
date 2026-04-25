@@ -81,3 +81,99 @@ func ValidatePath(path string) (string, error) {
 
 	return filepath.Clean(trimmedPath), nil
 }
+
+const defaultPreviewLineLimit = 5
+
+type textPreviewOptions struct {
+	Title        string
+	Path         string
+	Content      string
+	StartLine    int
+	LineLimit    int
+	NumberLines  bool
+	Truncate     bool
+	MarkdownMode bool
+}
+
+func buildTextPreview(opts textPreviewOptions) string {
+	var builder strings.Builder
+	if opts.Title != "" {
+		builder.WriteString(opts.Title)
+		if !strings.HasSuffix(opts.Title, "\n") {
+			builder.WriteString("\n")
+		}
+	}
+
+	if opts.MarkdownMode {
+		builder.WriteString(opts.Content)
+		return maybeTruncatePresentation(builder.String())
+	}
+
+	lines := splitTextLines(opts.Content)
+	if len(lines) == 0 {
+		builder.WriteString("(空文件)")
+		return maybeTruncatePresentation(builder.String())
+	}
+
+	startLine := opts.StartLine
+	if startLine < 1 {
+		startLine = 1
+	}
+	if startLine > len(lines) {
+		startLine = len(lines)
+	}
+
+	lineLimit := opts.LineLimit
+	if lineLimit <= 0 {
+		lineLimit = len(lines)
+	}
+	endLine := startLine + lineLimit - 1
+	if endLine > len(lines) {
+		endLine = len(lines)
+	}
+
+	selectedLines := lines[startLine-1 : endLine]
+	if opts.NumberLines {
+		builder.WriteString(formatLinesWithNumbers(selectedLines, startLine))
+	} else {
+		builder.WriteString(strings.Join(selectedLines, "\n"))
+	}
+	if opts.Truncate {
+		return maybeTruncatePresentation(builder.String())
+	}
+	return builder.String()
+}
+
+func maybeTruncatePresentation(content string) string {
+	if len(content) <= maxViewOutputBytes {
+		return content
+	}
+	return content[:maxViewOutputBytes] + "\n...[truncated]"
+}
+
+func isMarkdownPath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".md", ".markdown", ".mdown", ".mkd":
+		return true
+	default:
+		return false
+	}
+}
+
+func buildFilePreviewMessage(path, description, content string, startLine, lineLimit int) string {
+	title := fmt.Sprintf("文件 %q %s：", path, description)
+	return buildTextPreview(textPreviewOptions{
+		Title:        title,
+		Path:         path,
+		Content:      content,
+		StartLine:    startLine,
+		LineLimit:    lineLimit,
+		NumberLines:  !isMarkdownPath(path),
+		Truncate:     true,
+		MarkdownMode: isMarkdownPath(path),
+	})
+}
+
+func buildReminderMessage(main string) string {
+	return main + "\n\n检查一下看是否符合预期，否则可以重新编辑。"
+}

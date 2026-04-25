@@ -102,7 +102,7 @@ func (e *FileEditor) executeCreate(ctx context.Context, action FileEditorAction)
 		false,
 		nil,
 		action.FileText,
-		types.TextContent{Text: fmt.Sprintf("文件 %q 创建成功。", action.Path)},
+		types.TextContent{Text: buildReminderMessage(buildFilePreviewMessage(action.Path, "创建成功，当前内容如下", *action.FileText, 1, defaultPreviewLineLimit))},
 	)
 }
 
@@ -178,10 +178,10 @@ func (e *FileEditor) executeStrReplace(ctx context.Context, action FileEditorAct
 		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "写回文件失败", err))
 	}
 
-	changedLinesPreview := buildChangedLinesPreview(oldContent, newContent, matches[0][0])
-	message := fmt.Sprintf("已完成替换。受影响的行如下：\n%s\n\n检查一下看是否符合预期，否则可以重新编辑。", changedLinesPreview)
+	changedLinesPreview := buildChangedLinesPreview(action.Path, oldContent, newContent, matches[0][0])
+	message := buildReminderMessage("已完成替换。\n" + changedLinesPreview)
 	if usedTrimmedRetry {
-		message = fmt.Sprintf("已完成替换。本次匹配使用了去除首尾空白后的 old_str 和 new_str。受影响的行如下：\n%s\n\n检查一下看是否符合预期，否则可以重新编辑。", changedLinesPreview)
+		message = buildReminderMessage("已完成替换。本次匹配使用了去除首尾空白后的 old_str 和 new_str。\n" + changedLinesPreview)
 	}
 
 	return NewObservation(
@@ -194,7 +194,7 @@ func (e *FileEditor) executeStrReplace(ctx context.Context, action FileEditorAct
 	)
 }
 
-func buildChangedLinesPreview(oldContent, newContent string, matchStart int) string {
+func buildChangedLinesPreview(path, oldContent, newContent string, matchStart int) string {
 	oldLines := splitTextLines(oldContent)
 	newLines := splitTextLines(newContent)
 
@@ -212,10 +212,10 @@ func buildChangedLinesPreview(oldContent, newContent string, matchStart int) str
 	}
 
 	if len(newLines) == 0 {
-		return "(变更后文件为空)"
+		return buildFilePreviewMessage(path, "受影响的行如下", "", 1, 1)
 	}
 	if prefixLen <= newSuffix {
-		return formatLinesWithNumbers(newLines[prefixLen:newSuffix+1], prefixLen+1)
+		return buildFilePreviewMessage(path, "受影响的行如下", strings.Join(newLines[prefixLen:newSuffix+1], "\n"), prefixLen+1, newSuffix-prefixLen+1)
 	}
 
 	lineNumber := 1
@@ -229,9 +229,9 @@ func buildChangedLinesPreview(oldContent, newContent string, matchStart int) str
 		lineNumber = len(newLines)
 	}
 	if lineNumber <= 0 {
-		return "(变更后该位置无可展示行)"
+		return buildFilePreviewMessage(path, "受影响的行如下", "", 1, 1)
 	}
-	return formatLinesWithNumbers(newLines[lineNumber-1:lineNumber], lineNumber)
+	return buildFilePreviewMessage(path, "受影响的行如下", strings.Join(newLines[lineNumber-1:lineNumber], "\n"), lineNumber, 1)
 }
 
 // executeInsert 执行按行插入命令。
@@ -298,8 +298,8 @@ func (e *FileEditor) executeInsert(ctx context.Context, action FileEditorAction)
 		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "写回文件失败", err))
 	}
 
-	contextPreview := buildInsertedContextPreview(newContent, insertLine, 5)
-	message := fmt.Sprintf("已成功修改文件 %q，并完成插入。插入位置附近上下文如下：\n%s\n\n检查一下看是否符合预期，否则可以重新编辑。", action.Path, contextPreview)
+	contextPreview := buildInsertedContextPreview(action.Path, newContent, insertLine, 5)
+	message := buildReminderMessage(fmt.Sprintf("已成功修改文件 %q，并完成插入。\n%s", action.Path, contextPreview))
 
 	return NewObservation(
 		action.Command,
@@ -333,10 +333,10 @@ func buildInsertedContent(oldLines []string, insertLine int, insertText string) 
 	return strings.Join(newLines, "\n") + "\n"
 }
 
-func buildInsertedContextPreview(content string, insertLine, maxLines int) string {
+func buildInsertedContextPreview(path, content string, insertLine, maxLines int) string {
 	lines := splitTextLines(content)
 	if len(lines) == 0 {
-		return "(空文件)"
+		return buildFilePreviewMessage(path, "插入位置附近上下文如下", "", 1, 1)
 	}
 	if maxLines <= 0 {
 		maxLines = 5
@@ -354,13 +354,64 @@ func buildInsertedContextPreview(content string, insertLine, maxLines int) strin
 			start = 1
 		}
 	}
-	return formatLinesWithNumbers(lines[start-1:end], start)
+	return buildFilePreviewMessage(path, "插入位置附近上下文如下", strings.Join(lines[start-1:end], "\n"), start, end-start+1)
 }
 
 // executeUndoEdit 执行撤销编辑命令。
 func (e *FileEditor) executeUndoEdit(ctx context.Context, action FileEditorAction) *FileEditorObservation {
 	_ = ctx
-	_ = e
-	_ = action
-	panic("not implemented")
+
+	info, err := os.Stat(action.Path)
+	if err != nil {
+		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "目标文件不存在或不可访问", err))
+	}
+	if info.IsDir() {
+		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "目标路径是目录", nil))
+	}
+	if info.Size() > e.maxFileSize {
+		return NewErrorObservation(
+			action.Command,
+			action.Path,
+			NewFileValidationError(action.Path, fmt.Sprintf("文件太大：%.2fMB，最大允许 %dMB", bytesToMB(info.Size()), e.MAX_FILE_SIZE_MB), nil),
+		)
+	}
+
+	currentContent, fileEncoding, err := readTextFile(action.Path)
+	if err != nil {
+		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, fmt.Sprintf("读取文本文件失败: %v", err), err))
+	}
+	if !fileEncoding.Editable {
+		reason := fmt.Sprintf("无法确认文件编码，当前仅允许查看，不允许编辑；检测结果为 %s", fileEncoding.Name)
+		if fileEncoding.Reason != "" {
+			reason += "，" + fileEncoding.Reason
+		}
+		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, reason, nil))
+	}
+	if e == nil || e.historyManager == nil {
+		return NewErrorObservation(action.Command, action.Path, fmt.Errorf("file editor history manager is nil"))
+	}
+
+	previousContent, found, err := e.historyManager.pop(action.Path)
+	if err != nil {
+		return NewErrorObservation(action.Command, action.Path, fmt.Errorf("pop latest version from history chain: %w", err))
+	}
+	if !found {
+		return NewErrorObservation(action.Command, action.Path, fmt.Errorf("没有编辑历史"))
+	}
+
+	if err := writeTextFile(action.Path, previousContent, fileEncoding, 0o644); err != nil {
+		_ = e.appendVersionToHistoryChain(action.Path, previousContent)
+		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "写回文件失败", err))
+	}
+
+	preview := buildFilePreviewMessage(action.Path, "撤销后内容如下", previousContent, 1, defaultPreviewLineLimit)
+	message := buildReminderMessage("已撤销最近一次编辑。\n" + preview)
+	return NewObservation(
+		action.Command,
+		action.Path,
+		true,
+		&currentContent,
+		&previousContent,
+		types.TextContent{Text: message},
+	)
 }
