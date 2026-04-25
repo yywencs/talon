@@ -663,6 +663,70 @@ func TestFileEditorExecutor_InsertAndViewSpec(t *testing.T) {
 			t.Fatalf("expected insert into empty file to succeed, got content=%q", observationText(obs))
 		}
 	})
+
+	t.Run("insert writes version chain and returns file context", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		path := filepath.Join(dir, "context.txt")
+		writeTestFile(t, path, "line1\nline2\nline3\nline4\n")
+
+		editor, err := DefaultFileEditor()
+		if err != nil {
+			t.Fatalf("DefaultFileEditor() error = %v", err)
+		}
+		if deleteErr := editor.historyManager.delete(path); deleteErr != nil {
+			t.Fatalf("history delete error = %v", deleteErr)
+		}
+
+		obs := runFileEditorExecutor(t, FileEditorAction{
+			Command:    FileEditorCommandInsert,
+			Path:       path,
+			InsertLine: intptr(3),
+			NewStr:     strptr("inserted-a\ninserted-b"),
+		})
+		if obs == nil || obs.IsError() {
+			t.Fatalf("expected insert to succeed, got content=%q", observationText(obs))
+		}
+
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatalf("ReadFile() error = %v", readErr)
+		}
+		want := "line1\nline2\ninserted-a\ninserted-b\nline3\nline4\n"
+		if string(data) != want {
+			t.Fatalf("file content = %q, want %q", string(data), want)
+		}
+
+		text := observationText(obs)
+		if !strings.Contains(text, path) {
+			t.Fatalf("insert success message = %q, want file path", text)
+		}
+		if !strings.Contains(text, "2| line2") || !strings.Contains(text, "5| line3") {
+			t.Fatalf("insert success message = %q, want nearby context lines", text)
+		}
+		if strings.Contains(text, "6| line4") {
+			t.Fatalf("insert success message = %q, want at most 5 context lines", text)
+		}
+		if !strings.Contains(text, "检查一下看是否符合预期，否则可以重新编辑") {
+			t.Fatalf("insert success message = %q, want reminder", text)
+		}
+
+		metadata, loadErr := editor.historyManager.loadMetadata(path)
+		if loadErr != nil {
+			t.Fatalf("loadMetadata() error = %v", loadErr)
+		}
+		if metadata.VersionCount != 1 {
+			t.Fatalf("VersionCount = %d, want 1", metadata.VersionCount)
+		}
+		got, ok, popErr := editor.historyManager.pop(path)
+		if popErr != nil {
+			t.Fatalf("pop() error = %v", popErr)
+		}
+		if !ok || got != "line1\nline2\nline3\nline4\n" {
+			t.Fatalf("pop() = (%q, %v), want (%q, true)", got, ok, "line1\nline2\nline3\nline4\n")
+		}
+	})
 }
 
 func TestFileEditorExecutor_UndoSpec(t *testing.T) {

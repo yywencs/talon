@@ -237,9 +237,124 @@ func buildChangedLinesPreview(oldContent, newContent string, matchStart int) str
 // executeInsert 执行按行插入命令。
 func (e *FileEditor) executeInsert(ctx context.Context, action FileEditorAction) *FileEditorObservation {
 	_ = ctx
-	_ = e
-	_ = action
-	panic("not implemented")
+
+	info, err := os.Stat(action.Path)
+	if err != nil {
+		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "目标文件不存在或不可访问", err))
+	}
+	if info.IsDir() {
+		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "目标路径是目录", nil))
+	}
+	if info.Size() > e.maxFileSize {
+		return NewErrorObservation(
+			action.Command,
+			action.Path,
+			NewFileValidationError(action.Path, fmt.Sprintf("文件太大：%.2fMB，最大允许 %dMB", bytesToMB(info.Size()), e.MAX_FILE_SIZE_MB), nil),
+		)
+	}
+
+	oldContent, fileEncoding, err := readTextFile(action.Path)
+	if err != nil {
+		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, fmt.Sprintf("读取文本文件失败: %v", err), err))
+	}
+	if !fileEncoding.Editable {
+		reason := fmt.Sprintf("无法确认文件编码，当前仅允许查看，不允许编辑；检测结果为 %s", fileEncoding.Name)
+		if fileEncoding.Reason != "" {
+			reason += "，" + fileEncoding.Reason
+		}
+		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, reason, nil))
+	}
+
+	insertText := ""
+	if action.NewStr != nil {
+		insertText = *action.NewStr
+	} else if action.FileText != nil {
+		insertText = *action.FileText
+	}
+
+	oldLines := splitTextLines(oldContent)
+	insertLine := *action.InsertLine
+	maxInsertLine := len(oldLines) + 1
+	if len(oldLines) == 0 {
+		maxInsertLine = 1
+	}
+	if insertLine < 1 || insertLine > maxInsertLine {
+		return NewErrorObservation(
+			action.Command,
+			action.Path,
+			NewFileValidationError(action.Path, fmt.Sprintf("insert_line=%d 超出允许范围 [1, %d]", insertLine, maxInsertLine), nil),
+		)
+	}
+
+	if err := e.appendVersionToHistoryChain(action.Path, oldContent); err != nil {
+		return NewErrorObservation(action.Command, action.Path, fmt.Errorf("append insert operation to version chain: %w", err))
+	}
+
+	newContent := buildInsertedContent(oldLines, insertLine, insertText)
+	if err := writeTextFile(action.Path, newContent, fileEncoding, 0o644); err != nil {
+		if rollbackErr := e.rollbackLatestVersionFromHistoryChain(action.Path); rollbackErr != nil {
+			return NewErrorObservation(action.Command, action.Path, fmt.Errorf("写回文件失败，且回滚版本链失败: write_err=%v rollback_err=%v", err, rollbackErr))
+		}
+		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "写回文件失败", err))
+	}
+
+	contextPreview := buildInsertedContextPreview(newContent, insertLine, 5)
+	message := fmt.Sprintf("已成功修改文件 %q，并完成插入。插入位置附近上下文如下：\n%s\n\n检查一下看是否符合预期，否则可以重新编辑。", action.Path, contextPreview)
+
+	return NewObservation(
+		action.Command,
+		action.Path,
+		true,
+		&oldContent,
+		&newContent,
+		types.TextContent{Text: message},
+	)
+}
+
+func buildInsertedContent(oldLines []string, insertLine int, insertText string) string {
+	insertLines := splitTextLines(insertText)
+	newLines := make([]string, 0, len(oldLines)+len(insertLines))
+
+	insertIndex := insertLine - 1
+	if insertIndex < 0 {
+		insertIndex = 0
+	}
+	if insertIndex > len(oldLines) {
+		insertIndex = len(oldLines)
+	}
+
+	newLines = append(newLines, oldLines[:insertIndex]...)
+	newLines = append(newLines, insertLines...)
+	newLines = append(newLines, oldLines[insertIndex:]...)
+
+	if len(newLines) == 0 {
+		return ""
+	}
+	return strings.Join(newLines, "\n") + "\n"
+}
+
+func buildInsertedContextPreview(content string, insertLine, maxLines int) string {
+	lines := splitTextLines(content)
+	if len(lines) == 0 {
+		return "(空文件)"
+	}
+	if maxLines <= 0 {
+		maxLines = 5
+	}
+
+	start := insertLine - 2
+	if start < 1 {
+		start = 1
+	}
+	end := start + maxLines - 1
+	if end > len(lines) {
+		end = len(lines)
+		start = end - maxLines + 1
+		if start < 1 {
+			start = 1
+		}
+	}
+	return formatLinesWithNumbers(lines[start-1:end], start)
 }
 
 // executeUndoEdit 执行撤销编辑命令。
