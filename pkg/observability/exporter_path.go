@@ -40,12 +40,21 @@ func (m *traceDirectoryManager) ProcessDir() string {
 // TraceDir 根据 spanRecord 的 traceID 返回对应的追踪目录。
 // 同一 traceID 的多次调用返回相同目录，新建 traceID 时自动创建目录。
 func (m *traceDirectoryManager) TraceDir(record spanRecord) (string, error) {
+	return m.TraceDirForTraceID(record.TraceID, record.StartTime)
+}
+
+// TraceDirForTraceID 根据 traceID 返回对应的追踪目录。
+// 当第一次为 traceID 创建目录时，会使用传入时间生成目录名。
+func (m *traceDirectoryManager) TraceDirForTraceID(traceID string, startTime time.Time) (string, error) {
 	if m == nil {
 		return "", fmt.Errorf("trace directory manager is nil")
 	}
-	traceID := strings.TrimSpace(record.TraceID)
+	traceID = strings.TrimSpace(traceID)
 	if traceID == "" {
 		return "", fmt.Errorf("trace_id is empty")
+	}
+	if startTime.IsZero() {
+		startTime = time.Now()
 	}
 
 	m.mu.Lock()
@@ -55,7 +64,10 @@ func (m *traceDirectoryManager) TraceDir(record spanRecord) (string, error) {
 		return dir, nil
 	}
 
-	traceDir := filepath.Join(m.processDir, buildTraceDirectoryName(record))
+	traceDir := filepath.Join(m.processDir, buildTraceDirectoryName(spanRecord{
+		TraceID:   traceID,
+		StartTime: startTime,
+	}))
 	if err := os.MkdirAll(traceDir, 0755); err != nil {
 		return "", fmt.Errorf("create trace dir: %w", err)
 	}

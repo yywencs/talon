@@ -89,7 +89,7 @@ func bashExecutor(ctx context.Context, action BashTool) *TerminalObservation {
 		timeout = *action.TimeoutSecs
 	}
 
-	logger.InfoWithCtx(ctx, "审计: bash 命令开始执行",
+	logger.DebugWithCtx(ctx, "审计: bash 命令开始执行",
 		"tool_name", "bash",
 		"command_name", auditCommandName(action.Command),
 		"command_sha256", auditCommandHash(action.Command),

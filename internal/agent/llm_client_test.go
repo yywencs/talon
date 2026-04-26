@@ -4,12 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/config"
+	"github.com/wen/opentalon/pkg/observability"
 	"github.com/wen/opentalon/pkg/utils"
 )
 
@@ -104,6 +109,90 @@ func TestOpenAICompatibleStreamChat(t *testing.T) {
 	t.Logf("\n总共收到 %d 个字符", len(fullResponse))
 }
 
+func TestOpenAICompatibleStreamChatCapturesPayloadAfterCompletion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("response writer does not support flushing")
+		}
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"你好\"}}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1}}\n\n"))
+		flusher.Flush()
+		time.Sleep(50 * time.Millisecond)
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"世界\"}}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	traceRoot := t.TempDir()
+	cfg := observability.DefaultConfig()
+	cfg.Enabled = true
+	cfg.Exporters = []observability.ExporterKind{observability.ExporterJSONL}
+	cfg.TraceDir = traceRoot
+	if err := observability.Init(context.Background(), cfg); err != nil {
+		t.Fatalf("observability.Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = observability.Shutdown(context.Background())
+	})
+
+	client := newOpenAIClient(server.URL, "stream-secret")
+	var duringStreamChecked bool
+	resp, err := client.StreamChat(context.Background(), ChatRequest{
+		Model: "test-model",
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.Content{types.TextContent{Text: "你好"}}},
+		},
+		Temperature: 0,
+	}, func(token string) {
+		if token == "" || duringStreamChecked {
+			return
+		}
+		duringStreamChecked = true
+		if got := len(findFilesWithSuffix(t, traceRoot, "-request-payload.json")); got != 0 {
+			t.Fatalf("request payload files during stream = %d, want 0", got)
+		}
+		if got := len(findFilesWithSuffix(t, traceRoot, "-response-payload.json")); got != 0 {
+			t.Fatalf("response payload files during stream = %d, want 0", got)
+		}
+	})
+	if err != nil {
+		t.Fatalf("StreamChat() error = %v", err)
+	}
+	if !duringStreamChecked {
+		t.Fatal("duringStreamChecked = false, want true")
+	}
+	if utils.FlattenTextContent(resp.Message.Content) != "你好世界" {
+		t.Fatalf("response content = %q, want 你好世界", utils.FlattenTextContent(resp.Message.Content))
+	}
+
+	if shutdownErr := observability.Shutdown(context.Background()); shutdownErr != nil {
+		t.Fatalf("observability.Shutdown() error = %v", shutdownErr)
+	}
+
+	requestFiles := findFilesWithSuffix(t, traceRoot, "-request-payload.json")
+	responseFiles := findFilesWithSuffix(t, traceRoot, "-response-payload.json")
+	if len(requestFiles) != 1 {
+		t.Fatalf("request payload file count = %d, want 1", len(requestFiles))
+	}
+	if len(responseFiles) != 1 {
+		t.Fatalf("response payload file count = %d, want 1", len(responseFiles))
+	}
+	requestContent, err := os.ReadFile(requestFiles[0])
+	if err != nil {
+		t.Fatalf("ReadFile(request) error = %v", err)
+	}
+	if strings.Contains(string(requestContent), "stream-secret") {
+		t.Fatalf("request payload leaked secret: %s", string(requestContent))
+	}
+	spanRecords := readSpanRecords(t, traceRoot)
+	attrs := spanRecords[len(spanRecords)-1]["attributes"].(map[string]any)
+	if attrs["llm.request.artifact_path"] == "" || attrs["llm.response.artifact_path"] == "" {
+		t.Fatalf("artifact paths missing: %+v", attrs)
+	}
+}
+
 func TestOllamaChat(t *testing.T) {
 	config.Load()
 	cfg := config.Global
@@ -139,6 +228,78 @@ func TestOllamaChat(t *testing.T) {
 
 	t.Logf("响应内容: %s", utils.FlattenTextContent(resp.Message.Content))
 	t.Logf("Prompt tokens: %d, Completion tokens: %d", resp.PromptTokens, resp.CompletionTokens)
+}
+
+func TestOllamaStreamChatCapturesPayloadAfterCompletion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("response writer does not support flushing")
+		}
+		_, _ = w.Write([]byte("{\"message\":{\"role\":\"assistant\",\"content\":\"你好\"},\"done\":false}\n"))
+		flusher.Flush()
+		time.Sleep(50 * time.Millisecond)
+		_, _ = w.Write([]byte("{\"message\":{\"role\":\"assistant\",\"content\":\"世界\"},\"done\":true,\"prompt_eval_count\":3,\"eval_count\":2}\n"))
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	traceRoot := t.TempDir()
+	cfg := observability.DefaultConfig()
+	cfg.Enabled = true
+	cfg.Exporters = []observability.ExporterKind{observability.ExporterJSONL}
+	cfg.TraceDir = traceRoot
+	if err := observability.Init(context.Background(), cfg); err != nil {
+		t.Fatalf("observability.Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = observability.Shutdown(context.Background())
+	})
+
+	client := newOllamaClient(server.URL)
+	var duringStreamChecked bool
+	resp, err := client.StreamChat(context.Background(), ChatRequest{
+		Model: "ollama-test",
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.Content{types.TextContent{Text: "你好"}}},
+		},
+		Temperature: 0,
+	}, func(token string) {
+		if token == "" || duringStreamChecked {
+			return
+		}
+		duringStreamChecked = true
+		if got := len(findFilesWithSuffix(t, traceRoot, "-request-payload.json")); got != 0 {
+			t.Fatalf("request payload files during stream = %d, want 0", got)
+		}
+	})
+	if err != nil {
+		t.Fatalf("StreamChat() error = %v", err)
+	}
+	if utils.FlattenTextContent(resp.Message.Content) != "你好世界" {
+		t.Fatalf("response content = %q, want 你好世界", utils.FlattenTextContent(resp.Message.Content))
+	}
+	if err := observability.Shutdown(context.Background()); err != nil {
+		t.Fatalf("observability.Shutdown() error = %v", err)
+	}
+
+	requestFiles := findFilesWithSuffix(t, traceRoot, "-request-payload.json")
+	responseFiles := findFilesWithSuffix(t, traceRoot, "-response-payload.json")
+	if len(requestFiles) != 1 {
+		t.Fatalf("request payload file count = %d, want 1", len(requestFiles))
+	}
+	if len(responseFiles) != 1 {
+		t.Fatalf("response payload file count = %d, want 1", len(responseFiles))
+	}
+	spanRecords := readSpanRecords(t, traceRoot)
+	attrs := spanRecords[len(spanRecords)-1]["attributes"].(map[string]any)
+	if attrs["llm.response.artifact_path"] == "" {
+		t.Fatalf("llm.response.artifact_path is empty: %+v", attrs)
+	}
+	if got := fmt.Sprint(attrs["llm.response.status_code"]); got != "200" {
+		t.Fatalf("llm.response.status_code = %v, want 200", attrs["llm.response.status_code"])
+	}
 }
 
 func TestOpenAICompatibleChat(t *testing.T) {
@@ -322,4 +483,197 @@ func TestMessageFromOpenAIChoice(t *testing.T) {
 	if msg.ToolCalls[0].Name != "bash" || msg.ToolCalls[0].Arguments != `{"command":"pwd"}` {
 		t.Fatalf("unexpected tool call: %+v", msg.ToolCalls[0])
 	}
+}
+
+func TestDoJSONRequestCapturesPayloadArtifactsAndSummary(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"message":       "ok",
+			"authorization": "Bearer response-secret",
+		})
+	}))
+	defer server.Close()
+
+	traceRoot := t.TempDir()
+	cfg := observability.DefaultConfig()
+	cfg.Enabled = true
+	cfg.Exporters = []observability.ExporterKind{observability.ExporterJSONL}
+	cfg.TraceDir = traceRoot
+	if err := observability.Init(context.Background(), cfg); err != nil {
+		t.Fatalf("observability.Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = observability.Shutdown(context.Background())
+	})
+
+	ctx, span := observability.StartSpan(context.Background(), "llm.request.test")
+	reqBody := map[string]any{
+		"message": "hello",
+		"api_key": "request-secret",
+	}
+	var respBody map[string]any
+	if err := doJSONRequest(ctx, sharedLLMHTTPClient, server.URL, reqBody, map[string]string{
+		"Authorization": "Bearer header-secret",
+	}, &respBody); err != nil {
+		t.Fatalf("doJSONRequest() error = %v", err)
+	}
+	span.End()
+	if err := observability.Shutdown(context.Background()); err != nil {
+		t.Fatalf("observability.Shutdown() error = %v", err)
+	}
+
+	requestFiles := findFilesWithSuffix(t, traceRoot, "-request-payload.json")
+	responseFiles := findFilesWithSuffix(t, traceRoot, "-response-payload.json")
+	if len(requestFiles) != 1 {
+		t.Fatalf("request payload file count = %d, want 1", len(requestFiles))
+	}
+	if len(responseFiles) != 1 {
+		t.Fatalf("response payload file count = %d, want 1", len(responseFiles))
+	}
+
+	requestContent, err := os.ReadFile(requestFiles[0])
+	if err != nil {
+		t.Fatalf("ReadFile(request) error = %v", err)
+	}
+	if strings.Contains(string(requestContent), "request-secret") {
+		t.Fatalf("request payload leaked secret: %s", string(requestContent))
+	}
+	responseContent, err := os.ReadFile(responseFiles[0])
+	if err != nil {
+		t.Fatalf("ReadFile(response) error = %v", err)
+	}
+	if strings.Contains(string(responseContent), "response-secret") {
+		t.Fatalf("response payload leaked secret: %s", string(responseContent))
+	}
+
+	spanRecords := readSpanRecords(t, traceRoot)
+	if len(spanRecords) == 0 {
+		t.Fatal("no span records found")
+	}
+	attrs := spanRecords[len(spanRecords)-1]["attributes"].(map[string]any)
+	if attrs["llm.request.artifact_path"] == "" {
+		t.Fatalf("llm.request.artifact_path is empty: %+v", attrs)
+	}
+	if attrs["llm.response.artifact_path"] == "" {
+		t.Fatalf("llm.response.artifact_path is empty: %+v", attrs)
+	}
+	if attrs["llm.request.body_size"] == nil {
+		t.Fatalf("llm.request.body_size is missing: %+v", attrs)
+	}
+	if attrs["llm.response.body_size"] == nil {
+		t.Fatalf("llm.response.body_size is missing: %+v", attrs)
+	}
+	if strings.Contains(fmt.Sprint(attrs["llm.request.preview"]), "request-secret") {
+		t.Fatalf("request preview leaked secret: %+v", attrs["llm.request.preview"])
+	}
+	if strings.Contains(fmt.Sprint(attrs["llm.response.preview"]), "response-secret") {
+		t.Fatalf("response preview leaked secret: %+v", attrs["llm.response.preview"])
+	}
+}
+
+func TestDoJSONRequestCapturesFailureResponsePayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":         "bad request",
+			"authorization": "Bearer failure-secret",
+		})
+	}))
+	defer server.Close()
+
+	traceRoot := t.TempDir()
+	cfg := observability.DefaultConfig()
+	cfg.Enabled = true
+	cfg.Exporters = []observability.ExporterKind{observability.ExporterJSONL}
+	cfg.TraceDir = traceRoot
+	if err := observability.Init(context.Background(), cfg); err != nil {
+		t.Fatalf("observability.Init() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = observability.Shutdown(context.Background())
+	})
+
+	ctx, span := observability.StartSpan(context.Background(), "llm.request.failure")
+	err := doJSONRequest(ctx, sharedLLMHTTPClient, server.URL, map[string]any{
+		"message": "hello",
+	}, nil, &map[string]any{})
+	if err == nil {
+		t.Fatal("doJSONRequest() error = nil, want non-nil")
+	}
+	span.End()
+	if err := observability.Shutdown(context.Background()); err != nil {
+		t.Fatalf("observability.Shutdown() error = %v", err)
+	}
+
+	responseFiles := findFilesWithSuffix(t, traceRoot, "-response-payload.json")
+	if len(responseFiles) != 1 {
+		t.Fatalf("response payload file count = %d, want 1", len(responseFiles))
+	}
+	responseContent, readErr := os.ReadFile(responseFiles[0])
+	if readErr != nil {
+		t.Fatalf("ReadFile(response) error = %v", readErr)
+	}
+	if strings.Contains(string(responseContent), "failure-secret") {
+		t.Fatalf("failure response payload leaked secret: %s", string(responseContent))
+	}
+
+	spanRecords := readSpanRecords(t, traceRoot)
+	if len(spanRecords) == 0 {
+		t.Fatal("no span records found")
+	}
+	attrs := spanRecords[len(spanRecords)-1]["attributes"].(map[string]any)
+	if got := fmt.Sprint(attrs["llm.response.status_code"]); got != "400" {
+		t.Fatalf("llm.response.status_code = %v, want 400", attrs["llm.response.status_code"])
+	}
+	if attrs["llm.response.artifact_path"] == "" {
+		t.Fatalf("llm.response.artifact_path is empty: %+v", attrs)
+	}
+}
+
+func findFilesWithSuffix(t *testing.T, root, suffix string) []string {
+	t.Helper()
+	matches := make([]string, 0)
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if strings.HasSuffix(path, suffix) {
+			matches = append(matches, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WalkDir() error = %v", err)
+	}
+	return matches
+}
+
+func readSpanRecords(t *testing.T, root string) []map[string]any {
+	t.Helper()
+	spanFiles := findFilesWithSuffix(t, root, "spans.jsonl")
+	if len(spanFiles) != 1 {
+		t.Fatalf("spans.jsonl count = %d, want 1", len(spanFiles))
+	}
+	raw, err := os.ReadFile(spanFiles[0])
+	if err != nil {
+		t.Fatalf("ReadFile(spans.jsonl) error = %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	out := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		record := make(map[string]any)
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("json.Unmarshal(span line) error = %v", err)
+		}
+		out = append(out, record)
+	}
+	return out
 }

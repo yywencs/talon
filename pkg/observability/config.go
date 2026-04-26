@@ -18,6 +18,8 @@ const (
 	envOTLPEndpoint   = "OBS_OTLP_ENDPOINT"
 	envOTLPInsecure   = "OBS_OTLP_INSECURE"
 	envStdoutPretty   = "OBS_STDOUT_PRETTY"
+	envPayloadSize    = "OBS_PAYLOAD_SIZE_LIMIT"
+	envPayloadPreview = "OBS_PAYLOAD_PREVIEW_LIMIT"
 )
 
 // Config 定义 observability 初始化所需配置。
@@ -32,6 +34,8 @@ type Config struct {
 	OTLPEndpoint   string
 	OTLPInsecure   bool
 	StdoutPretty   bool
+	PayloadSizeLimit    int
+	PayloadPreviewLimit int
 	RedactionRules []RedactionRule
 }
 
@@ -47,6 +51,8 @@ func DefaultConfig() Config {
 		TraceDir:       defaultTraceDir(),
 		OTLPInsecure:   false,
 		StdoutPretty:   true,
+		PayloadSizeLimit:    4096,
+		PayloadPreviewLimit: 512,
 		RedactionRules: DefaultRedactionRules(),
 	}
 }
@@ -64,6 +70,8 @@ func LoadConfigFromEnv() Config {
 	cfg.OTLPEndpoint = getEnv(envOTLPEndpoint, cfg.OTLPEndpoint)
 	cfg.OTLPInsecure = getEnvBool(envOTLPInsecure, cfg.OTLPInsecure)
 	cfg.StdoutPretty = getEnvBool(envStdoutPretty, cfg.StdoutPretty)
+	cfg.PayloadSizeLimit = getEnvInt(envPayloadSize, cfg.PayloadSizeLimit)
+	cfg.PayloadPreviewLimit = getEnvInt(envPayloadPreview, cfg.PayloadPreviewLimit)
 	return cfg.Normalize()
 }
 
@@ -86,6 +94,12 @@ func (c Config) Normalize() Config {
 	}
 	if strings.TrimSpace(c.TraceDir) == "" {
 		c.TraceDir = defaultTraceDir()
+	}
+	if c.PayloadSizeLimit <= 0 {
+		c.PayloadSizeLimit = 4096
+	}
+	if c.PayloadPreviewLimit <= 0 {
+		c.PayloadPreviewLimit = 512
 	}
 	if c.RedactionRules == nil {
 		c.RedactionRules = DefaultRedactionRules()
@@ -127,6 +141,18 @@ func getEnvFloat64(key string, fallback float64) float64 {
 		return fallback
 	}
 	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func getEnvInt(key string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.Atoi(value)
 	if err != nil {
 		return fallback
 	}

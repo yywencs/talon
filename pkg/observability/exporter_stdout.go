@@ -13,9 +13,10 @@ func (stdoutExporterFactory) kind() ExporterKind {
 	return ExporterStdout
 }
 
-func (stdoutExporterFactory) build(ctx context.Context, cfg Config, redactor *Redactor) (sdktrace.SpanExporter, error) {
+func (stdoutExporterFactory) build(ctx context.Context, cfg Config, redactor *Redactor, dirManager *traceDirectoryManager) (sdktrace.SpanExporter, error) {
 	_ = ctx
 	_ = redactor
+	_ = dirManager
 	options := []stdouttrace.Option{
 		stdouttrace.WithoutTimestamps(),
 	}

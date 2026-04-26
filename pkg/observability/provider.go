@@ -22,6 +22,7 @@ type providerState struct {
 	cfg      Config
 	tp       *sdktrace.TracerProvider
 	redactor *Redactor
+	dirMgr   *traceDirectoryManager
 }
 
 var globalProvider = &providerState{}
@@ -34,6 +35,14 @@ func Init(ctx context.Context, cfg Config) error {
 	redactor, err := NewRedactor(cfg.RedactionRules)
 	if err != nil {
 		return fmt.Errorf("create redactor: %w", err)
+	}
+
+	var dirManager *traceDirectoryManager
+	if cfg.Enabled {
+		dirManager, err = newTraceDirectoryManager(cfg.TraceDir)
+		if err != nil {
+			return fmt.Errorf("create trace directory manager: %w", err)
+		}
 	}
 
 	// 获取互斥锁，确保并发安全
@@ -51,6 +60,7 @@ func Init(ctx context.Context, cfg Config) error {
 	// 保存配置和脱敏器
 	globalProvider.cfg = cfg
 	globalProvider.redactor = redactor
+	globalProvider.dirMgr = dirManager
 
 	// 未启用时，设置一个永不采样的 Provider，避免性能开销
 	if !cfg.Enabled {
@@ -62,7 +72,7 @@ func Init(ctx context.Context, cfg Config) error {
 	// 根据配置创建导出器
 	spanProcessors := make([]sdktrace.TracerProviderOption, 0, len(cfg.Exporters)+2)
 	for _, kind := range cfg.Exporters {
-		exporter, err := buildSpanExporter(ctx, cfg, kind, redactor)
+		exporter, err := buildSpanExporter(ctx, cfg, kind, redactor, dirManager)
 		if err != nil {
 			return fmt.Errorf("build exporter %s: %w", kind, err)
 		}
@@ -106,6 +116,9 @@ func Shutdown(ctx context.Context) error {
 	}
 	err := globalProvider.tp.Shutdown(ctx)
 	globalProvider.tp = nil
+	globalProvider.redactor = nil
+	globalProvider.cfg = Config{}
+	globalProvider.dirMgr = nil
 	return err
 }
 
@@ -113,4 +126,22 @@ func currentTracerProvider() *sdktrace.TracerProvider {
 	globalProvider.mu.RLock()
 	defer globalProvider.mu.RUnlock()
 	return globalProvider.tp
+}
+
+func currentConfig() Config {
+	globalProvider.mu.RLock()
+	defer globalProvider.mu.RUnlock()
+	return globalProvider.cfg
+}
+
+func currentRedactor() *Redactor {
+	globalProvider.mu.RLock()
+	defer globalProvider.mu.RUnlock()
+	return globalProvider.redactor
+}
+
+func currentTraceDirectoryManager() *traceDirectoryManager {
+	globalProvider.mu.RLock()
+	defer globalProvider.mu.RUnlock()
+	return globalProvider.dirMgr
 }

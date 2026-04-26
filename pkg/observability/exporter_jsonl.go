@@ -16,11 +16,14 @@ func (jsonlExporterFactory) kind() ExporterKind {
 	return ExporterJSONL
 }
 
-func (jsonlExporterFactory) build(ctx context.Context, cfg Config, redactor *Redactor) (sdktrace.SpanExporter, error) {
+func (jsonlExporterFactory) build(ctx context.Context, cfg Config, redactor *Redactor, dirManager *traceDirectoryManager) (sdktrace.SpanExporter, error) {
 	_ = ctx
-	dirManager, err := newTraceDirectoryManager(cfg.TraceDir)
-	if err != nil {
-		return nil, fmt.Errorf("create jsonl exporter directories: %w", err)
+	if dirManager == nil {
+		var err error
+		dirManager, err = newTraceDirectoryManager(cfg.TraceDir)
+		if err != nil {
+			return nil, fmt.Errorf("create jsonl exporter directories: %w", err)
+		}
 	}
 	return &jsonlSpanExporter{
 		dirManager: dirManager,

@@ -33,7 +33,7 @@ const (
 // exporterFactory 导出器工厂接口。
 type exporterFactory interface {
 	kind() ExporterKind
-	build(ctx context.Context, cfg Config, redactor *Redactor) (sdktrace.SpanExporter, error)
+	build(ctx context.Context, cfg Config, redactor *Redactor, dirManager *traceDirectoryManager) (sdktrace.SpanExporter, error)
 }
 
 // spanRecord Span 的导出数据结构。
@@ -61,7 +61,7 @@ type spanEventRecord struct {
 }
 
 // buildSpanExporter 根据类型创建对应的导出器。
-func buildSpanExporter(ctx context.Context, cfg Config, kind ExporterKind, redactor *Redactor) (sdktrace.SpanExporter, error) {
+func buildSpanExporter(ctx context.Context, cfg Config, kind ExporterKind, redactor *Redactor, dirManager *traceDirectoryManager) (sdktrace.SpanExporter, error) {
 	var factory exporterFactory
 	switch kind {
 	case ExporterStdout:
@@ -75,7 +75,7 @@ func buildSpanExporter(ctx context.Context, cfg Config, kind ExporterKind, redac
 	default:
 		return nil, fmt.Errorf("unsupported exporter: %s", kind)
 	}
-	return factory.build(ctx, cfg, redactor)
+	return factory.build(ctx, cfg, redactor, dirManager)
 }
 
 // parseExporterKinds 解析逗号分隔的导出器类型字符串，返回去重后的列表。
@@ -524,5 +524,3 @@ func formatDurationMS(d time.Duration) string {
 	}
 	return fmt.Sprintf("%.3fms", float64(d)/float64(time.Millisecond))
 }
-
-

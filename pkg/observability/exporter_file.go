@@ -16,11 +16,14 @@ func (fileExporterFactory) kind() ExporterKind {
 	return ExporterFile
 }
 
-func (fileExporterFactory) build(ctx context.Context, cfg Config, redactor *Redactor) (sdktrace.SpanExporter, error) {
+func (fileExporterFactory) build(ctx context.Context, cfg Config, redactor *Redactor, dirManager *traceDirectoryManager) (sdktrace.SpanExporter, error) {
 	_ = ctx
-	dirManager, err := newTraceDirectoryManager(cfg.TraceDir)
-	if err != nil {
-		return nil, fmt.Errorf("create file exporter directories: %w", err)
+	if dirManager == nil {
+		var err error
+		dirManager, err = newTraceDirectoryManager(cfg.TraceDir)
+		if err != nil {
+			return nil, fmt.Errorf("create file exporter directories: %w", err)
+		}
 	}
 	return &fileSpanExporter{
 		dirManager: dirManager,
