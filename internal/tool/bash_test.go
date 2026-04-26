@@ -8,11 +8,12 @@ import (
 	"testing"
 	"time"
 
+	terminalpkg "github.com/wen/opentalon/internal/tool/terminal"
 	"github.com/wen/opentalon/internal/types"
 )
 
-func iptr(i int) *int {
-	return &i
+func fptr(v float64) *float64 {
+	return &v
 }
 
 func TestBash_SimpleEcho(t *testing.T) {
@@ -45,8 +46,8 @@ func TestBash_WithTimeout(t *testing.T) {
 			Summary:      "test with timeout",
 			SecurityRisk: types.SecurityRisk_HIGH,
 		},
-		Command:     "sleep 1",
-		TimeoutSecs: iptr(5),
+		Command: "sleep 1",
+		Timeout: fptr(5),
 	})
 
 	start := time.Now()
@@ -115,8 +116,8 @@ func TestBash_InvalidTimeout_Zero(t *testing.T) {
 			Summary:      "test zero timeout",
 			SecurityRisk: types.SecurityRisk_HIGH,
 		},
-		Command:     "echo hi",
-		TimeoutSecs: iptr(0),
+		Command: "echo hi",
+		Timeout: fptr(0),
 	})
 
 	obs := tool.Execute(context.Background(), rawArgs)
@@ -127,8 +128,8 @@ func TestBash_InvalidTimeout_Zero(t *testing.T) {
 	if output.ExitCodeValue() != -1 {
 		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
 	}
-	if !strings.Contains(output.OutputText(), "timeout_secs out of range") {
-		t.Fatalf("expected error message to contain 'timeout_secs out of range', got %q", output.OutputText())
+	if !strings.Contains(output.OutputText(), "timeout out of range") {
+		t.Fatalf("expected error message to contain 'timeout out of range', got %q", output.OutputText())
 	}
 }
 
@@ -139,8 +140,8 @@ func TestBash_InvalidTimeout_Negative(t *testing.T) {
 			Summary:      "test negative timeout",
 			SecurityRisk: types.SecurityRisk_HIGH,
 		},
-		Command:     "echo hi",
-		TimeoutSecs: iptr(-1),
+		Command: "echo hi",
+		Timeout: fptr(-1),
 	})
 
 	obs := tool.Execute(context.Background(), rawArgs)
@@ -151,8 +152,8 @@ func TestBash_InvalidTimeout_Negative(t *testing.T) {
 	if output.ExitCodeValue() != -1 {
 		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
 	}
-	if !strings.Contains(output.OutputText(), "timeout_secs out of range") {
-		t.Fatalf("expected error message to contain 'timeout_secs out of range', got %q", output.OutputText())
+	if !strings.Contains(output.OutputText(), "timeout out of range") {
+		t.Fatalf("expected error message to contain 'timeout out of range', got %q", output.OutputText())
 	}
 }
 
@@ -163,8 +164,8 @@ func TestBash_InvalidTimeout_TooLarge(t *testing.T) {
 			Summary:      "test too large timeout",
 			SecurityRisk: types.SecurityRisk_HIGH,
 		},
-		Command:     "echo hi",
-		TimeoutSecs: iptr(301),
+		Command: "echo hi",
+		Timeout: fptr(301),
 	})
 
 	obs := tool.Execute(context.Background(), rawArgs)
@@ -175,8 +176,8 @@ func TestBash_InvalidTimeout_TooLarge(t *testing.T) {
 	if output.ExitCodeValue() != -1 {
 		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
 	}
-	if !strings.Contains(output.OutputText(), "timeout_secs out of range") {
-		t.Fatalf("expected error message to contain 'timeout_secs out of range', got %q", output.OutputText())
+	if !strings.Contains(output.OutputText(), "timeout out of range") {
+		t.Fatalf("expected error message to contain 'timeout out of range', got %q", output.OutputText())
 	}
 }
 
@@ -187,8 +188,8 @@ func TestBash_TimeoutExceeded(t *testing.T) {
 			Summary:      "test timeout exceeded",
 			SecurityRisk: types.SecurityRisk_HIGH,
 		},
-		Command:     "sleep 10",
-		TimeoutSecs: iptr(1),
+		Command: "sleep 10",
+		Timeout: fptr(1),
 	})
 
 	start := time.Now()
@@ -211,22 +212,17 @@ func TestBash_TimeoutExceeded(t *testing.T) {
 }
 
 func TestBash_NonexistentWorkingDir(t *testing.T) {
-	tool := newBashTool()
-	rawArgs, _ := json.Marshal(BashTool{
+	executor := terminalpkg.NewExecutor(terminalpkg.ExecutorConfig{
+		WorkingDir: "/nonexistent/path/that/does/not/exist",
+	})
+
+	output := executor.Execute(context.Background(), BashTool{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test nonexistent working dir",
 			SecurityRisk: types.SecurityRisk_HIGH,
 		},
-		Command:     "echo hi",
-		WorkingDir:  "/nonexistent/path/that/does/not/exist",
-		TimeoutSecs: iptr(30),
+		Command: "echo hi",
 	})
-
-	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*TerminalObservation)
-	if !ok {
-		t.Fatalf("expected *TerminalObservation, got %T", obs)
-	}
 	if output.ExitCodeValue() != -1 {
 		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
 	}
@@ -244,8 +240,8 @@ func TestBash_CtxCancelled(t *testing.T) {
 			Summary:      "test context cancelled",
 			SecurityRisk: types.SecurityRisk_HIGH,
 		},
-		Command:     "sleep 10",
-		TimeoutSecs: iptr(30),
+		Command: "sleep 10",
+		Timeout: fptr(30),
 	})
 
 	go func() {
@@ -273,8 +269,8 @@ func TestBash_OutputTruncation(t *testing.T) {
 			Summary:      "test output truncation",
 			SecurityRisk: types.SecurityRisk_HIGH,
 		},
-		Command:     "yes | head -c 2000000",
-		TimeoutSecs: iptr(30),
+		Command: "yes | head -c 2000000",
+		Timeout: fptr(30),
 	})
 
 	obs := tool.Execute(context.Background(), rawArgs)
@@ -363,23 +359,50 @@ func TestBash_NameAndDescription(t *testing.T) {
 	}
 }
 
+func TestBash_ActionSchema(t *testing.T) {
+	converted, err := ToOpenAITool(newBashTool())
+	if err != nil {
+		t.Fatalf("ToOpenAITool failed: %v", err)
+	}
+
+	functionValue, ok := converted["function"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected function map, got %T", converted["function"])
+	}
+	parameters, ok := functionValue["parameters"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected parameters map, got %T", functionValue["parameters"])
+	}
+	properties, ok := parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected properties map, got %T", parameters["properties"])
+	}
+
+	for _, name := range []string{"command", "is_input", "timeout", "reset"} {
+		if _, ok := properties[name]; !ok {
+			t.Fatalf("expected action field %q in schema", name)
+		}
+	}
+	if _, ok := properties["working_dir"]; ok {
+		t.Fatal("working_dir should not appear in action schema")
+	}
+	if _, ok := properties["timeout_secs"]; ok {
+		t.Fatal("timeout_secs should not appear in action schema")
+	}
+}
+
 func TestBash_ValidWorkingDir(t *testing.T) {
-	tool := newBashTool()
-	rawArgs, _ := json.Marshal(BashTool{
+	executor := terminalpkg.NewExecutor(terminalpkg.ExecutorConfig{
+		WorkingDir: "/tmp",
+	})
+
+	output := executor.Execute(context.Background(), BashTool{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test valid working dir",
 			SecurityRisk: types.SecurityRisk_HIGH,
 		},
-		Command:     "pwd",
-		WorkingDir:  "/tmp",
-		TimeoutSecs: iptr(30),
+		Command: "pwd",
 	})
-
-	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*TerminalObservation)
-	if !ok {
-		t.Fatalf("expected *TerminalObservation, got %T", obs)
-	}
 	if output.ExitCodeValue() != 0 {
 		t.Fatalf("expected exit code 0, got %d, content: %q", output.ExitCodeValue(), output.OutputText())
 	}
@@ -395,8 +418,8 @@ func TestBash_PipeCommand(t *testing.T) {
 			Summary:      "test pipe command",
 			SecurityRisk: types.SecurityRisk_HIGH,
 		},
-		Command:     "echo 'hello world' | tr 'a-z' 'A-Z'",
-		TimeoutSecs: iptr(30),
+		Command: "echo 'hello world' | tr 'a-z' 'A-Z'",
+		Timeout: fptr(30),
 	})
 
 	obs := tool.Execute(context.Background(), rawArgs)
@@ -420,8 +443,8 @@ func TestBash_CommandNotFound(t *testing.T) {
 			Summary:      "test command not found",
 			SecurityRisk: types.SecurityRisk_HIGH,
 		},
-		Command:     "nonexistent_command_12345",
-		TimeoutSecs: iptr(30),
+		Command: "nonexistent_command_12345",
+		Timeout: fptr(30),
 	})
 
 	obs := tool.Execute(context.Background(), rawArgs)
