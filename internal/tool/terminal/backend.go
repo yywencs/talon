@@ -18,6 +18,13 @@ type TerminalBackend interface {
 	IsRunning(ctx context.Context) (bool, error)
 }
 
+// terminalBackendCommandLifecycle 定义终端后端可选暴露的命令生命周期管理能力。
+type terminalBackendCommandLifecycle interface {
+	PrepareCommand(ctx context.Context) error
+	CompleteCommand(ctx context.Context) error
+	InvalidateCommand(ctx context.Context) error
+}
+
 // terminalBackendMetadata 定义终端后端可选暴露的元信息能力。
 type terminalBackendMetadata interface {
 	PanePID(ctx context.Context) (*int, error)

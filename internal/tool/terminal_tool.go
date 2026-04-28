@@ -10,16 +10,15 @@ type CmdOutputMetadata = terminalpkg.CmdOutputMetadata
 
 type TerminalAction = terminalpkg.TerminalAction
 type TerminalObservation = terminalpkg.TerminalObservation
-type BashTool = terminalpkg.BashTool
 
-func bashExecutor(ctx context.Context, action BashTool) *TerminalObservation {
+func bashExecutor(ctx context.Context, action TerminalAction) *TerminalObservation {
 	return terminalpkg.BashExecutor(ctx, action)
 }
 
 const TOOL_DESCRIPTION = terminalpkg.ToolDescription
 
-func newBashTool() *BaseTool[BashTool, *TerminalObservation] {
-	return &BaseTool[BashTool, *TerminalObservation]{
+func newBashTool() *BaseTool[TerminalAction, *TerminalObservation] {
+	return &BaseTool[TerminalAction, *TerminalObservation]{
 		ToolName: "bash",
 		ToolDesc: TOOL_DESCRIPTION,
 		Executor: bashExecutor,

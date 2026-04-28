@@ -13,10 +13,11 @@ type CmdOutputMetadata struct {
 
 // TerminalAction 对应大模型发出的终端操作指令。
 type TerminalAction struct {
-	Command string   `json:"command"`
-	IsInput bool     `json:"is_input,omitempty"`
-	Timeout *float64 `json:"timeout,omitempty"`
-	Reset   bool     `json:"reset,omitempty"`
+	types.ToolMetadata `json:",inline"`
+	Command            string   `json:"command" jsonschema:"description=要执行的 bash 命令文本,examples=[\"ls -la\",\"find . -name *.go | head -20\"]"`
+	IsInput            bool     `json:"is_input,omitempty" jsonschema:"description=是否向运行中的进程发送输入,default=false"`
+	Timeout            *float64 `json:"timeout,omitempty" jsonschema:"description=命令超时时间(秒),default=30,minimum=0.001,maximum=300"`
+	Reset              bool     `json:"reset,omitempty" jsonschema:"description=是否重置终端会话,default=false"`
 }
 
 // ActionType 返回终端动作类型。
@@ -48,15 +49,6 @@ func (o *TerminalObservation) ExitCodeValue() int {
 		return 0
 	}
 	return *o.ExitCode
-}
-
-// BashTool 定义 bash 工具的输入参数。
-type BashTool struct {
-	types.ToolMetadata `json:",inline"`
-	Command            string   `json:"command" jsonschema:"description=要执行的 bash 命令文本,examples=[\"ls -la\",\"find . -name *.go | head -20\"]"`
-	IsInput            bool     `json:"is_input,omitempty" jsonschema:"description=是否向运行中的进程发送输入,default=false"`
-	Timeout            *float64 `json:"timeout,omitempty" jsonschema:"description=命令超时时间(秒),default=30,minimum=0.001,maximum=300"`
-	Reset              bool     `json:"reset,omitempty" jsonschema:"description=是否重置终端会话,default=false"`
 }
 
 const (

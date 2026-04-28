@@ -2,8 +2,8 @@ package terminal
 
 import "github.com/wen/opentalon/internal/types"
 
-func errorOutput(command, workingDir string, pid *int, timeout bool, exitCode int, msg string) *TerminalObservation {
-	return NewTerminalObservation(command, workingDir, pid, timeout, exitCode, msg)
+func errorOutput(command, workingDir string, pid *int, timeout bool, exitCode int, err error) *TerminalObservation {
+	return NewTerminalErrorObservation(command, workingDir, pid, timeout, exitCode, err)
 }
 
 // NewTerminalObservation 构造终端工具的 observation 结果。
@@ -28,6 +28,11 @@ func NewTerminalObservation(command, workingDir string, pid *int, timeout bool, 
 		obs.ExitCode = intPtr(exitCode)
 	}
 	return obs
+}
+
+// NewTerminalErrorObservation 构造终端工具的错误 observation 结果。
+func NewTerminalErrorObservation(command, workingDir string, pid *int, timeout bool, exitCode int, err error) *TerminalObservation {
+	return NewTerminalObservation(command, workingDir, pid, timeout, exitCode, BuildTerminalErrorMessage(err))
 }
 
 func intPtr(v int) *int {

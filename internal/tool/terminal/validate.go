@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-func validateAction(action *BashTool) error {
+func validateAction(action *TerminalAction) error {
 	if !action.IsInput && !action.Reset && strings.TrimSpace(action.Command) == "" {
 		return fmt.Errorf("command is empty")
 	}

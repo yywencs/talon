@@ -26,7 +26,7 @@ func auditCommandHash(command string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func logTerminalCommandCompletion(ctx context.Context, action BashTool, workingDir string, timeout float64, result commandResult) {
+func logTerminalCommandCompletion(ctx context.Context, action TerminalAction, workingDir string, timeout float64, result commandResult) {
 	args := []any{
 		"tool_name", "bash",
 		"command_name", auditCommandName(action.Command),
