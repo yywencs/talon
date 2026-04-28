@@ -9,12 +9,14 @@ import (
 type CmdOutputMetadata struct {
 	PID        *int   `json:"pid,omitempty"`
 	WorkingDir string `json:"working_dir,omitempty"`
+	PaneID     string `json:"pane_id,omitempty"`
 }
 
 // TerminalAction 对应大模型发出的终端操作指令。
 type TerminalAction struct {
 	types.ToolMetadata `json:",inline"`
 	Command            string   `json:"command" jsonschema:"description=要执行的 bash 命令文本,examples=[\"ls -la\",\"find . -name *.go | head -20\"]"`
+	PaneID             string   `json:"pane_id" jsonschema:"description=上层持有的逻辑 pane 标识,用于将后续输入、输出和 reset 路由到同一条终端交互链路"`
 	IsInput            bool     `json:"is_input,omitempty" jsonschema:"description=是否向运行中的进程发送输入,default=false"`
 	Timeout            *float64 `json:"timeout,omitempty" jsonschema:"description=命令超时时间(秒),default=30,minimum=0.001,maximum=300"`
 	Reset              bool     `json:"reset,omitempty" jsonschema:"description=是否重置终端会话,default=false"`
@@ -68,7 +70,7 @@ const ToolDescription = `# 命令执行相关规则完整翻译
 	### 长时间运行的命令
 	* 对于可能无限期运行的命令，将其放到后台执行并将输出重定向到文件，例如："python3 app.py > server.log 2>&1 &"。
 	* 对于可能长时间运行的命令（如安装或测试命令），或固定时长运行的命令（如 sleep），你应该为函数调用设置合适的 "timeout"（超时）参数。
-	* 如果 bash 命令返回退出码 "-1"，表示进程触发了软超时但尚未执行完毕。通过设置 "is_input=true"，你可以：
+	* 如果 bash 命令返回退出码 "-1"，表示进程触发了软超时但尚未执行完毕。后续必须继续使用同一个 "pane_id" 调用；通过设置 "is_input=true"，你可以：
 	- 发送空的 "command" 以获取更多日志
 	- 向正在运行的进程标准输入（STDIN）发送文本（将 "command" 设为对应文本）
 	- 发送控制命令如 "C-c"（Ctrl+C）、"C-d"（Ctrl+D）或 "C-z"（Ctrl+Z）来中断进程
@@ -82,5 +84,5 @@ const ToolDescription = `# 命令执行相关规则完整翻译
 	* 输出截断：如果输出超过最大长度，会在返回前被截断。
 
 	### 终端重置
-	* 终端重置：如果终端失去响应，可以设置 "reset=true" 来创建新的终端会话。这会终止当前会话并全新启动。
-	* 警告：重置终端会丢失所有已设置的环境变量、工作目录变更以及正在运行的进程。仅在终端无法响应命令时使用。`
+	* pane 重置：如果某条终端交互链路失去响应，可以在同一个 "pane_id" 上设置 "reset=true" 来重置该 pane 绑定。
+	* 警告：重置会终止当前 "pane_id" 对应的前台进程，并丢失该交互链路中已设置的环境变量与工作目录变更。仅在当前 pane 无法继续交互时使用。`

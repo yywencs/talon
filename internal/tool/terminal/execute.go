@@ -46,7 +46,8 @@ type Executor struct {
 	defaultTimeout time.Duration
 	backend        TerminalBackend
 	mu             sync.Mutex
-	pending        *pendingExecution
+	pending        map[string]*pendingExecution
+	paneLocks      map[string]*sync.Mutex
 }
 
 var defaultExecutor = NewExecutor(ExecutorConfig{})
@@ -65,6 +66,8 @@ func NewExecutor(config ExecutorConfig) *Executor {
 		workingDir:     config.WorkingDir,
 		defaultTimeout: defaultTimeout,
 		backend:        backend,
+		pending:        make(map[string]*pendingExecution),
+		paneLocks:      make(map[string]*sync.Mutex),
 	}
 }
 
@@ -80,31 +83,34 @@ func (e *Executor) Execute(ctx context.Context, action TerminalAction) *Terminal
 	if err := validateAction(&action); err != nil {
 		logger.WarnWithCtx(ctx, "审计: bash 命令校验失败",
 			"tool_name", "bash",
+			"pane_id", action.PaneID,
 			"command_name", auditCommandName(action.Command),
 			"command_sha256", auditCommandHash(action.Command),
 			"working_dir", workingDir,
 			"security_risk", string(action.SecurityRisk),
 			"error", err.Error(),
 		)
-		return errorOutput(action.Command, workingDir, nil, false, -1, err)
+		return errorOutput(action.Command, workingDir, action.PaneID, nil, false, -1, err)
 	}
 
 	if err := validateWorkingDir(workingDir); err != nil {
 		logger.WarnWithCtx(ctx, "审计: bash 工作目录校验失败",
 			"tool_name", "bash",
+			"pane_id", action.PaneID,
 			"command_name", auditCommandName(action.Command),
 			"command_sha256", auditCommandHash(action.Command),
 			"working_dir", workingDir,
 			"security_risk", string(action.SecurityRisk),
 			"error", err.Error(),
 		)
-		return errorOutput(action.Command, workingDir, nil, false, -1, err)
+		return errorOutput(action.Command, workingDir, action.PaneID, nil, false, -1, err)
 	}
 
 	timeout := e.resolveTimeout(action.Timeout)
 
 	logger.DebugWithCtx(ctx, "审计: bash 命令开始执行",
 		"tool_name", "bash",
+		"pane_id", action.PaneID,
 		"command_name", auditCommandName(action.Command),
 		"command_sha256", auditCommandHash(action.Command),
 		"working_dir", workingDir,
@@ -125,13 +131,13 @@ func (e *Executor) Execute(ctx context.Context, action TerminalAction) *Terminal
 	}
 	if !result.SkipMetadata {
 		if result.PID == nil {
-			result.PID = e.currentPID(execCtx)
+			result.PID = e.currentPID(execCtx, action.PaneID)
 		}
-		obsWorkingDir = e.currentWorkingDir(execCtx, obsWorkingDir)
+		obsWorkingDir = e.currentWorkingDir(execCtx, action.PaneID, obsWorkingDir)
 	}
 	result.Output, result.OutputTruncated = truncateIfNeeded(result.Output)
 	logTerminalCommandCompletion(ctx, action, workingDir, timeout, result)
-	return NewTerminalObservation(action.Command, obsWorkingDir, result.PID, result.TimedOut, result.ExitCode, result.Output)
+	return NewTerminalObservation(action.Command, obsWorkingDir, action.PaneID, result.PID, result.TimedOut, result.ExitCode, result.Output)
 }
 
 func (e *Executor) resolveTimeout(timeout *float64) float64 {
@@ -142,8 +148,9 @@ func (e *Executor) resolveTimeout(timeout *float64) float64 {
 }
 
 func (e *Executor) executeWithBackend(ctx context.Context, action TerminalAction) commandResult {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	paneLock := e.paneLock(action.PaneID)
+	paneLock.Lock()
+	defer paneLock.Unlock()
 
 	if action.Reset {
 		return e.resetWithBackend(ctx, action)
@@ -161,36 +168,35 @@ func (e *Executor) executeWithBackend(ctx context.Context, action TerminalAction
 	}
 
 	if action.IsInput {
-		return e.executeInput(ctx, action.Command)
+		return e.executeInput(ctx, action.PaneID, action.Command)
 	}
-	return e.executeCommand(ctx, action.Command)
+	return e.executeCommand(ctx, action.PaneID, action.Command)
 }
 
 func (e *Executor) resetWithBackend(ctx context.Context, action TerminalAction) commandResult {
-	if err := e.backend.Close(ctx); err != nil {
+	if err := e.resetBackendPane(ctx, action.PaneID); err != nil {
 		return commandResult{
 			ExitCode: -1,
 			Err: NewTerminalBackendOperationError(
-				"重置终端会话",
+				"重置终端 pane",
 				err,
-				"可以先重试一次；如果 reset 持续失败，说明当前终端运行时可能已异常，需要人工检查或重建",
+				"可以先重试一次；如果当前 pane 持续 reset 失败，请检查 tmux pane 状态",
 			),
 		}
 	}
-
-	e.pending = nil
+	e.clearPending(action.PaneID)
 
 	if action.IsInput {
 		if strings.TrimSpace(action.Command) == "" {
 			return commandResult{
-				Output:       "终端会话已重置",
+				Output:       e.resetMessage(),
 				ExitCode:     0,
 				WorkingDir:   e.workingDir,
 				SkipMetadata: true,
 			}
 		}
 		return commandResult{
-			Output:       "终端会话已重置；发送输入前请先启动新命令",
+			Output:       e.resetMessage() + "；发送输入前请先启动新命令",
 			ExitCode:     -1,
 			WorkingDir:   e.workingDir,
 			SkipMetadata: true,
@@ -199,7 +205,7 @@ func (e *Executor) resetWithBackend(ctx context.Context, action TerminalAction) 
 
 	if strings.TrimSpace(action.Command) == "" {
 		return commandResult{
-			Output:       "终端会话已重置",
+			Output:       e.resetMessage(),
 			ExitCode:     0,
 			WorkingDir:   e.workingDir,
 			SkipMetadata: true,
@@ -216,26 +222,26 @@ func (e *Executor) resetWithBackend(ctx context.Context, action TerminalAction) 
 			),
 		}
 	}
-	return e.executeCommand(ctx, action.Command)
+	return e.executeCommand(ctx, action.PaneID, action.Command)
 }
 
-func (e *Executor) executeCommand(ctx context.Context, command string) commandResult {
-	if e.pending != nil {
-		running, err := e.syncPendingState(ctx)
+func (e *Executor) executeCommand(ctx context.Context, paneID, command string) commandResult {
+	if e.getPending(paneID) != nil {
+		running, err := e.syncPendingState(ctx, paneID)
 		if err != nil {
 			return commandResult{
 				ExitCode: -1,
-				PID:      e.currentPID(ctx),
+				PID:      e.currentPID(ctx, paneID),
 				Err:      err,
 			}
 		}
 		if running {
 			return commandResult{
 				ExitCode: -1,
-				PID:      e.currentPID(ctx),
+				PID:      e.currentPID(ctx, paneID),
 				Err: NewTerminalStateError(
 					"当前仍有命令在运行，请使用 is_input=true 继续读取输出或发送输入",
-					"暂时不要启动新命令；请改用 is_input=true 继续交互、发送后续输入，或使用 C-c 中断当前命令",
+					"暂时不要在同一个 pane_id 上启动新命令；请改用 is_input=true 继续交互、发送后续输入，或使用 C-c 中断当前命令",
 				),
 			}
 		}
@@ -243,24 +249,24 @@ func (e *Executor) executeCommand(ctx context.Context, command string) commandRe
 
 	lifecycle := e.backendLifecycle()
 	if lifecycle != nil {
-		if err := lifecycle.PrepareCommand(ctx); err != nil {
+		if err := lifecycle.PrepareCommand(ctx, paneID); err != nil {
 			return commandResult{
 				ExitCode: -1,
 				Err: NewTerminalBackendOperationError(
 					"分配 tmux 命令 pane",
 					err,
-					"可以先重试一次；如果持续分配失败，请使用 reset=true 重建共享会话后再执行命令",
+					"可以先重试一次；如果持续分配失败，请使用 reset=true 重建当前 pane 绑定后再执行命令",
 				),
 			}
 		}
 	}
 
-	screen, err := e.backend.ReadScreen(ctx)
+	screen, err := e.backend.ReadScreen(ctx, paneID)
 	if err != nil {
-		e.invalidateBackendCommand(ctx)
+		e.invalidateBackendCommand(ctx, paneID)
 		return commandResult{
 			ExitCode: -1,
-			PID:      e.currentPID(ctx),
+			PID:      e.currentPID(ctx, paneID),
 			Err: NewTerminalBackendOperationError(
 				"在执行命令前读取终端屏幕",
 				err,
@@ -270,11 +276,11 @@ func (e *Executor) executeCommand(ctx context.Context, command string) commandRe
 	}
 
 	marker := newExecutionMarker()
-	if err := e.backend.SendKeys(ctx, wrapCommandForSession(command, marker), true); err != nil {
-		e.invalidateBackendCommand(ctx)
+	if err := e.backend.SendKeys(ctx, paneID, wrapCommandForSession(command, marker), true); err != nil {
+		e.invalidateBackendCommand(ctx, paneID)
 		return commandResult{
 			ExitCode: -1,
-			PID:      e.currentPID(ctx),
+			PID:      e.currentPID(ctx, paneID),
 			Err: NewTerminalBackendOperationError(
 				"向终端会话发送命令",
 				err,
@@ -283,60 +289,60 @@ func (e *Executor) executeCommand(ctx context.Context, command string) commandRe
 		}
 	}
 
-	e.pending = &pendingExecution{
+	e.setPending(paneID, &pendingExecution{
 		Marker:     marker,
 		LastScreen: screen,
-	}
-	return e.collectPendingResult(ctx)
+	})
+	return e.collectPendingResult(ctx, paneID)
 }
 
-func (e *Executor) executeInput(ctx context.Context, command string) commandResult {
+func (e *Executor) executeInput(ctx context.Context, paneID, command string) commandResult {
 	trimmed := strings.TrimSpace(command)
-	if e.pending != nil && trimmed != "" {
-		running, err := e.syncPendingState(ctx)
+	if e.getPending(paneID) != nil && trimmed != "" {
+		running, err := e.syncPendingState(ctx, paneID)
 		if err != nil {
 			return commandResult{
 				ExitCode: -1,
-				PID:      e.currentPID(ctx),
+				PID:      e.currentPID(ctx, paneID),
 				Err:      err,
 			}
 		}
 		if !running {
 			return commandResult{
 				ExitCode: -1,
-				PID:      e.currentPID(ctx),
+				PID:      e.currentPID(ctx, paneID),
 				Err: NewTerminalStateError(
 					"is_input 需要当前存在可继续交互的运行中命令",
-					"请先启动一个命令，并在它超时或进入交互态后，再通过 is_input=true 继续发送输入",
+					"请先在同一个 pane_id 上启动一个命令，并在它超时或进入交互态后，再通过 is_input=true 继续发送输入",
 				),
 			}
 		}
 	}
-	if e.pending == nil {
+	if e.getPending(paneID) == nil {
 		if trimmed == "" {
 			return commandResult{
 				Output:   "",
 				ExitCode: 0,
-				PID:      e.currentPID(ctx),
+				PID:      e.currentPID(ctx, paneID),
 			}
 		}
 		return commandResult{
 			ExitCode: -1,
-			PID:      e.currentPID(ctx),
+			PID:      e.currentPID(ctx, paneID),
 			Err: NewTerminalStateError(
 				"is_input 需要当前存在可继续交互的运行中命令",
-				"请先启动一个命令，并在它超时或进入交互态后，再通过 is_input=true 继续发送输入",
+				"请先在同一个 pane_id 上启动一个命令，并在它超时或进入交互态后，再通过 is_input=true 继续发送输入",
 			),
 		}
 	}
 
 	if trimmed != "" {
 		if isInterruptCommand(trimmed) {
-			interrupted, err := e.backend.Interrupt(ctx)
+			interrupted, err := e.backend.Interrupt(ctx, paneID)
 			if err != nil {
 				return commandResult{
 					ExitCode: -1,
-					PID:      e.currentPID(ctx),
+					PID:      e.currentPID(ctx, paneID),
 					Err: NewTerminalBackendOperationError(
 						"中断终端会话",
 						err,
@@ -347,7 +353,7 @@ func (e *Executor) executeInput(ctx context.Context, command string) commandResu
 			if !interrupted {
 				return commandResult{
 					ExitCode: -1,
-					PID:      e.currentPID(ctx),
+					PID:      e.currentPID(ctx, paneID),
 					Err: NewTerminalStateError(
 						"终端会话未报告可中断的前台目标",
 						"前台进程可能已经退出；请先读取剩余输出，或启动新命令，而不是盲目重复发送同一输入",
@@ -355,10 +361,10 @@ func (e *Executor) executeInput(ctx context.Context, command string) commandResu
 				}
 			}
 		} else {
-			if err := e.backend.SendKeys(ctx, command, true); err != nil {
+			if err := e.backend.SendKeys(ctx, paneID, command, true); err != nil {
 				return commandResult{
 					ExitCode: -1,
-					PID:      e.currentPID(ctx),
+					PID:      e.currentPID(ctx, paneID),
 					Err: NewTerminalBackendOperationError(
 						"向终端会话发送输入",
 						err,
@@ -369,15 +375,16 @@ func (e *Executor) executeInput(ctx context.Context, command string) commandResu
 		}
 	}
 
-	return e.collectPendingResult(ctx)
+	return e.collectPendingResult(ctx, paneID)
 }
 
-func (e *Executor) collectPendingResult(ctx context.Context) commandResult {
-	if e.pending == nil {
+func (e *Executor) collectPendingResult(ctx context.Context, paneID string) commandResult {
+	pending := e.getPending(paneID)
+	if pending == nil {
 		return commandResult{
 			Output:   "",
 			ExitCode: 0,
-			PID:      e.currentPID(ctx),
+			PID:      e.currentPID(ctx, paneID),
 		}
 	}
 
@@ -385,13 +392,13 @@ func (e *Executor) collectPendingResult(ctx context.Context) commandResult {
 	defer ticker.Stop()
 
 	for {
-		screen, err := e.backend.ReadScreen(ctx)
+		screen, err := e.backend.ReadScreen(ctx, paneID)
 		if err != nil {
-			e.pending = nil
-			e.invalidateBackendCommand(ctx)
+			e.clearPending(paneID)
+			e.invalidateBackendCommand(ctx, paneID)
 			return commandResult{
 				ExitCode: -1,
-				PID:      e.currentPID(ctx),
+				PID:      e.currentPID(ctx, paneID),
 				Err: NewTerminalBackendOperationError(
 					"读取终端屏幕",
 					err,
@@ -399,14 +406,14 @@ func (e *Executor) collectPendingResult(ctx context.Context) commandResult {
 				),
 			}
 		}
-		delta := diffScreen(e.pending.LastScreen, screen)
-		output, exitCode, completed, parseErr := parseCompletedDelta(delta, e.pending.Marker)
+		delta := diffScreen(pending.LastScreen, screen)
+		output, exitCode, completed, parseErr := parseCompletedDelta(delta, pending.Marker)
 		if parseErr != nil {
-			e.pending = nil
-			e.invalidateBackendCommand(ctx)
+			e.clearPending(paneID)
+			e.invalidateBackendCommand(ctx, paneID)
 			return commandResult{
 				ExitCode: -1,
-				PID:      e.currentPID(ctx),
+				PID:      e.currentPID(ctx, paneID),
 				Err: NewTerminalExecutionError(
 					fmt.Sprintf("解析终端命令结果失败: %v", parseErr),
 					parseErr,
@@ -415,17 +422,17 @@ func (e *Executor) collectPendingResult(ctx context.Context) commandResult {
 			}
 		}
 		if completed {
-			pid, workingDir := e.captureCurrentMetadata(ctx, "")
-			e.pending = nil
-			if err := e.completeBackendCommand(ctx); err != nil {
+			pid, workingDir := e.captureCurrentMetadata(ctx, paneID, "")
+			e.clearPending(paneID)
+			if err := e.completeBackendCommand(ctx, paneID); err != nil {
 				return commandResult{
 					ExitCode:   -1,
 					PID:        pid,
 					WorkingDir: workingDir,
 					Err: NewTerminalBackendOperationError(
-						"回收 tmux 命令 pane",
+						"完成 tmux 命令链路",
 						err,
-						"共享 session 的 pane 回收失败；请先重试一次，必要时使用 reset=true 重建会话以恢复池状态",
+						"当前 pane 的命令链路收尾失败；请先重试一次，必要时使用 reset=true 重建当前 pane 绑定",
 					),
 				}
 			}
@@ -438,7 +445,7 @@ func (e *Executor) collectPendingResult(ctx context.Context) commandResult {
 		}
 
 		if ctx.Err() != nil {
-			e.pending.LastScreen = screen
+			e.updatePendingLastScreen(paneID, screen)
 			msg := "上下文已取消"
 			timedOut := false
 			if ctx.Err() == context.DeadlineExceeded {
@@ -448,7 +455,7 @@ func (e *Executor) collectPendingResult(ctx context.Context) commandResult {
 			return commandResult{
 				ExitCode: -1,
 				TimedOut: timedOut,
-				PID:      e.currentPID(ctx),
+				PID:      e.currentPID(ctx, paneID),
 				Err: NewTerminalExecutionError(
 					appendProcessMessage(delta, msg),
 					ctx.Err(),
@@ -456,7 +463,6 @@ func (e *Executor) collectPendingResult(ctx context.Context) commandResult {
 				),
 			}
 		}
-
 		select {
 		case <-ctx.Done():
 		case <-ticker.C:
@@ -464,14 +470,14 @@ func (e *Executor) collectPendingResult(ctx context.Context) commandResult {
 	}
 }
 
-func (e *Executor) syncPendingState(ctx context.Context) (bool, error) {
-	if e.pending == nil {
+func (e *Executor) syncPendingState(ctx context.Context, paneID string) (bool, error) {
+	if e.getPending(paneID) == nil {
 		return false, nil
 	}
 
-	running, err := e.backend.IsRunning(ctx)
+	running, err := e.backend.IsRunning(ctx, paneID)
 	if err != nil {
-		e.pending = nil
+		e.clearPending(paneID)
 		return false, NewTerminalBackendOperationError(
 			"检查终端会话运行状态",
 			err,
@@ -479,12 +485,12 @@ func (e *Executor) syncPendingState(ctx context.Context) (bool, error) {
 		)
 	}
 	if !running {
-		e.pending = nil
-		if err := e.completeBackendCommand(ctx); err != nil {
+		e.clearPending(paneID)
+		if err := e.completeBackendCommand(ctx, paneID); err != nil {
 			return false, NewTerminalBackendOperationError(
-				"清理已结束命令对应的 tmux pane",
+				"同步已结束命令对应的 tmux pane 状态",
 				err,
-				"共享 pane 清理失败；请先重试一次，如果仍然失败请使用 reset=true 重建会话",
+				"当前 pane 状态同步失败；请先重试一次，如果仍然失败请使用 reset=true 重建当前 pane 绑定",
 			)
 		}
 		return false, NewTerminalStateError(
@@ -503,50 +509,99 @@ func (e *Executor) backendLifecycle() terminalBackendCommandLifecycle {
 	return lifecycle
 }
 
-func (e *Executor) completeBackendCommand(ctx context.Context) error {
+func (e *Executor) completeBackendCommand(ctx context.Context, paneID string) error {
 	lifecycle := e.backendLifecycle()
 	if lifecycle == nil {
 		return nil
 	}
-	return lifecycle.CompleteCommand(ctx)
+	return lifecycle.CompleteCommand(ctx, paneID)
 }
 
-func (e *Executor) invalidateBackendCommand(ctx context.Context) {
+func (e *Executor) invalidateBackendCommand(ctx context.Context, paneID string) {
 	lifecycle := e.backendLifecycle()
 	if lifecycle == nil {
 		return
 	}
-	_ = lifecycle.InvalidateCommand(ctx)
+	_ = lifecycle.InvalidateCommand(ctx, paneID)
 }
 
-func (e *Executor) captureCurrentMetadata(ctx context.Context, fallbackWorkingDir string) (*int, string) {
-	pid := e.currentPID(ctx)
-	workingDir := e.currentWorkingDir(ctx, fallbackWorkingDir)
+func (e *Executor) resetBackendPane(ctx context.Context, paneID string) error {
+	lifecycle := e.backendLifecycle()
+	if lifecycle == nil {
+		return nil
+	}
+	return lifecycle.ResetPane(ctx, paneID)
+}
+
+func (e *Executor) captureCurrentMetadata(ctx context.Context, paneID, fallbackWorkingDir string) (*int, string) {
+	pid := e.currentPID(ctx, paneID)
+	workingDir := e.currentWorkingDir(ctx, paneID, fallbackWorkingDir)
 	return pid, workingDir
 }
 
-func (e *Executor) currentPID(ctx context.Context) *int {
+func (e *Executor) currentPID(ctx context.Context, paneID string) *int {
 	metadataBackend, ok := e.backend.(terminalBackendMetadata)
 	if !ok {
 		return nil
 	}
-	pid, err := metadataBackend.PanePID(ctx)
+	pid, err := metadataBackend.PanePID(ctx, paneID)
 	if err != nil {
 		return nil
 	}
 	return pid
 }
 
-func (e *Executor) currentWorkingDir(ctx context.Context, fallback string) string {
+func (e *Executor) currentWorkingDir(ctx context.Context, paneID, fallback string) string {
 	metadataBackend, ok := e.backend.(terminalBackendMetadata)
 	if !ok {
 		return fallback
 	}
-	workingDir, err := metadataBackend.CurrentWorkingDir(ctx)
+	workingDir, err := metadataBackend.CurrentWorkingDir(ctx, paneID)
 	if err != nil || workingDir == "" {
 		return fallback
 	}
 	return workingDir
+}
+
+func (e *Executor) paneLock(paneID string) *sync.Mutex {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if lock, ok := e.paneLocks[paneID]; ok {
+		return lock
+	}
+	lock := &sync.Mutex{}
+	e.paneLocks[paneID] = lock
+	return lock
+}
+
+func (e *Executor) getPending(paneID string) *pendingExecution {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.pending[paneID]
+}
+
+func (e *Executor) setPending(paneID string, pending *pendingExecution) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.pending[paneID] = pending
+}
+
+func (e *Executor) clearPending(paneID string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.pending, paneID)
+}
+
+func (e *Executor) updatePendingLastScreen(paneID, screen string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if pending := e.pending[paneID]; pending != nil {
+		pending.LastScreen = screen
+	}
+}
+
+func (e *Executor) resetMessage() string {
+	return "终端会话已重置"
 }
 
 func newExecutionMarker() string {

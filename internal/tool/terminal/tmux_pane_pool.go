@@ -7,11 +7,8 @@ import (
 	"strings"
 )
 
-const defaultTmuxPanePoolSize = 5
-
 type tmuxPaneHandle struct {
-	WindowID string
-	PaneID   string
+	PaneID string
 }
 
 func (p *tmuxPaneHandle) target() string {
@@ -21,47 +18,57 @@ func (p *tmuxPaneHandle) target() string {
 	return p.PaneID
 }
 
-// PrepareCommand 为下一条普通命令分配可执行 pane。
-func (b *TmuxBackend) PrepareCommand(ctx context.Context) error {
+// PrepareCommand 为逻辑 pane 确保固定绑定的可执行 pane。
+func (b *TmuxBackend) PrepareCommand(ctx context.Context, paneID string) error {
 	if err := b.Initialize(ctx); err != nil {
 		return err
 	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.prepareCommandLocked(ctx)
+	return b.prepareCommandLocked(ctx, paneID)
 }
 
-// CompleteCommand 在命令链路结束后清理并回收当前 pane。
-func (b *TmuxBackend) CompleteCommand(ctx context.Context) error {
+// CompleteCommand 在命令链路结束后清理当前 pane 的临时执行状态。
+func (b *TmuxBackend) CompleteCommand(ctx context.Context, paneID string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if !b.initialized {
 		return nil
 	}
-	return b.completeCommandLocked(ctx)
+	return b.completeCommandLocked(ctx, paneID)
 }
 
-// InvalidateCommand 在命令链路异常后丢弃当前 pane。
-func (b *TmuxBackend) InvalidateCommand(ctx context.Context) error {
+// InvalidateCommand 在命令链路异常后销毁当前逻辑 pane 的固定绑定。
+func (b *TmuxBackend) InvalidateCommand(ctx context.Context, paneID string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if !b.initialized {
 		return nil
 	}
-	return b.invalidateCommandLocked(ctx)
+	return b.invalidateCommandLocked(ctx, paneID)
+}
+
+// ResetPane 重置某个逻辑 pane 绑定的交互链路。
+func (b *TmuxBackend) ResetPane(ctx context.Context, paneID string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.initialized {
+		return nil
+	}
+	return b.resetPaneLocked(ctx, paneID)
 }
 
 func (b *TmuxBackend) initializeSessionLocked(ctx context.Context) error {
-	if b.maxIdlePanes <= 0 {
-		b.maxIdlePanes = defaultTmuxPanePoolSize
+	if b.paneBindings == nil {
+		b.paneBindings = make(map[string]*tmuxPaneHandle)
 	}
 	if b.initialized {
 		return nil
 	}
 
 	args := []string{
-		"new-session", "-d", "-P", "-F", "#{window_id} #{pane_id}",
+		"new-session", "-d", "-P", "-F", "#{pane_id}",
 		"-s", b.session,
 	}
 	if b.workingDir != "" {
@@ -81,80 +88,75 @@ func (b *TmuxBackend) initializeSessionLocked(ctx context.Context) error {
 		return fmt.Errorf("failed to configure tmux history limit: %w", err)
 	}
 	if err := b.bootstrapPaneLocked(ctx, rootPane); err != nil {
-		_ = b.killWindowLocked(ctx, rootPane.WindowID)
+		_ = b.killPaneLocked(ctx, rootPane.PaneID)
 		return err
 	}
 
 	b.initialized = true
-	b.activePane = nil
-	b.idlePanes = []*tmuxPaneHandle{rootPane}
+	b.paneBindings = make(map[string]*tmuxPaneHandle)
+	b.sessionRoot = rootPane
 	return nil
 }
 
 func (b *TmuxBackend) closeSessionLocked(ctx context.Context) error {
 	if !b.initialized {
-		b.resetPoolStateLocked()
+		b.resetSessionStateLocked()
 		return nil
 	}
 	if out, err := b.runTmuxLocked(ctx, "kill-session", "-t", b.session); err != nil {
 		if isTmuxSessionMissing(out) {
-			b.resetPoolStateLocked()
+			b.resetSessionStateLocked()
 			return nil
 		}
 		return fmt.Errorf("failed to kill tmux session %q: %w", b.session, err)
 	}
-	b.resetPoolStateLocked()
+	b.resetSessionStateLocked()
 	return nil
 }
 
-func (b *TmuxBackend) prepareCommandLocked(ctx context.Context) error {
-	if b.activePane != nil {
-		return fmt.Errorf("tmux command pane %q is still active", b.activePane.PaneID)
+func (b *TmuxBackend) prepareCommandLocked(ctx context.Context, paneID string) error {
+	if b.paneBindings == nil {
+		b.paneBindings = make(map[string]*tmuxPaneHandle)
+	}
+	if _, exists := b.paneBindings[paneID]; exists {
+		return nil
 	}
 
-	pane, err := b.acquirePaneLocked(ctx)
+	pane, err := b.bindPaneLocked(ctx)
 	if err != nil {
 		return err
 	}
-	b.activePane = pane
-	if err := b.clearPaneLocked(ctx, pane); err != nil {
-		_ = b.killWindowLocked(ctx, pane.WindowID)
-		b.activePane = nil
-		return err
+	b.paneBindings[paneID] = pane
+	return nil
+}
+
+func (b *TmuxBackend) completeCommandLocked(_ context.Context, paneID string) error {
+	if _, ok := b.paneBindings[paneID]; !ok {
+		return nil
 	}
 	return nil
 }
 
-func (b *TmuxBackend) completeCommandLocked(ctx context.Context) error {
-	if b.activePane == nil {
+func (b *TmuxBackend) invalidateCommandLocked(ctx context.Context, paneID string) error {
+	pane, ok := b.paneBindings[paneID]
+	if !ok {
 		return nil
 	}
-	pane := b.activePane
-	b.activePane = nil
-
-	if err := b.resetPaneForReuseLocked(ctx, pane); err != nil {
-		_ = b.killWindowLocked(ctx, pane.WindowID)
-		return err
+	delete(b.paneBindings, paneID)
+	if pane == b.sessionRoot {
+		b.sessionRoot = nil
 	}
-	if err := b.enqueueIdlePaneLocked(ctx, pane); err != nil {
-		return err
-	}
-	return nil
+	return b.killPaneLocked(ctx, pane.PaneID)
 }
 
-func (b *TmuxBackend) invalidateCommandLocked(ctx context.Context) error {
-	if b.activePane == nil {
-		return nil
-	}
-	pane := b.activePane
-	b.activePane = nil
-	return b.killWindowLocked(ctx, pane.WindowID)
+func (b *TmuxBackend) resetPaneLocked(ctx context.Context, paneID string) error {
+	return b.invalidateCommandLocked(ctx, paneID)
 }
 
-func (b *TmuxBackend) acquirePaneLocked(ctx context.Context) (*tmuxPaneHandle, error) {
-	if len(b.idlePanes) > 0 {
-		pane := b.idlePanes[0]
-		b.idlePanes = b.idlePanes[1:]
+func (b *TmuxBackend) bindPaneLocked(ctx context.Context) (*tmuxPaneHandle, error) {
+	if b.sessionRoot != nil {
+		pane := b.sessionRoot
+		b.sessionRoot = nil
 		return pane, nil
 	}
 	return b.createPaneLocked(ctx)
@@ -162,7 +164,7 @@ func (b *TmuxBackend) acquirePaneLocked(ctx context.Context) (*tmuxPaneHandle, e
 
 func (b *TmuxBackend) createPaneLocked(ctx context.Context) (*tmuxPaneHandle, error) {
 	args := []string{
-		"new-window", "-d", "-P", "-F", "#{window_id} #{pane_id}",
+		"new-window", "-d", "-P", "-F", "#{pane_id}",
 		"-t", b.session,
 	}
 	if b.workingDir != "" {
@@ -171,44 +173,18 @@ func (b *TmuxBackend) createPaneLocked(ctx context.Context) (*tmuxPaneHandle, er
 	args = append(args, b.shellCommand())
 	out, err := b.runTmuxLocked(ctx, args...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create tmux pooled pane: %w", err)
+		return nil, fmt.Errorf("failed to create tmux fixed pane: %w", err)
 	}
 
 	pane, err := parseTmuxPaneHandle(out)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse tmux pooled pane: %w", err)
+		return nil, fmt.Errorf("failed to parse tmux fixed pane: %w", err)
 	}
 	if err := b.bootstrapPaneLocked(ctx, pane); err != nil {
-		_ = b.killWindowLocked(ctx, pane.WindowID)
+		_ = b.killPaneLocked(ctx, pane.PaneID)
 		return nil, err
 	}
 	return pane, nil
-}
-
-func (b *TmuxBackend) enqueueIdlePaneLocked(ctx context.Context, pane *tmuxPaneHandle) error {
-	b.idlePanes = append(b.idlePanes, pane)
-	if len(b.idlePanes) <= b.maxIdlePanes {
-		return nil
-	}
-
-	evicted := b.idlePanes[0]
-	b.idlePanes = b.idlePanes[1:]
-	if err := b.killWindowLocked(ctx, evicted.WindowID); err != nil {
-		return fmt.Errorf("failed to evict tmux pooled pane %q: %w", evicted.PaneID, err)
-	}
-	return nil
-}
-
-func (b *TmuxBackend) resetPaneForReuseLocked(ctx context.Context, pane *tmuxPaneHandle) error {
-	args := []string{"respawn-pane", "-k", "-t", pane.PaneID}
-	if b.workingDir != "" {
-		args = append(args, "-c", b.workingDir)
-	}
-	args = append(args, b.shellCommand())
-	if _, err := b.runTmuxLocked(ctx, args...); err != nil {
-		return fmt.Errorf("failed to respawn tmux pane %q for reuse: %w", pane.PaneID, err)
-	}
-	return b.bootstrapPaneLocked(ctx, pane)
 }
 
 func (b *TmuxBackend) bootstrapPaneLocked(ctx context.Context, pane *tmuxPaneHandle) error {
@@ -221,8 +197,8 @@ func (b *TmuxBackend) bootstrapPaneLocked(ctx context.Context, pane *tmuxPaneHan
 	return nil
 }
 
-func (b *TmuxBackend) sendKeysToCurrentPaneLocked(ctx context.Context, text string, enter bool) error {
-	pane, err := b.requireCurrentPaneLocked()
+func (b *TmuxBackend) sendKeysToCurrentPaneLocked(ctx context.Context, paneID, text string, enter bool) error {
+	pane, err := b.requireCurrentPaneLocked(paneID)
 	if err != nil {
 		return err
 	}
@@ -243,8 +219,8 @@ func (b *TmuxBackend) sendKeysToPaneLocked(ctx context.Context, pane *tmuxPaneHa
 	return nil
 }
 
-func (b *TmuxBackend) readCurrentPaneLocked(ctx context.Context) (string, error) {
-	pane, err := b.currentMetadataPaneLocked()
+func (b *TmuxBackend) readCurrentPaneLocked(ctx context.Context, paneID string) (string, error) {
+	pane, err := b.currentMetadataPaneLocked(paneID)
 	if err != nil {
 		return "", err
 	}
@@ -255,8 +231,8 @@ func (b *TmuxBackend) readCurrentPaneLocked(ctx context.Context) (string, error)
 	return out, nil
 }
 
-func (b *TmuxBackend) clearCurrentPaneLocked(ctx context.Context) error {
-	pane, err := b.currentMetadataPaneLocked()
+func (b *TmuxBackend) clearCurrentPaneLocked(ctx context.Context, paneID string) error {
+	pane, err := b.currentMetadataPaneLocked(paneID)
 	if err != nil {
 		return err
 	}
@@ -273,8 +249,8 @@ func (b *TmuxBackend) clearPaneLocked(ctx context.Context, pane *tmuxPaneHandle)
 	return nil
 }
 
-func (b *TmuxBackend) interruptCurrentPaneLocked(ctx context.Context) (bool, error) {
-	pane, err := b.requireCurrentPaneLocked()
+func (b *TmuxBackend) interruptCurrentPaneLocked(ctx context.Context, paneID string) (bool, error) {
+	pane, err := b.requireCurrentPaneLocked(paneID)
 	if err != nil {
 		return false, err
 	}
@@ -284,8 +260,8 @@ func (b *TmuxBackend) interruptCurrentPaneLocked(ctx context.Context) (bool, err
 	return true, nil
 }
 
-func (b *TmuxBackend) isCurrentPaneRunningLocked(ctx context.Context) (bool, error) {
-	pane, err := b.requireCurrentPaneLocked()
+func (b *TmuxBackend) isCurrentPaneRunningLocked(ctx context.Context, paneID string) (bool, error) {
+	pane, err := b.requireCurrentPaneLocked(paneID)
 	if err != nil {
 		return false, err
 	}
@@ -300,8 +276,8 @@ func (b *TmuxBackend) isCurrentPaneRunningLocked(ctx context.Context) (bool, err
 	return commandName != "bash", nil
 }
 
-func (b *TmuxBackend) currentPanePIDLocked(ctx context.Context) (*int, error) {
-	pane, err := b.currentMetadataPaneLocked()
+func (b *TmuxBackend) currentPanePIDLocked(ctx context.Context, paneID string) (*int, error) {
+	pane, err := b.currentMetadataPaneLocked(paneID)
 	if err != nil {
 		return nil, nil
 	}
@@ -316,8 +292,8 @@ func (b *TmuxBackend) currentPanePIDLocked(ctx context.Context) (*int, error) {
 	return intPtr(pidValue), nil
 }
 
-func (b *TmuxBackend) currentPaneWorkingDirLocked(ctx context.Context) (string, error) {
-	pane, err := b.currentMetadataPaneLocked()
+func (b *TmuxBackend) currentPaneWorkingDirLocked(ctx context.Context, paneID string) (string, error) {
+	pane, err := b.currentMetadataPaneLocked(paneID)
 	if err != nil {
 		return "", nil
 	}
@@ -328,43 +304,38 @@ func (b *TmuxBackend) currentPaneWorkingDirLocked(ctx context.Context) (string, 
 	return strings.TrimSpace(out), nil
 }
 
-func (b *TmuxBackend) currentMetadataPaneLocked() (*tmuxPaneHandle, error) {
-	if b.activePane != nil {
-		return b.activePane, nil
+func (b *TmuxBackend) currentMetadataPaneLocked(paneID string) (*tmuxPaneHandle, error) {
+	if pane, ok := b.paneBindings[paneID]; ok {
+		return pane, nil
 	}
-	if len(b.idlePanes) > 0 {
-		return b.idlePanes[0], nil
-	}
-	return nil, fmt.Errorf("tmux pane is not available")
+	return nil, fmt.Errorf("tmux pane for pane_id %q is not bound", paneID)
 }
 
-func (b *TmuxBackend) requireCurrentPaneLocked() (*tmuxPaneHandle, error) {
-	if b.activePane == nil {
-		return nil, fmt.Errorf("tmux command pane is not active")
+func (b *TmuxBackend) requireCurrentPaneLocked(paneID string) (*tmuxPaneHandle, error) {
+	pane, ok := b.paneBindings[paneID]
+	if !ok {
+		return nil, fmt.Errorf("tmux pane for pane_id %q is not bound", paneID)
 	}
-	return b.activePane, nil
+	return pane, nil
 }
 
-func (b *TmuxBackend) killWindowLocked(ctx context.Context, windowID string) error {
-	if windowID == "" || !b.initialized {
+func (b *TmuxBackend) killPaneLocked(ctx context.Context, paneID string) error {
+	if paneID == "" || !b.initialized {
 		return nil
 	}
-	if out, err := b.runTmuxLocked(ctx, "kill-window", "-t", windowID); err != nil {
+	if out, err := b.runTmuxLocked(ctx, "kill-pane", "-t", paneID); err != nil {
 		if isTmuxSessionMissing(out) {
 			return nil
 		}
-		return fmt.Errorf("failed to kill tmux window %q: %w", windowID, err)
+		return fmt.Errorf("failed to kill tmux pane %q: %w", paneID, err)
 	}
 	return nil
 }
 
-func (b *TmuxBackend) resetPoolStateLocked() {
+func (b *TmuxBackend) resetSessionStateLocked() {
 	b.initialized = false
-	b.activePane = nil
-	b.idlePanes = nil
-	if b.maxIdlePanes <= 0 {
-		b.maxIdlePanes = defaultTmuxPanePoolSize
-	}
+	b.sessionRoot = nil
+	b.paneBindings = make(map[string]*tmuxPaneHandle)
 }
 
 func (b *TmuxBackend) shellCommand() string {
@@ -372,13 +343,12 @@ func (b *TmuxBackend) shellCommand() string {
 }
 
 func parseTmuxPaneHandle(output string) (*tmuxPaneHandle, error) {
-	fields := strings.Fields(strings.TrimSpace(output))
-	if len(fields) < 2 {
+	paneID := strings.TrimSpace(output)
+	if paneID == "" {
 		return nil, fmt.Errorf("unexpected tmux pane output %q", strings.TrimSpace(output))
 	}
 	return &tmuxPaneHandle{
-		WindowID: fields[0],
-		PaneID:   fields[1],
+		PaneID: paneID,
 	}, nil
 }
 

@@ -12,6 +12,8 @@ type TerminalAction = terminalpkg.TerminalAction
 type TerminalObservation = terminalpkg.TerminalObservation
 
 func bashExecutor(ctx context.Context, action TerminalAction) *TerminalObservation {
+	// TODO：之后需要多个paneID来实现一个agent对应多个terminal
+	action.PaneID = "default_main"
 	return terminalpkg.BashExecutor(ctx, action)
 }
 

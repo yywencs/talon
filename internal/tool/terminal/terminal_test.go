@@ -3,15 +3,20 @@ package terminal
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/wen/opentalon/internal/types"
+)
+
+const (
+	defaultTestPaneID = "pane-1"
+	secondTestPaneID  = "pane-2"
 )
 
 type fakeBackend struct {
@@ -33,15 +38,18 @@ type fakeBackend struct {
 	initialized     bool
 	initializeCalls int
 	closeCalls      int
+	resetPaneCalls  int
 	onInitialize    func()
 	onClose         func()
-	onSend          func(text string, enter bool)
-	onInterrupt     func()
+	onResetPane     func(paneID string)
+	onSend          func(paneID, text string, enter bool)
+	onInterrupt     func(paneID string)
 }
 
 type fakeSendCall struct {
-	text  string
-	enter bool
+	paneID string
+	text   string
+	enter  bool
 }
 
 func (b *fakeBackend) Initialize(ctx context.Context) error {
@@ -86,23 +94,23 @@ func (b *fakeBackend) Close(ctx context.Context) error {
 	return nil
 }
 
-func (b *fakeBackend) SendKeys(ctx context.Context, text string, enter bool) error {
+func (b *fakeBackend) SendKeys(ctx context.Context, paneID, text string, enter bool) error {
 	if b.sendErr != nil {
 		return b.sendErr
 	}
 
 	b.mu.Lock()
-	b.sendCalls = append(b.sendCalls, fakeSendCall{text: text, enter: enter})
+	b.sendCalls = append(b.sendCalls, fakeSendCall{paneID: paneID, text: text, enter: enter})
 	onSend := b.onSend
 	b.mu.Unlock()
 
 	if onSend != nil {
-		onSend(text, enter)
+		onSend(paneID, text, enter)
 	}
 	return nil
 }
 
-func (b *fakeBackend) ReadScreen(ctx context.Context) (string, error) {
+func (b *fakeBackend) ReadScreen(ctx context.Context, paneID string) (string, error) {
 	if b.readErr != nil {
 		return "", b.readErr
 	}
@@ -112,7 +120,7 @@ func (b *fakeBackend) ReadScreen(ctx context.Context) (string, error) {
 	return b.screen, nil
 }
 
-func (b *fakeBackend) ClearScreen(ctx context.Context) error {
+func (b *fakeBackend) ClearScreen(ctx context.Context, paneID string) error {
 	if b.clearErr != nil {
 		return b.clearErr
 	}
@@ -123,26 +131,51 @@ func (b *fakeBackend) ClearScreen(ctx context.Context) error {
 	return nil
 }
 
-func (b *fakeBackend) Interrupt(ctx context.Context) (bool, error) {
+func (b *fakeBackend) Interrupt(ctx context.Context, paneID string) (bool, error) {
 	if b.interruptErr != nil {
 		return false, b.interruptErr
 	}
 	if b.onInterrupt != nil {
-		b.onInterrupt()
+		b.onInterrupt(paneID)
 	}
 	return b.interruptOK, nil
 }
 
-func (b *fakeBackend) IsRunning(ctx context.Context) (bool, error) {
+func (b *fakeBackend) IsRunning(ctx context.Context, paneID string) (bool, error) {
 	return b.running, nil
 }
 
-func (b *fakeBackend) PanePID(ctx context.Context) (*int, error) {
+func (b *fakeBackend) PanePID(ctx context.Context, paneID string) (*int, error) {
 	return b.panePID, nil
 }
 
-func (b *fakeBackend) CurrentWorkingDir(ctx context.Context) (string, error) {
+func (b *fakeBackend) CurrentWorkingDir(ctx context.Context, paneID string) (string, error) {
 	return b.workingDir, nil
+}
+
+func (b *fakeBackend) PrepareCommand(ctx context.Context, paneID string) error {
+	return nil
+}
+
+func (b *fakeBackend) CompleteCommand(ctx context.Context, paneID string) error {
+	return nil
+}
+
+func (b *fakeBackend) InvalidateCommand(ctx context.Context, paneID string) error {
+	return nil
+}
+
+func (b *fakeBackend) ResetPane(ctx context.Context, paneID string) error {
+	b.mu.Lock()
+	b.resetPaneCalls++
+	b.running = false
+	b.screen = ""
+	onResetPane := b.onResetPane
+	b.mu.Unlock()
+	if onResetPane != nil {
+		onResetPane(paneID)
+	}
+	return nil
 }
 
 type fakeTmuxRunner struct {
@@ -171,8 +204,132 @@ func (r *fakeTmuxRunner) LookPath(file string) (string, error) {
 	return "", os.ErrNotExist
 }
 
+type fakeConcurrentPaneState struct {
+	running bool
+	screen  string
+	marker  string
+}
+
+type fakeConcurrentBackend struct {
+	mu    sync.Mutex
+	panes map[string]*fakeConcurrentPaneState
+}
+
+func newFakeConcurrentBackend() *fakeConcurrentBackend {
+	return &fakeConcurrentBackend{
+		panes: make(map[string]*fakeConcurrentPaneState),
+	}
+}
+
+func (b *fakeConcurrentBackend) Initialize(ctx context.Context) error { return nil }
+func (b *fakeConcurrentBackend) Close(ctx context.Context) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.panes = make(map[string]*fakeConcurrentPaneState)
+	return nil
+}
+func (b *fakeConcurrentBackend) SendKeys(ctx context.Context, paneID, text string, enter bool) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	state := b.ensurePane(paneID)
+	if strings.Contains(text, commandExitPrefix) {
+		state.marker = extractMarkerFromWrappedCommand(text)
+		state.running = true
+		return nil
+	}
+	return nil
+}
+func (b *fakeConcurrentBackend) ReadScreen(ctx context.Context, paneID string) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.ensurePane(paneID).screen, nil
+}
+func (b *fakeConcurrentBackend) ClearScreen(ctx context.Context, paneID string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.ensurePane(paneID).screen = ""
+	return nil
+}
+func (b *fakeConcurrentBackend) Interrupt(ctx context.Context, paneID string) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	state := b.ensurePane(paneID)
+	if !state.running {
+		return false, nil
+	}
+	state.running = false
+	state.screen += "interrupted-" + paneID + "\n" + commandExitPrefix + state.marker + ":130\n"
+	return true, nil
+}
+func (b *fakeConcurrentBackend) IsRunning(ctx context.Context, paneID string) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.ensurePane(paneID).running, nil
+}
+func (b *fakeConcurrentBackend) PanePID(ctx context.Context, paneID string) (*int, error) {
+	if paneID == secondTestPaneID {
+		return intPtr(2002), nil
+	}
+	return intPtr(2001), nil
+}
+func (b *fakeConcurrentBackend) CurrentWorkingDir(ctx context.Context, paneID string) (string, error) {
+	return "/tmp", nil
+}
+func (b *fakeConcurrentBackend) PrepareCommand(ctx context.Context, paneID string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.ensurePane(paneID)
+	return nil
+}
+func (b *fakeConcurrentBackend) CompleteCommand(ctx context.Context, paneID string) error { return nil }
+func (b *fakeConcurrentBackend) InvalidateCommand(ctx context.Context, paneID string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.panes, paneID)
+	return nil
+}
+func (b *fakeConcurrentBackend) ResetPane(ctx context.Context, paneID string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.panes, paneID)
+	return nil
+}
+
+func (b *fakeConcurrentBackend) ensurePane(paneID string) *fakeConcurrentPaneState {
+	state, ok := b.panes[paneID]
+	if ok {
+		return state
+	}
+	state = &fakeConcurrentPaneState{}
+	b.panes[paneID] = state
+	return state
+}
+
+func (b *fakeConcurrentBackend) completePane(paneID, output string, exitCode int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	state := b.ensurePane(paneID)
+	state.running = false
+	state.screen += output + "\n" + commandExitPrefix + state.marker + ":" + strconv.Itoa(exitCode) + "\n"
+}
+
 func testFloatPtr(v float64) *float64 {
 	return &v
+}
+
+func withTestPane(action TerminalAction) TerminalAction {
+	if strings.TrimSpace(action.PaneID) == "" {
+		action.PaneID = defaultTestPaneID
+	}
+	return action
+}
+
+func executeTestAction(executor *Executor, action TerminalAction) *TerminalObservation {
+	return executor.Execute(context.Background(), withTestPane(action))
+}
+
+func executeDefaultTestAction(action TerminalAction) *TerminalObservation {
+	return BashExecutor(context.Background(), withTestPane(action))
 }
 
 func TestValidateAction(t *testing.T) {
@@ -184,6 +341,7 @@ func TestValidateAction(t *testing.T) {
 		{
 			name: "empty command",
 			action: TerminalAction{
+				PaneID:  defaultTestPaneID,
 				Command: "",
 			},
 			wantErr: "command is empty",
@@ -191,6 +349,7 @@ func TestValidateAction(t *testing.T) {
 		{
 			name: "invalid timeout",
 			action: TerminalAction{
+				PaneID:  defaultTestPaneID,
 				Command: "echo hi",
 				Timeout: testFloatPtr(301),
 			},
@@ -212,7 +371,7 @@ func TestValidateAction(t *testing.T) {
 }
 
 func TestValidateAction_InputModeAllowsEmptyCommand(t *testing.T) {
-	err := validateAction(&TerminalAction{IsInput: true})
+	err := validateAction(&TerminalAction{PaneID: defaultTestPaneID, IsInput: true})
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -268,7 +427,7 @@ func TestTerminalActionActionFields(t *testing.T) {
 		fields[name] = struct{}{}
 	}
 
-	for _, name := range []string{"command", "is_input", "timeout", "reset"} {
+	for _, name := range []string{"command", "pane_id", "is_input", "timeout", "reset"} {
 		if _, ok := fields[name]; !ok {
 			t.Fatalf("expected field %q to exist", name)
 		}
@@ -283,7 +442,7 @@ func TestTerminalActionActionFields(t *testing.T) {
 
 func TestNewTerminalObservation(t *testing.T) {
 	pid := 123
-	obs := NewTerminalObservation("echo hi", "/tmp", &pid, true, -1, "命令执行超时")
+	obs := NewTerminalObservation("echo hi", "/tmp", defaultTestPaneID, &pid, true, -1, "命令执行超时")
 
 	if !obs.ErrorStatus {
 		t.Fatal("expected ErrorStatus=true")
@@ -350,7 +509,7 @@ func TestExecutorUsesWorkingDir(t *testing.T) {
 		panePID:    &pid,
 		workingDir: "/tmp",
 	}
-	backend.onSend = func(text string, enter bool) {
+	backend.onSend = func(paneID, text string, enter bool) {
 		marker := extractMarkerFromWrappedCommand(text)
 		if marker == "" {
 			return
@@ -365,7 +524,7 @@ func TestExecutorUsesWorkingDir(t *testing.T) {
 		Backend:    backend,
 	})
 
-	obs := executor.Execute(context.Background(), TerminalAction{
+	obs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -393,7 +552,7 @@ func TestExecutorRejectsInvalidWorkingDir(t *testing.T) {
 		Backend:    &fakeBackend{},
 	})
 
-	obs := executor.Execute(context.Background(), TerminalAction{
+	obs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -419,7 +578,7 @@ func TestExecutorResetClosesSessionWithoutReinitializing(t *testing.T) {
 		Backend:    backend,
 	})
 
-	obs := executor.Execute(context.Background(), TerminalAction{
+	obs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -435,8 +594,11 @@ func TestExecutorResetClosesSessionWithoutReinitializing(t *testing.T) {
 	if obs.Metadata.WorkingDir != baseDir {
 		t.Fatalf("expected working dir %q, got %q", baseDir, obs.Metadata.WorkingDir)
 	}
-	if backend.closeCalls != 1 {
-		t.Fatalf("expected 1 close call, got %d", backend.closeCalls)
+	if backend.closeCalls != 0 {
+		t.Fatalf("expected 0 close call, got %d", backend.closeCalls)
+	}
+	if backend.resetPaneCalls != 1 {
+		t.Fatalf("expected 1 reset pane call, got %d", backend.resetPaneCalls)
 	}
 	if backend.initializeCalls != 0 {
 		t.Fatalf("expected reset without command to avoid reinitialize, got %d", backend.initializeCalls)
@@ -468,7 +630,16 @@ func TestExecutorResetClearsSessionStateBeforeNextCommand(t *testing.T) {
 		backend.screen = ""
 		envValue = ""
 	}
-	backend.onSend = func(text string, enter bool) {
+	backend.onResetPane = func(paneID string) {
+		backend.mu.Lock()
+		defer backend.mu.Unlock()
+		sessionID++
+		backend.panePID = intPtr(1000 + sessionID)
+		backend.workingDir = baseDir
+		backend.screen = ""
+		envValue = ""
+	}
+	backend.onSend = func(paneID, text string, enter bool) {
 		command := unwrapCommand(text)
 		if command == "" {
 			return
@@ -497,7 +668,7 @@ func TestExecutorResetClearsSessionStateBeforeNextCommand(t *testing.T) {
 	})
 
 	run := func(action TerminalAction) *TerminalObservation {
-		return executor.Execute(context.Background(), action)
+		return executeTestAction(executor, action)
 	}
 	toolMeta := types.ToolMetadata{
 		Summary:      "test",
@@ -511,7 +682,7 @@ func TestExecutorResetClearsSessionStateBeforeNextCommand(t *testing.T) {
 		t.Fatalf("expected export to succeed, got %q", obs.OutputText())
 	}
 
-	resetObs := run(TerminalAction{ToolMetadata: toolMeta, Reset: true})
+	resetObs := run(TerminalAction{ToolMetadata: toolMeta, PaneID: defaultTestPaneID, Reset: true})
 	if resetObs.ExitCodeValue() != 0 {
 		t.Fatalf("expected reset to succeed, got %q", resetObs.OutputText())
 	}
@@ -534,15 +705,18 @@ func TestExecutorResetClearsSessionStateBeforeNextCommand(t *testing.T) {
 	if envObs.OutputText() != "<>\n" {
 		t.Fatalf("expected reset env to be empty, got %q", envObs.OutputText())
 	}
-	if backend.closeCalls != 1 {
-		t.Fatalf("expected exactly one close call, got %d", backend.closeCalls)
+	if backend.closeCalls != 0 {
+		t.Fatalf("expected pane reset not to close whole backend, got %d close calls", backend.closeCalls)
+	}
+	if backend.resetPaneCalls != 1 {
+		t.Fatalf("expected exactly one pane reset call, got %d", backend.resetPaneCalls)
 	}
 }
 
 func TestExecutorResetClearsPendingInputSession(t *testing.T) {
 	backend := &fakeBackend{}
 	var marker string
-	backend.onSend = func(text string, enter bool) {
+	backend.onSend = func(paneID, text string, enter bool) {
 		backend.mu.Lock()
 		defer backend.mu.Unlock()
 		if strings.Contains(text, commandExitPrefix) {
@@ -564,7 +738,7 @@ func TestExecutorResetClearsPendingInputSession(t *testing.T) {
 		Backend:        backend,
 	})
 
-	firstObs := executor.Execute(context.Background(), TerminalAction{
+	firstObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -575,7 +749,7 @@ func TestExecutorResetClearsPendingInputSession(t *testing.T) {
 		t.Fatal("expected first observation to time out")
 	}
 
-	resetObs := executor.Execute(context.Background(), TerminalAction{
+	resetObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -586,7 +760,7 @@ func TestExecutorResetClearsPendingInputSession(t *testing.T) {
 		t.Fatalf("expected reset to succeed, got %q", resetObs.OutputText())
 	}
 
-	secondObs := executor.Execute(context.Background(), TerminalAction{
+	secondObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -605,7 +779,7 @@ func TestExecutorResetDoesNotAllowContinuingInputInSameCall(t *testing.T) {
 		Backend: backend,
 	})
 
-	obs := executor.Execute(context.Background(), TerminalAction{
+	obs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -627,7 +801,7 @@ func TestExecutorRequiresRunningCommandForInput(t *testing.T) {
 		Backend: &fakeBackend{},
 	})
 
-	obs := executor.Execute(context.Background(), TerminalAction{
+	obs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -645,7 +819,7 @@ func TestExecutorEmptyInputWithoutPendingCommandReturnsEmptyOutput(t *testing.T)
 		Backend: &fakeBackend{},
 	})
 
-	obs := executor.Execute(context.Background(), TerminalAction{
+	obs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -664,7 +838,7 @@ func TestExecutorEmptyInputWithoutPendingCommandReturnsEmptyOutput(t *testing.T)
 func TestExecutorInputCanContinueTimedOutCommand(t *testing.T) {
 	backend := &fakeBackend{}
 	var marker string
-	backend.onSend = func(text string, enter bool) {
+	backend.onSend = func(paneID, text string, enter bool) {
 		backend.mu.Lock()
 		defer backend.mu.Unlock()
 		if strings.Contains(text, commandExitPrefix) {
@@ -683,7 +857,7 @@ func TestExecutorInputCanContinueTimedOutCommand(t *testing.T) {
 		Backend:        backend,
 	})
 
-	firstObs := executor.Execute(context.Background(), TerminalAction{
+	firstObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -697,7 +871,7 @@ func TestExecutorInputCanContinueTimedOutCommand(t *testing.T) {
 		t.Fatalf("expected exit code -1, got %d", firstObs.ExitCodeValue())
 	}
 
-	secondObs := executor.Execute(context.Background(), TerminalAction{
+	secondObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -716,7 +890,7 @@ func TestExecutorInputCanContinueTimedOutCommand(t *testing.T) {
 func TestExecutorEmptyInputPullsNewOutput(t *testing.T) {
 	backend := &fakeBackend{}
 	var marker string
-	backend.onSend = func(text string, enter bool) {
+	backend.onSend = func(paneID, text string, enter bool) {
 		if strings.Contains(text, commandExitPrefix) {
 			backend.mu.Lock()
 			backend.running = true
@@ -730,7 +904,7 @@ func TestExecutorEmptyInputPullsNewOutput(t *testing.T) {
 		Backend:        backend,
 	})
 
-	firstObs := executor.Execute(context.Background(), TerminalAction{
+	firstObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -746,7 +920,7 @@ func TestExecutorEmptyInputPullsNewOutput(t *testing.T) {
 	backend.screen += "more output\n" + commandExitPrefix + marker + ":0\n"
 	backend.mu.Unlock()
 
-	secondObs := executor.Execute(context.Background(), TerminalAction{
+	secondObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -767,7 +941,7 @@ func TestExecutorEmptyInputDoesNotRepeatConsumedOutput(t *testing.T) {
 		running: true,
 	}
 	var marker string
-	backend.onSend = func(text string, enter bool) {
+	backend.onSend = func(paneID, text string, enter bool) {
 		if strings.Contains(text, commandExitPrefix) {
 			marker = extractMarkerFromWrappedCommand(text)
 		}
@@ -778,7 +952,7 @@ func TestExecutorEmptyInputDoesNotRepeatConsumedOutput(t *testing.T) {
 		Backend:        backend,
 	})
 
-	firstObs := executor.Execute(context.Background(), TerminalAction{
+	firstObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -793,7 +967,7 @@ func TestExecutorEmptyInputDoesNotRepeatConsumedOutput(t *testing.T) {
 	backend.screen += "chunk1\n"
 	backend.mu.Unlock()
 
-	secondObs := executor.Execute(context.Background(), TerminalAction{
+	secondObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -809,7 +983,7 @@ func TestExecutorEmptyInputDoesNotRepeatConsumedOutput(t *testing.T) {
 	backend.screen += "chunk2\n"
 	backend.mu.Unlock()
 
-	thirdObs := executor.Execute(context.Background(), TerminalAction{
+	thirdObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -829,7 +1003,7 @@ func TestExecutorEmptyInputDoesNotRepeatConsumedOutput(t *testing.T) {
 	backend.running = false
 	backend.mu.Unlock()
 
-	finalObs := executor.Execute(context.Background(), TerminalAction{
+	finalObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -844,7 +1018,7 @@ func TestExecutorEmptyInputDoesNotRepeatConsumedOutput(t *testing.T) {
 
 func TestExecutorReturnsErrorAndClearsStalePendingBeforeNextCommand(t *testing.T) {
 	backend := &fakeBackend{}
-	backend.onSend = func(text string, enter bool) {
+	backend.onSend = func(paneID, text string, enter bool) {
 		command := unwrapCommand(text)
 		if command == "" {
 			return
@@ -866,7 +1040,7 @@ func TestExecutorReturnsErrorAndClearsStalePendingBeforeNextCommand(t *testing.T
 		Backend:        backend,
 	})
 
-	firstObs := executor.Execute(context.Background(), TerminalAction{
+	firstObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -877,7 +1051,7 @@ func TestExecutorReturnsErrorAndClearsStalePendingBeforeNextCommand(t *testing.T
 		t.Fatal("expected first observation to time out")
 	}
 
-	secondObs := executor.Execute(context.Background(), TerminalAction{
+	secondObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -891,7 +1065,7 @@ func TestExecutorReturnsErrorAndClearsStalePendingBeforeNextCommand(t *testing.T
 		t.Fatalf("expected stale pending error, got %q", secondObs.OutputText())
 	}
 
-	thirdObs := executor.Execute(context.Background(), TerminalAction{
+	thirdObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -908,7 +1082,7 @@ func TestExecutorReturnsErrorAndClearsStalePendingBeforeNextCommand(t *testing.T
 
 func TestExecutorReturnsErrorAndClearsStalePendingBeforeRejectingInput(t *testing.T) {
 	backend := &fakeBackend{}
-	backend.onSend = func(text string, enter bool) {
+	backend.onSend = func(paneID, text string, enter bool) {
 		if strings.Contains(text, commandExitPrefix) {
 			return
 		}
@@ -920,7 +1094,7 @@ func TestExecutorReturnsErrorAndClearsStalePendingBeforeRejectingInput(t *testin
 		Backend:        backend,
 	})
 
-	firstObs := executor.Execute(context.Background(), TerminalAction{
+	firstObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -931,7 +1105,7 @@ func TestExecutorReturnsErrorAndClearsStalePendingBeforeRejectingInput(t *testin
 		t.Fatal("expected first observation to time out")
 	}
 
-	secondObs := executor.Execute(context.Background(), TerminalAction{
+	secondObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -946,7 +1120,7 @@ func TestExecutorReturnsErrorAndClearsStalePendingBeforeRejectingInput(t *testin
 		t.Fatalf("expected stale pending hint, got %q", secondObs.OutputText())
 	}
 
-	thirdObs := executor.Execute(context.Background(), TerminalAction{
+	thirdObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -964,7 +1138,7 @@ func TestExecutorInterruptMapsToBackendInterrupt(t *testing.T) {
 		interruptOK: true,
 	}
 	var marker string
-	backend.onSend = func(text string, enter bool) {
+	backend.onSend = func(paneID, text string, enter bool) {
 		if strings.Contains(text, commandExitPrefix) {
 			backend.mu.Lock()
 			backend.running = true
@@ -972,7 +1146,7 @@ func TestExecutorInterruptMapsToBackendInterrupt(t *testing.T) {
 			backend.mu.Unlock()
 		}
 	}
-	backend.onInterrupt = func() {
+	backend.onInterrupt = func(paneID string) {
 		backend.mu.Lock()
 		defer backend.mu.Unlock()
 		backend.running = false
@@ -984,7 +1158,7 @@ func TestExecutorInterruptMapsToBackendInterrupt(t *testing.T) {
 		Backend:        backend,
 	})
 
-	firstObs := executor.Execute(context.Background(), TerminalAction{
+	firstObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -995,7 +1169,7 @@ func TestExecutorInterruptMapsToBackendInterrupt(t *testing.T) {
 		t.Fatal("expected first observation to time out")
 	}
 
-	secondObs := executor.Execute(context.Background(), TerminalAction{
+	secondObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -1020,7 +1194,7 @@ func TestExecutorReadErrorClearsPendingState(t *testing.T) {
 		Backend:        backend,
 	})
 
-	firstObs := executor.Execute(context.Background(), TerminalAction{
+	firstObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -1032,7 +1206,7 @@ func TestExecutorReadErrorClearsPendingState(t *testing.T) {
 	}
 
 	backend.readErr = errors.New("read failed")
-	secondObs := executor.Execute(context.Background(), TerminalAction{
+	secondObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -1048,7 +1222,7 @@ func TestExecutorReadErrorClearsPendingState(t *testing.T) {
 	}
 
 	backend.readErr = nil
-	thirdObs := executor.Execute(context.Background(), TerminalAction{
+	thirdObs := executeTestAction(executor, TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -1061,9 +1235,124 @@ func TestExecutorReadErrorClearsPendingState(t *testing.T) {
 	}
 }
 
+func TestExecutorSupportsConcurrentPaneIDsWithoutCrossTalk(t *testing.T) {
+	backend := newFakeConcurrentBackend()
+	executor := NewExecutor(ExecutorConfig{
+		DefaultTimeout: 10 * time.Millisecond,
+		Backend:        backend,
+	})
+
+	firstObs := executeTestAction(executor, TerminalAction{
+		ToolMetadata: types.ToolMetadata{Summary: "test", SecurityRisk: types.SecurityRisk_HIGH},
+		PaneID:       defaultTestPaneID,
+		Command:      "sleep 1",
+	})
+	if !firstObs.Timeout {
+		t.Fatal("expected first pane command to time out")
+	}
+
+	secondObs := executeTestAction(executor, TerminalAction{
+		ToolMetadata: types.ToolMetadata{Summary: "test", SecurityRisk: types.SecurityRisk_HIGH},
+		PaneID:       secondTestPaneID,
+		Command:      "sleep 1",
+	})
+	if !secondObs.Timeout {
+		t.Fatal("expected second pane command to time out")
+	}
+
+	backend.completePane(defaultTestPaneID, "output-pane-1", 0)
+	backend.completePane(secondTestPaneID, "output-pane-2", 0)
+
+	firstDone := executeTestAction(executor, TerminalAction{
+		ToolMetadata: types.ToolMetadata{Summary: "test", SecurityRisk: types.SecurityRisk_HIGH},
+		PaneID:       defaultTestPaneID,
+		IsInput:      true,
+		Command:      "",
+	})
+	if firstDone.ExitCodeValue() != 0 {
+		t.Fatalf("expected first pane exit code 0, got %d", firstDone.ExitCodeValue())
+	}
+	if firstDone.OutputText() != "output-pane-1\n" {
+		t.Fatalf("expected first pane output, got %q", firstDone.OutputText())
+	}
+
+	secondDone := executeTestAction(executor, TerminalAction{
+		ToolMetadata: types.ToolMetadata{Summary: "test", SecurityRisk: types.SecurityRisk_HIGH},
+		PaneID:       secondTestPaneID,
+		IsInput:      true,
+		Command:      "",
+	})
+	if secondDone.ExitCodeValue() != 0 {
+		t.Fatalf("expected second pane exit code 0, got %d", secondDone.ExitCodeValue())
+	}
+	if secondDone.OutputText() != "output-pane-2\n" {
+		t.Fatalf("expected second pane output, got %q", secondDone.OutputText())
+	}
+}
+
+func TestExecutorPaneResetDoesNotAffectOtherPendingPane(t *testing.T) {
+	backend := newFakeConcurrentBackend()
+	executor := NewExecutor(ExecutorConfig{
+		DefaultTimeout: 10 * time.Millisecond,
+		Backend:        backend,
+	})
+
+	firstObs := executeTestAction(executor, TerminalAction{
+		ToolMetadata: types.ToolMetadata{Summary: "test", SecurityRisk: types.SecurityRisk_HIGH},
+		PaneID:       defaultTestPaneID,
+		Command:      "sleep 1",
+	})
+	if !firstObs.Timeout {
+		t.Fatal("expected first pane command to time out")
+	}
+
+	secondObs := executeTestAction(executor, TerminalAction{
+		ToolMetadata: types.ToolMetadata{Summary: "test", SecurityRisk: types.SecurityRisk_HIGH},
+		PaneID:       secondTestPaneID,
+		Command:      "sleep 1",
+	})
+	if !secondObs.Timeout {
+		t.Fatal("expected second pane command to time out")
+	}
+
+	resetObs := executeTestAction(executor, TerminalAction{
+		ToolMetadata: types.ToolMetadata{Summary: "test", SecurityRisk: types.SecurityRisk_HIGH},
+		PaneID:       defaultTestPaneID,
+		Reset:        true,
+	})
+	if resetObs.ExitCodeValue() != 0 {
+		t.Fatalf("expected pane reset to succeed, got %q", resetObs.OutputText())
+	}
+
+	backend.completePane(secondTestPaneID, "still-running-pane-2", 0)
+
+	secondDone := executeTestAction(executor, TerminalAction{
+		ToolMetadata: types.ToolMetadata{Summary: "test", SecurityRisk: types.SecurityRisk_HIGH},
+		PaneID:       secondTestPaneID,
+		IsInput:      true,
+		Command:      "",
+	})
+	if secondDone.ExitCodeValue() != 0 {
+		t.Fatalf("expected second pane to remain usable, got %d", secondDone.ExitCodeValue())
+	}
+	if secondDone.OutputText() != "still-running-pane-2\n" {
+		t.Fatalf("expected second pane output after first pane reset, got %q", secondDone.OutputText())
+	}
+
+	firstInput := executeTestAction(executor, TerminalAction{
+		ToolMetadata: types.ToolMetadata{Summary: "test", SecurityRisk: types.SecurityRisk_HIGH},
+		PaneID:       defaultTestPaneID,
+		IsInput:      true,
+		Command:      "done",
+	})
+	if !strings.Contains(firstInput.OutputText(), "is_input 需要当前存在可继续交互的运行中命令") {
+		t.Fatalf("expected reset pane pending to be cleared, got %q", firstInput.OutputText())
+	}
+}
+
 func TestBashExecutorUsesDefaultExecutor(t *testing.T) {
 	backend := &fakeBackend{}
-	backend.onSend = func(text string, enter bool) {
+	backend.onSend = func(paneID, text string, enter bool) {
 		marker := extractMarkerFromWrappedCommand(text)
 		if marker == "" {
 			return
@@ -1081,7 +1370,7 @@ func TestBashExecutorUsesDefaultExecutor(t *testing.T) {
 		defaultExecutor = previousExecutor
 	})
 
-	obs := BashExecutor(context.Background(), TerminalAction{
+	obs := executeDefaultTestAction(TerminalAction{
 		ToolMetadata: types.ToolMetadata{
 			Summary:      "test",
 			SecurityRisk: types.SecurityRisk_HIGH,
@@ -1127,7 +1416,7 @@ func TestTmuxBackendReadScreenMarksUninitializedWhenSessionIsMissing(t *testing.
 	runner.runFunc = func(args ...string) (string, error) {
 		switch {
 		case len(args) >= 1 && args[0] == "new-session":
-			return "@1 %1\n", nil
+			return "%1\n", nil
 		case len(args) >= 1 && args[0] == "set-option":
 			return "", nil
 		case len(args) >= 1 && args[0] == "send-keys":
@@ -1153,119 +1442,16 @@ func TestTmuxBackendReadScreenMarksUninitializedWhenSessionIsMissing(t *testing.
 		t.Fatal("expected backend to be initialized")
 	}
 
-	_, err := backend.ReadScreen(context.Background())
+	if err := backend.PrepareCommand(context.Background(), defaultTestPaneID); err != nil {
+		t.Fatalf("prepare command: %v", err)
+	}
+
+	_, err := backend.ReadScreen(context.Background(), defaultTestPaneID)
 	if err == nil {
 		t.Fatal("expected read screen error")
 	}
 	if backend.initialized {
 		t.Fatal("expected backend to reset initialized state after missing session")
-	}
-}
-
-func TestTmuxBackendCommandLifecycleReusesIdlePane(t *testing.T) {
-	runner := &fakeTmuxRunner{
-		lookPath: map[string]string{
-			"tmux": "/usr/bin/tmux",
-			"bash": "/bin/bash",
-		},
-	}
-	var nextWindowID int
-	runner.runFunc = func(args ...string) (string, error) {
-		switch args[0] {
-		case "new-session":
-			nextWindowID = 1
-			return "@1 %1\n", nil
-		case "new-window":
-			nextWindowID++
-			return fmt.Sprintf("@%d %%%d\n", nextWindowID, nextWindowID), nil
-		default:
-			return "", nil
-		}
-	}
-
-	backend := NewTmuxBackend("/tmp")
-	backend.runner = runner
-
-	if err := backend.PrepareCommand(context.Background()); err != nil {
-		t.Fatalf("prepare first command: %v", err)
-	}
-	firstPane := backend.activePane
-	if firstPane == nil {
-		t.Fatal("expected active pane after first prepare")
-	}
-	if err := backend.CompleteCommand(context.Background()); err != nil {
-		t.Fatalf("complete first command: %v", err)
-	}
-	if backend.activePane != nil {
-		t.Fatal("expected active pane to be cleared after complete")
-	}
-	if len(backend.idlePanes) != 1 {
-		t.Fatalf("expected 1 idle pane, got %d", len(backend.idlePanes))
-	}
-
-	if err := backend.PrepareCommand(context.Background()); err != nil {
-		t.Fatalf("prepare second command: %v", err)
-	}
-	if backend.activePane == nil {
-		t.Fatal("expected active pane after second prepare")
-	}
-	if backend.activePane.PaneID != firstPane.PaneID {
-		t.Fatalf("expected reused pane %q, got %q", firstPane.PaneID, backend.activePane.PaneID)
-	}
-}
-
-func TestTmuxBackendCompleteCommandEvictsOldestIdlePaneWhenQueueFull(t *testing.T) {
-	runner := &fakeTmuxRunner{
-		lookPath: map[string]string{
-			"tmux": "/usr/bin/tmux",
-			"bash": "/bin/bash",
-		},
-	}
-	var nextWindowID int
-	var killTargets []string
-	runner.runFunc = func(args ...string) (string, error) {
-		switch args[0] {
-		case "new-session":
-			nextWindowID = 1
-			return "@1 %1\n", nil
-		case "new-window":
-			nextWindowID++
-			return fmt.Sprintf("@%d %%%d\n", nextWindowID, nextWindowID), nil
-		case "kill-window":
-			if len(args) >= 3 {
-				killTargets = append(killTargets, args[2])
-			}
-			return "", nil
-		default:
-			return "", nil
-		}
-	}
-
-	backend := NewTmuxBackend("/tmp")
-	backend.runner = runner
-	backend.maxIdlePanes = 2
-	backend.initialized = true
-	backend.idlePanes = []*tmuxPaneHandle{
-		{WindowID: "@1", PaneID: "%1"},
-		{WindowID: "@2", PaneID: "%2"},
-	}
-	backend.activePane = &tmuxPaneHandle{WindowID: "@3", PaneID: "%3"}
-
-	if err := backend.CompleteCommand(context.Background()); err != nil {
-		t.Fatalf("complete command: %v", err)
-	}
-
-	if len(backend.idlePanes) != 2 {
-		t.Fatalf("expected idle queue size 2, got %d", len(backend.idlePanes))
-	}
-	if len(killTargets) != 1 {
-		t.Fatalf("expected exactly one evicted window, got %d", len(killTargets))
-	}
-	if killTargets[0] != "@1" {
-		t.Fatalf("expected oldest window @1 to be evicted, got %q", killTargets[0])
-	}
-	if backend.idlePanes[0].WindowID != "@2" || backend.idlePanes[1].WindowID != "@3" {
-		t.Fatalf("expected queue to retain newer panes, got %#v", backend.idlePanes)
 	}
 }
 

@@ -29,6 +29,7 @@ func auditCommandHash(command string) string {
 func logTerminalCommandCompletion(ctx context.Context, action TerminalAction, workingDir string, timeout float64, result commandResult) {
 	args := []any{
 		"tool_name", "bash",
+		"pane_id", action.PaneID,
 		"command_name", auditCommandName(action.Command),
 		"command_sha256", auditCommandHash(action.Command),
 		"working_dir", workingDir,

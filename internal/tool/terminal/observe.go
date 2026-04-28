@@ -2,12 +2,12 @@ package terminal
 
 import "github.com/wen/opentalon/internal/types"
 
-func errorOutput(command, workingDir string, pid *int, timeout bool, exitCode int, err error) *TerminalObservation {
-	return NewTerminalErrorObservation(command, workingDir, pid, timeout, exitCode, err)
+func errorOutput(command, workingDir, paneID string, pid *int, timeout bool, exitCode int, err error) *TerminalObservation {
+	return NewTerminalErrorObservation(command, workingDir, paneID, pid, timeout, exitCode, err)
 }
 
 // NewTerminalObservation 构造终端工具的 observation 结果。
-func NewTerminalObservation(command, workingDir string, pid *int, timeout bool, exitCode int, output string) *TerminalObservation {
+func NewTerminalObservation(command, workingDir, paneID string, pid *int, timeout bool, exitCode int, output string) *TerminalObservation {
 	obs := &TerminalObservation{
 		BaseObservation: types.BaseObservation{
 			BaseEvent: types.BaseEvent{
@@ -22,7 +22,7 @@ func NewTerminalObservation(command, workingDir string, pid *int, timeout bool, 
 		},
 		Command:  stringPtr(command),
 		Timeout:  timeout,
-		Metadata: CmdOutputMetadata{PID: pid, WorkingDir: workingDir},
+		Metadata: CmdOutputMetadata{PID: pid, WorkingDir: workingDir, PaneID: paneID},
 	}
 	if exitCode != 0 || output != "" || pid != nil {
 		obs.ExitCode = intPtr(exitCode)
@@ -31,8 +31,8 @@ func NewTerminalObservation(command, workingDir string, pid *int, timeout bool, 
 }
 
 // NewTerminalErrorObservation 构造终端工具的错误 observation 结果。
-func NewTerminalErrorObservation(command, workingDir string, pid *int, timeout bool, exitCode int, err error) *TerminalObservation {
-	return NewTerminalObservation(command, workingDir, pid, timeout, exitCode, BuildTerminalErrorMessage(err))
+func NewTerminalErrorObservation(command, workingDir, paneID string, pid *int, timeout bool, exitCode int, err error) *TerminalObservation {
+	return NewTerminalObservation(command, workingDir, paneID, pid, timeout, exitCode, BuildTerminalErrorMessage(err))
 }
 
 func intPtr(v int) *int {

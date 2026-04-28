@@ -33,9 +33,8 @@ type TmuxBackend struct {
 	shellPath    string
 	runner       tmuxCommandRunner
 	initialized  bool
-	maxIdlePanes int
-	idlePanes    []*tmuxPaneHandle
-	activePane   *tmuxPaneHandle
+	sessionRoot  *tmuxPaneHandle
+	paneBindings map[string]*tmuxPaneHandle
 
 	mu sync.Mutex
 }
@@ -46,7 +45,7 @@ func NewTmuxBackend(workingDir string) *TmuxBackend {
 		workingDir:   workingDir,
 		session:      "opentalon-" + uuid.NewString(),
 		runner:       &execTmuxCommandRunner{},
-		maxIdlePanes: defaultTmuxPanePoolSize,
+		paneBindings: make(map[string]*tmuxPaneHandle),
 	}
 }
 
@@ -76,86 +75,86 @@ func (b *TmuxBackend) Close(ctx context.Context) error {
 }
 
 // SendKeys 向 tmux session 发送文本或按键序列。
-func (b *TmuxBackend) SendKeys(ctx context.Context, text string, enter bool) error {
+func (b *TmuxBackend) SendKeys(ctx context.Context, paneID, text string, enter bool) error {
 	if err := b.Initialize(ctx); err != nil {
 		return err
 	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.sendKeysToCurrentPaneLocked(ctx, text, enter)
+	return b.sendKeysToCurrentPaneLocked(ctx, paneID, text, enter)
 }
 
 // ReadScreen 读取 tmux 当前屏幕及历史输出。
-func (b *TmuxBackend) ReadScreen(ctx context.Context) (string, error) {
+func (b *TmuxBackend) ReadScreen(ctx context.Context, paneID string) (string, error) {
 	if err := b.Initialize(ctx); err != nil {
 		return "", err
 	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.readCurrentPaneLocked(ctx)
+	return b.readCurrentPaneLocked(ctx, paneID)
 }
 
 // ClearScreen 清理 tmux 屏幕和历史输出。
-func (b *TmuxBackend) ClearScreen(ctx context.Context) error {
+func (b *TmuxBackend) ClearScreen(ctx context.Context, paneID string) error {
 	if err := b.Initialize(ctx); err != nil {
 		return err
 	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.clearCurrentPaneLocked(ctx)
+	return b.clearCurrentPaneLocked(ctx, paneID)
 }
 
 // Interrupt 向 tmux 前台进程发送 Ctrl+C。
-func (b *TmuxBackend) Interrupt(ctx context.Context) (bool, error) {
+func (b *TmuxBackend) Interrupt(ctx context.Context, paneID string) (bool, error) {
 	if err := b.Initialize(ctx); err != nil {
 		return false, err
 	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.interruptCurrentPaneLocked(ctx)
+	return b.interruptCurrentPaneLocked(ctx, paneID)
 }
 
 // IsRunning 检测 tmux 前台是否仍有非 shell 进程在运行。
-func (b *TmuxBackend) IsRunning(ctx context.Context) (bool, error) {
+func (b *TmuxBackend) IsRunning(ctx context.Context, paneID string) (bool, error) {
 	if err := b.Initialize(ctx); err != nil {
 		return false, err
 	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.isCurrentPaneRunningLocked(ctx)
+	return b.isCurrentPaneRunningLocked(ctx, paneID)
 }
 
 // PanePID 返回 tmux pane 对应 shell 的进程号。
-func (b *TmuxBackend) PanePID(ctx context.Context) (*int, error) {
+func (b *TmuxBackend) PanePID(ctx context.Context, paneID string) (*int, error) {
 	if err := b.Initialize(ctx); err != nil {
 		return nil, err
 	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.currentPanePIDLocked(ctx)
+	return b.currentPanePIDLocked(ctx, paneID)
 }
 
 // CurrentWorkingDir 返回 tmux pane 当前工作目录。
-func (b *TmuxBackend) CurrentWorkingDir(ctx context.Context) (string, error) {
+func (b *TmuxBackend) CurrentWorkingDir(ctx context.Context, paneID string) (string, error) {
 	if err := b.Initialize(ctx); err != nil {
 		return "", err
 	}
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.currentPaneWorkingDirLocked(ctx)
+	return b.currentPaneWorkingDirLocked(ctx, paneID)
 }
 
 func (b *TmuxBackend) runTmuxLocked(ctx context.Context, args ...string) (string, error) {
 	out, err := b.runner.Run(ctx, args...)
 	if err != nil && isTmuxSessionMissing(out) {
-		b.resetPoolStateLocked()
+		b.resetSessionStateLocked()
 	}
 	return out, err
 }

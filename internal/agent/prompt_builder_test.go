@@ -35,7 +35,7 @@ func TestPromptBuilderBuildMessages(t *testing.T) {
 		BaseEvent:   types.BaseEvent{Source: types.SourceEnvironment},
 		ActionID:    "2",
 		ToolName:    "bash",
-		Observation: terminalpkg.NewTerminalObservation("ls -la", "", nil, false, 0, "file-a\nfile-b"),
+		Observation: terminalpkg.NewTerminalObservation("ls -la", "", "", nil, false, 0, "file-a\nfile-b"),
 	})
 
 	builder := NewPromptBuilder()
@@ -229,7 +229,7 @@ func TestEventToMessage_ObservationRejectionOverridesContent(t *testing.T) {
 		ActionID:        "1",
 		ToolName:        "bash",
 		RejectionReason: "requires approval",
-		Observation:     terminalpkg.NewTerminalObservation("rm -rf /", "", nil, false, 1, "should be ignored"),
+		Observation:     terminalpkg.NewTerminalObservation("rm -rf /", "", "", nil, false, 1, "should be ignored"),
 	})
 	if !ok {
 		t.Fatal("expected observation event to be converted")

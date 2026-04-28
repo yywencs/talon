@@ -7,6 +7,9 @@ import (
 )
 
 func validateAction(action *TerminalAction) error {
+	if strings.TrimSpace(action.PaneID) == "" {
+		return fmt.Errorf("pane_id is empty")
+	}
 	if !action.IsInput && !action.Reset && strings.TrimSpace(action.Command) == "" {
 		return fmt.Errorf("command is empty")
 	}
