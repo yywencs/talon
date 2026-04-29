@@ -1,58 +1,56 @@
-# sandbox phase-3 terminal runtime integration SPEC
+# sandbox phase-5 resource and recovery SPEC
 
 ## Scope
 
-- 本文件只约束 `internal/sandbox` 的阶段 3 实现：与 terminal 的运行环境装配。
-- 当前阶段的目标是：让 terminal 在“当前运行环境”里执行命令，但 terminal 本身不需要知道底层是不是 Docker。
+- 本文件只约束 `internal/sandbox` 的阶段 5 实现：资源限制、失败恢复、闲置清理与可观测性。
+- 当前阶段目标是：在阶段 4 已具备最小安全控制闭环的前提下，把 sandbox 从“可控执行”继续收敛到“有资源边界、可恢复、可回收、可观测”的执行系统。
 - 当前阶段只解决以下问题：
-  - 如何把宿主机 runtime 或 sandbox runtime 统一抽象成 terminal 可消费的最小执行能力
-  - 如何在 terminal / tmux backend 创建时注入当前运行环境
-  - 如何保持 terminal 现有 `pane_id`、`is_input`、`reset`、固定 pane 语义不变
-  - 如何确保同一条 terminal 会话在整个生命周期内绑定同一种 runtime
-- 当前阶段允许复用阶段 2 已有的 Docker sandbox，但 Docker 只是某种 runtime 实现，不应暴露为 terminal action 级概念。
-- 当前阶段不要求接入风险分级自动切换，不要求实现完整权限或资源限制，也不要求让所有工具立即迁移到 sandbox。
+  - 为 sandbox 补稳定的内存与进程数上限
+  - 为 sandbox 补最小失败恢复语义，确保容器异常退出、被删除或不可用时返回稳定状态并可重建
+  - 为 sandbox 补闲置清理能力，避免容器长期泄漏
+  - 为 sandbox 补资源与恢复相关的结构化可观测字段，并继续复用 `pkg/observability`
+- 当前阶段资源上限固定为：
+  - Memory：`1GiB`
+  - PIDs / Process：`128`
+- 当前阶段不要求实现 CPU 限制；不得为了“资源限制完整性”额外引入 CPU quota、cpuset 或 shares 控制。
+- 当前阶段不要求实现网络隔离、危险命令拦截、细粒度 cgroup 调优、自动重试执行编排或跨会话持久化恢复。
 
 ## Constraints
 
-- `terminal` 必须继续只面向“当前运行环境”执行命令；不得在 action、observation 或工具描述中新增 `docker=true`、`runtime=sandbox` 之类的显式字段。
-- 当前阶段不得修改 terminal 的既有行为语义，包括 `pane_id`、`is_input`、`reset`、固定 pane 绑定、pending 生命周期和 observation 结构。
-- 同一条 terminal 会话一旦创建并绑定某种 runtime，在该会话生命周期内不得在宿主机 runtime 与 sandbox runtime 之间中途切换。
-- 当前阶段不得要求大模型在每条 terminal 命令上显式声明运行位置；运行位置应由上层装配层在会话创建或 backend 初始化时决定。
-- 当前阶段允许 `internal/tool/terminal` 依赖一个最小执行能力接口，但不得直接依赖 `DockerSandbox` 具体类型或 Docker 细节。
-- 当前阶段允许引入 host runtime 与 sandbox runtime 两种实现，但它们必须通过统一最小接口暴露能力，例如运行命令、查找二进制或等价 runner 能力。
-- 当前阶段不得在 `terminal_tool.go`、`execute.go`、`TmuxBackend` 中加入“按风险等级自动切换到 sandbox”的业务逻辑；风险判定和 runtime 选择必须留在更上层装配代码。
-- 当前阶段不得实现危险命令识别、权限策略、目录读写白名单、CPU / Memory / Process 限制、网络隔离、审计增强或复杂恢复机制。
-- 当前阶段与 terminal 的装配必须保持最小，只覆盖后续 `TmuxBackend` 真正需要的执行能力；不要提前扩张成完整 runtime 管理框架。
-- 当前阶段若 `TmuxBackend` 需要 runner 注入，必须保持其对宿主机和 sandbox 的无感知；它只知道当前 runner 能执行命令，不知道底层是不是 Docker。
-- 当前阶段默认 Docker 镜像仍使用 `golang:alpine`；但这属于 sandbox runtime 内部默认值，不得泄漏为 terminal 的显式配置语义。
-- 当前阶段容器启动、命令执行和 runner 注入逻辑必须可测试；测试应优先使用 mock runner，避免依赖真实 Docker 环境。
-- 当前阶段允许继续保留默认占位工厂或默认宿主机行为，但必须能显式构造“绑定 sandbox runtime 的 terminal backend”。
-- 当前阶段若新增导出类型、接口或构造函数，必须补中文 GoDoc 注释，并保持 Go 风格命名。
-- 当前阶段若新增 `context.md` 关联文件或目录结构，必须同步反映真实状态；禁止在文档中描述尚未实现的能力为“已完成”。
+- 当前阶段不得破坏阶段 4 已完成的目录边界、统一超时、输出截断与审计语义；新增资源与恢复能力必须与现有安全控制叠加，而不是替换。
+- 当前阶段不得破坏阶段 3 已完成的 runtime 抽象与 terminal 无感知装配语义；terminal 不得因为资源限制、恢复或清理逻辑而显式感知 Docker 细节。
+- Memory 限制必须稳定设置为 `1GiB`，PIDs / Process 限制必须稳定设置为 `128`；当前阶段不做 CPU 限制，也不得暴露形同未定义的 CPU 配置项。
+- 资源限制应在 sandbox 创建或启动时统一注入到底层 runtime，不得在 `Exec()` 链路为单条命令临时拼接另一套相互冲突的限制。
+- 资源限制命中后，sandbox 返回语义必须稳定，可区分于普通命令失败、超时、取消和输出截断；错误分类可以实现定义，但语义不得缺失。
+- 失败恢复至少必须覆盖以下场景：容器已退出、容器被外部删除、启动失败后残留脏状态、关闭时资源已部分不存在。上述场景必须具备稳定状态收敛，不得让 sandbox 永久卡在“看似可用但实际不可执行”的状态。
+- 恢复语义以“状态修复和可重建”为主，不要求自动重放上一条命令；不得在用户无感知的情况下对已失败命令做隐式重试。
+- 闲置清理必须基于可定义且可测试的闲置判定，例如最近一次成功创建、启动、执行或交互活动时间；不得依赖不可观测的隐式全局状态。
+- 闲置清理必须优先保证幂等性和安全释放：重复清理、清理已关闭容器、清理已被外部删除的容器都应稳定返回，不得放大为新的致命错误。
+- 可观测性必须继续复用 `pkg/observability` 已提供的 `Tracer`、`Span`、`Attribute`、`Event` 与导出能力；不得在 `internal/sandbox` 内再平行设计一套独立审计或指标框架。
+- 当前阶段至少应补充以下可观测语义：`memory_limit_bytes`、`pid_limit`、`recovery_attempted`、`recovery_result`、`cleanup_reason`、`idle_duration`、`cleanup_result`；字段名可调整，但语义不得缺失。
+- 可观测字段应以结构化 attributes / events 为主；大体积输出、容器 inspect 原文或诊断日志不得直接塞入 Span attributes，必要时只能记录摘要、大小和引用位置。
+- 当前阶段若新增导出类型、接口、配置或构造函数，必须补中文 GoDoc 注释，并保持 Go 风格命名，若无必要不要新增文件。
 
 ## Definition of Done
 
-- `internal/sandbox` 与 `internal/tool/terminal` 之间存在一组明确的最小执行能力边界，可支撑 terminal 在“当前运行环境”里执行命令。
-- 至少存在一组统一抽象，用于表达：
-  - 宿主机运行环境
-  - sandbox 运行环境
-  - terminal 可消费的最小 runner / runtime provider 能力
-- `TmuxBackend` 或其等价适配层可以在不感知 Docker 的前提下，使用注入的当前 runtime 执行 `tmux` 命令。
-- terminal 的 action、observation 和交互语义保持兼容，不需要新增显式 Docker 字段。
-- 至少存在一种显式装配方式，可以创建“宿主机 terminal backend”和“sandbox terminal backend”，但二者对 terminal 调用面保持一致。
-- 同一条 terminal 会话在创建后会稳定绑定其 runtime，不会在执行途中漂移。
-- 若当前 runtime 初始化、命令执行或关闭失败，错误行为必须稳定、可预期、可测试。
+- sandbox 在创建或启动时会稳定施加 `1GiB` 内存限制和 `128` 个进程数限制，并能通过测试断言到底层参数或等价 runtime 配置。
+- sandbox 在当前阶段不会引入 CPU 限制，且对外语义明确，不会出现“看似支持但实际未生效”的 CPU 配置。
+- sandbox 在容器异常退出、被删除或启动失败残留状态下，能够稳定收敛状态，并允许上层显式关闭或重建，不会长期停留在错误的可运行状态。
+- sandbox 具备最小闲置清理能力；超过闲置阈值的实例可被稳定回收，重复回收或回收不存在容器时行为稳定。
+- 资源限制、恢复动作和闲置清理都会写入最小可观测字段集合，并通过 `pkg/observability` 导出。
+- 可观测记录可区分成功、普通失败、超时、取消、资源限制命中、恢复成功、恢复失败和闲置清理等场景。
 - `internal/sandbox/context.md` 与 `internal/sandbox/spec.md` 保持一致，不出现范围漂移。
 
 ## Test Contract
 
-- 当前阶段测试以单元测试为主，禁止依赖真实 Docker、真实 tmux 或外部系统环境。
-- 测试重点应放在 runtime 抽象、runner 注入和 terminal 侧无感知装配，而不是完整容器集成。
+- 当前阶段测试以单元测试为主；涉及真实 Docker 的测试必须默认跳过，并通过显式环境变量开启。
 - 至少覆盖以下场景：
-  - host runtime 与 sandbox runtime 均可被适配成同一种最小执行接口
-  - terminal backend 创建时可注入不同 runtime，而无需修改 action
-  - 注入 sandbox runtime 后，terminal 侧调用面不出现 Docker 显式语义
-  - 同一条会话在一次创建后会持续使用同一个 runtime
-  - runtime 命令执行失败时返回稳定且可断言的错误
-- 如果补充真实 Docker 集成测试，必须默认跳过，并通过显式环境变量开启。
-- 当前阶段禁止为了覆盖率而写低价值样板测试；优先测试 runner 注入、runtime 绑定和 terminal 无感知语义。
+  - Docker sandbox 创建或启动时会稳定带上 `1GiB` 内存限制
+  - Docker sandbox 创建或启动时会稳定带上 `128` 个 PIDs / Process 限制
+  - 当前阶段不会拼接 CPU 限制参数
+  - sandbox 在容器已退出、被删除或启动失败残留状态下返回稳定错误语义，并能把状态收敛到可关闭或可重建状态
+  - sandbox 闲置超过阈值后会被清理，未超过阈值时不会误清理
+  - 重复清理、清理已关闭 sandbox、清理已不存在容器时行为稳定
+  - 资源限制命中、恢复动作和闲置清理都会写入最小可观测字段集合
+  - 可观测记录继续通过 `pkg/observability` 记录 attributes / events，而不是旁路自定义框架
+- 禁止为了覆盖率编写低价值样板测试；优先验证资源边界、状态收敛、闲置回收和可观测字段完整性。

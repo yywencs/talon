@@ -1,6 +1,9 @@
 package sandbox
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // UnimplementedSandbox 表示当前阶段的 sandbox 占位实现。
 type UnimplementedSandbox struct {
@@ -37,6 +40,13 @@ func (s *UnimplementedSandbox) Exec(ctx context.Context, command string, args ..
 	return "", ErrRuntimeNotImplemented
 }
 
+// CleanupIfIdle 对占位实现保持稳定空操作。
+func (s *UnimplementedSandbox) CleanupIfIdle(ctx context.Context, idleThreshold time.Duration) (bool, error) {
+	_ = ctx
+	_ = idleThreshold
+	return false, nil
+}
+
 // Info 返回 sandbox 占位实现的状态快照。
 func (s *UnimplementedSandbox) Info() Info {
 	return Info{
@@ -45,5 +55,7 @@ func (s *UnimplementedSandbox) Info() Info {
 		ContainerWorkDir: s.config.ContainerWorkDir,
 		Image:            s.config.Image,
 		ContainerName:    s.config.ContainerName,
+		OutputLimitBytes: s.config.OutputLimitBytes,
+		ReadOnlyMounts:   append([]Mount(nil), s.config.ReadOnlyMounts...),
 	}
 }
