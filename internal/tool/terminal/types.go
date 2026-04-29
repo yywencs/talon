@@ -86,3 +86,47 @@ const ToolDescription = `# 命令执行相关规则完整翻译
 	### 终端重置
 	* pane 重置：如果某条终端交互链路失去响应，可以在同一个 "pane_id" 上设置 "reset=true" 来重置该 pane 绑定。
 	* 警告：重置会终止当前 "pane_id" 对应的前台进程，并丢失该交互链路中已设置的环境变量与工作目录变更。仅在当前 pane 无法继续交互时使用。`
+
+func errorOutput(command, workingDir, paneID string, pid *int, timeout bool, exitCode int, err error) *TerminalObservation {
+	return NewTerminalErrorObservation(command, workingDir, paneID, pid, timeout, exitCode, err)
+}
+
+// NewTerminalObservation 构造终端工具的 observation 结果。
+func NewTerminalObservation(command, workingDir, paneID string, pid *int, timeout bool, exitCode int, output string) *TerminalObservation {
+	obs := &TerminalObservation{
+		BaseObservation: types.BaseObservation{
+			BaseEvent: types.BaseEvent{
+				Source: types.SourceEnvironment,
+			},
+			Content: []types.Content{
+				types.TextContent{
+					Text: output,
+				},
+			},
+			ErrorStatus: timeout || exitCode != 0,
+		},
+		Command:  stringPtr(command),
+		Timeout:  timeout,
+		Metadata: CmdOutputMetadata{PID: pid, WorkingDir: workingDir, PaneID: paneID},
+	}
+	if exitCode != 0 || output != "" || pid != nil {
+		obs.ExitCode = intPtr(exitCode)
+	}
+	return obs
+}
+
+// NewTerminalErrorObservation 构造终端工具的错误 observation 结果。
+func NewTerminalErrorObservation(command, workingDir, paneID string, pid *int, timeout bool, exitCode int, err error) *TerminalObservation {
+	return NewTerminalObservation(command, workingDir, paneID, pid, timeout, exitCode, BuildTerminalErrorMessage(err))
+}
+
+func intPtr(v int) *int {
+	return &v
+}
+
+func stringPtr(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
+}

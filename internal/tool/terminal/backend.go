@@ -7,6 +7,12 @@ import (
 
 var errPTYBackendNotImplemented = errors.New("pty backend is not implemented yet")
 
+// CommandRunner 定义 terminal 在当前运行环境中执行命令所需的最小能力。
+type CommandRunner interface {
+	Run(ctx context.Context, name string, args ...string) (string, error)
+	LookPath(ctx context.Context, file string) (string, error)
+}
+
 // TerminalBackend 定义终端会话后端需要实现的统一能力。
 type TerminalBackend interface {
 	Initialize(ctx context.Context) error

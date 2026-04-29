@@ -197,7 +197,8 @@ func (r *fakeTmuxRunner) Run(ctx context.Context, args ...string) (string, error
 	return runFunc(args...)
 }
 
-func (r *fakeTmuxRunner) LookPath(file string) (string, error) {
+func (r *fakeTmuxRunner) LookPath(ctx context.Context, file string) (string, error) {
+	_ = ctx
 	if path, ok := r.lookPath[file]; ok {
 		return path, nil
 	}
