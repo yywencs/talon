@@ -1,56 +1,44 @@
-# sandbox phase-5 resource and recovery SPEC
+# sandbox default docker routing SPEC
 
 ## Scope
 
-- 本文件只约束 `internal/sandbox` 的阶段 5 实现：资源限制、失败恢复、闲置清理与可观测性。
-- 当前阶段目标是：在阶段 4 已具备最小安全控制闭环的前提下，把 sandbox 从“可控执行”继续收敛到“有资源边界、可恢复、可回收、可观测”的执行系统。
+- 本文件只约束当前这一步的实现：由上层装配层决定“当前运行环境”，并把默认工具入口切到 Docker sandbox。
+- 当前阶段目标是：在不破坏已有 runtime 抽象和 terminal 无感装配语义的前提下，让工具默认运行在 Docker sandbox，而不是宿主机 tmux backend。
 - 当前阶段只解决以下问题：
-  - 为 sandbox 补稳定的内存与进程数上限
-  - 为 sandbox 补最小失败恢复语义，确保容器异常退出、被删除或不可用时返回稳定状态并可重建
-  - 为 sandbox 补闲置清理能力，避免容器长期泄漏
-  - 为 sandbox 补资源与恢复相关的结构化可观测字段，并继续复用 `pkg/observability`
-- 当前阶段资源上限固定为：
-  - Memory：`1GiB`
-  - PIDs / Process：`128`
-- 当前阶段不要求实现 CPU 限制；不得为了“资源限制完整性”额外引入 CPU quota、cpuset 或 shares 控制。
-- 当前阶段不要求实现网络隔离、危险命令拦截、细粒度 cgroup 调优、自动重试执行编排或跨会话持久化恢复。
+  - 收敛默认运行环境选择入口，明确默认路径走 sandbox runtime
+  - 默认创建并使用 Docker-backed sandbox 作为工具执行环境
+  - 保留宿主机 runtime 作为显式、可控的非默认路径
+  - 明确 Docker sandbox 准备失败时的稳定返回语义，避免静默回退到宿主机
+- 当前阶段继续复用现有 `internal/sandbox/runtime.go`、`internal/sandbox/terminal_runtime.go`、`internal/sandbox/manager.go` 和 terminal backend 注入能力，不在 `internal/tool/terminal` 包内新增 Docker 感知逻辑。
+- 当前阶段不要求实现风险分级自动选择、危险命令判定、资源限制增强、恢复编排、闲置清理或新的安全策略下沉。
 
 ## Constraints
 
-- 当前阶段不得破坏阶段 4 已完成的目录边界、统一超时、输出截断与审计语义；新增资源与恢复能力必须与现有安全控制叠加，而不是替换。
-- 当前阶段不得破坏阶段 3 已完成的 runtime 抽象与 terminal 无感知装配语义；terminal 不得因为资源限制、恢复或清理逻辑而显式感知 Docker 细节。
-- Memory 限制必须稳定设置为 `1GiB`，PIDs / Process 限制必须稳定设置为 `128`；当前阶段不做 CPU 限制，也不得暴露形同未定义的 CPU 配置项。
-- 资源限制应在 sandbox 创建或启动时统一注入到底层 runtime，不得在 `Exec()` 链路为单条命令临时拼接另一套相互冲突的限制。
-- 资源限制命中后，sandbox 返回语义必须稳定，可区分于普通命令失败、超时、取消和输出截断；错误分类可以实现定义，但语义不得缺失。
-- 失败恢复至少必须覆盖以下场景：容器已退出、容器被外部删除、启动失败后残留脏状态、关闭时资源已部分不存在。上述场景必须具备稳定状态收敛，不得让 sandbox 永久卡在“看似可用但实际不可执行”的状态。
-- 恢复语义以“状态修复和可重建”为主，不要求自动重放上一条命令；不得在用户无感知的情况下对已失败命令做隐式重试。
-- 闲置清理必须基于可定义且可测试的闲置判定，例如最近一次成功创建、启动、执行或交互活动时间；不得依赖不可观测的隐式全局状态。
-- 闲置清理必须优先保证幂等性和安全释放：重复清理、清理已关闭容器、清理已被外部删除的容器都应稳定返回，不得放大为新的致命错误。
-- 可观测性必须继续复用 `pkg/observability` 已提供的 `Tracer`、`Span`、`Attribute`、`Event` 与导出能力；不得在 `internal/sandbox` 内再平行设计一套独立审计或指标框架。
-- 当前阶段至少应补充以下可观测语义：`memory_limit_bytes`、`pid_limit`、`recovery_attempted`、`recovery_result`、`cleanup_reason`、`idle_duration`、`cleanup_result`；字段名可调整，但语义不得缺失。
-- 可观测字段应以结构化 attributes / events 为主；大体积输出、容器 inspect 原文或诊断日志不得直接塞入 Span attributes，必要时只能记录摘要、大小和引用位置。
-- 当前阶段若新增导出类型、接口、配置或构造函数，必须补中文 GoDoc 注释，并保持 Go 风格命名，若无必要不要新增文件。
+- 当前阶段不得破坏阶段 4 已完成的目录边界、统一超时、输出截断与审计语义；默认切换到 Docker sandbox 后，这些能力必须继续生效。
+- 当前阶段不得破坏阶段 3 已完成的 runtime 抽象与 terminal 无感知装配语义；`internal/tool/terminal` 不得显式判断“当前是不是 Docker”。
+- 默认路径必须明确指向 Docker sandbox；除显式配置或显式调用宿主机入口外，不得继续让宿主机 runtime 作为默认行为。
+- Docker sandbox 创建、装配或预热失败时，必须返回稳定错误；不得为了“可用性”静默降级到宿主机执行，以免破坏隔离预期。
+- 宿主机 runtime 可以保留，但只能作为显式、可测试的非默认路径；不得通过隐藏分支在同一套默认入口里自动回退。
+- 同一个逻辑终端会话一旦绑定某种 runtime，就不得在同一个 `pane_id` 内中途在宿主机和 sandbox 之间切换。
+- 当前阶段不下沉风险判定；是否需要未来引入风险分级、按命令选择 host/sandbox，仍由上层装配策略后续决定。
+- 当前阶段优先复用已有构造和注入点；若新增导出类型、接口、配置或构造函数，必须补中文 GoDoc 注释，并保持 Go 风格命名，若无必要不要新增文件。
 
 ## Definition of Done
 
-- sandbox 在创建或启动时会稳定施加 `1GiB` 内存限制和 `128` 个进程数限制，并能通过测试断言到底层参数或等价 runtime 配置。
-- sandbox 在当前阶段不会引入 CPU 限制，且对外语义明确，不会出现“看似支持但实际未生效”的 CPU 配置。
-- sandbox 在容器异常退出、被删除或启动失败残留状态下，能够稳定收敛状态，并允许上层显式关闭或重建，不会长期停留在错误的可运行状态。
-- sandbox 具备最小闲置清理能力；超过闲置阈值的实例可被稳定回收，重复回收或回收不存在容器时行为稳定。
-- 资源限制、恢复动作和闲置清理都会写入最小可观测字段集合，并通过 `pkg/observability` 导出。
-- 可观测记录可区分成功、普通失败、超时、取消、资源限制命中、恢复成功、恢复失败和闲置清理等场景。
+- 默认工具入口会创建并使用 Docker sandbox 对应的 runtime / backend，默认命令执行不再直接落到宿主机 tmux backend。
+- 现有宿主机 runtime 入口仍可保留，但必须是显式路径，语义上清楚区分“默认 sandbox”与“显式 host”。
+- terminal 包仍只消费统一 backend / runner 能力；代码结构上不引入 Docker 特化判断，也不把风险判定下沉到 terminal 内部。
+- 默认 Docker 路径在 sandbox 创建或预热失败时会稳定返回错误，不会静默回退到宿主机继续执行。
+- 相关单元测试能够断言默认路径、显式 host 路径和失败语义，避免回归到“默认宿主机执行”。
 - `internal/sandbox/context.md` 与 `internal/sandbox/spec.md` 保持一致，不出现范围漂移。
 
 ## Test Contract
 
 - 当前阶段测试以单元测试为主；涉及真实 Docker 的测试必须默认跳过，并通过显式环境变量开启。
 - 至少覆盖以下场景：
-  - Docker sandbox 创建或启动时会稳定带上 `1GiB` 内存限制
-  - Docker sandbox 创建或启动时会稳定带上 `128` 个 PIDs / Process 限制
-  - 当前阶段不会拼接 CPU 限制参数
-  - sandbox 在容器已退出、被删除或启动失败残留状态下返回稳定错误语义，并能把状态收敛到可关闭或可重建状态
-  - sandbox 闲置超过阈值后会被清理，未超过阈值时不会误清理
-  - 重复清理、清理已关闭 sandbox、清理已不存在容器时行为稳定
-  - 资源限制命中、恢复动作和闲置清理都会写入最小可观测字段集合
-  - 可观测记录继续通过 `pkg/observability` 记录 attributes / events，而不是旁路自定义框架
-- 禁止为了覆盖率编写低价值样板测试；优先验证资源边界、状态收敛、闲置回收和可观测字段完整性。
+  - 默认工具入口会选择 sandbox runtime / Docker backend，而不是宿主机 backend
+  - 显式宿主机入口仍可工作，且不会被默认路径误复用
+  - 默认 Docker 路径会触发 sandbox 创建或预热逻辑
+  - sandbox 创建或预热失败时返回稳定错误，且不会静默回退到宿主机执行
+  - terminal 包仍通过统一 runner / backend 执行，不需要显式知道 Docker 细节
+- 禁止为了覆盖率编写低价值样板测试；优先验证默认路由、失败语义和装配边界是否稳定。

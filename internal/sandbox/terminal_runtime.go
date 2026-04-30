@@ -2,17 +2,61 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 
 	terminalpkg "github.com/wen/opentalon/internal/tool/terminal"
 )
+
+type sandboxTmuxBackend struct {
+	terminalpkg.TerminalBackend
+	sandbox Sandbox
+}
+
+// SandboxInfo 返回当前 sandbox tmux backend 绑定的 sandbox 状态快照。
+func (b *sandboxTmuxBackend) SandboxInfo() Info {
+	if b == nil || b.sandbox == nil {
+		return Info{}
+	}
+	return b.sandbox.Info()
+}
+
+type unavailableRuntime struct {
+	err error
+}
+
+func (r unavailableRuntime) Prepare(ctx context.Context) error {
+	_ = ctx
+	return r.err
+}
+
+func (r unavailableRuntime) Close(ctx context.Context) error {
+	_ = ctx
+	return nil
+}
+
+func (r unavailableRuntime) Run(ctx context.Context, name string, args ...string) (string, error) {
+	_ = ctx
+	_ = name
+	_ = args
+	return "", r.err
+}
+
+func (r unavailableRuntime) LookPath(ctx context.Context, file string) (string, error) {
+	_ = ctx
+	_ = file
+	return "", r.err
+}
 
 // NewSandboxTmuxBackend 创建绑定 sandbox runtime 的 tmux backend。
 func NewSandboxTmuxBackend(workingDir string, sb Sandbox) terminalpkg.TerminalBackend {
 	runtime := NewSandboxRuntime(sb)
 	if runtime == nil {
-		return terminalpkg.NewTmuxBackend(workingDir)
+		runtime = unavailableRuntime{err: fmt.Errorf("sandbox runtime is unavailable")}
 	}
-	return terminalpkg.NewTmuxBackendWithRunner(workingDir, runtime)
+	return &sandboxTmuxBackend{
+		TerminalBackend: terminalpkg.NewTmuxBackendWithRunner(workingDir, runtime),
+		sandbox:         sb,
+	}
 }
 
 // NewHostTmuxBackend 创建绑定宿主机 runtime 的 tmux backend。

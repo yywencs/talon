@@ -13,12 +13,15 @@ import (
 	"github.com/wen/opentalon/pkg/observability"
 )
 
-func TestManagerCreateReturnsPlaceholderSandbox(t *testing.T) {
+func TestManagerCreateReturnsDockerSandboxByDefault(t *testing.T) {
 	manager := NewManager(nil)
 
 	sb := manager.Create(Config{WorkingDir: "/tmp/project"})
 	if sb == nil {
 		t.Fatal("expected sandbox instance")
+	}
+	if _, ok := sb.(*DockerSandbox); !ok {
+		t.Fatalf("expected DockerSandbox, got %T", sb)
 	}
 
 	info := sb.Info()
@@ -473,6 +476,32 @@ func TestSandboxTmuxBackendUsesInjectedRuntimeWithoutDockerField(t *testing.T) {
 	}
 }
 
+func TestDefaultTmuxBackendUsesManagerCreatedSandbox(t *testing.T) {
+	sb := &fakeSandbox{
+		info: Info{Status: StatusCreated},
+	}
+
+	backend := NewSandboxTmuxBackend("/tmp/project", sb)
+	if err := backend.Initialize(context.Background()); err != nil {
+		t.Fatalf("initialize backend: %v", err)
+	}
+	if sb.startCalls == 0 {
+		t.Fatal("expected sandbox runtime to be prepared")
+	}
+}
+
+func TestSandboxTmuxBackendWithNilSandboxReturnsStableError(t *testing.T) {
+	backend := NewSandboxTmuxBackend("/tmp/project", nil)
+
+	err := backend.Initialize(context.Background())
+	if err == nil {
+		t.Fatal("expected initialize error")
+	}
+	if !strings.Contains(err.Error(), "sandbox runtime is unavailable") {
+		t.Fatalf("expected sandbox unavailable error, got %v", err)
+	}
+}
+
 func TestHostRuntimeLookPathUsesCurrentEnvironment(t *testing.T) {
 	runtime := NewHostRuntime()
 
@@ -510,6 +539,16 @@ func (r *fakeDockerRunner) LookPath(ctx context.Context, file string) (string, e
 		return path, nil
 	}
 	return "", fmt.Errorf("missing %s", file)
+}
+
+type fakeFactory struct {
+	sandbox Sandbox
+	configs []Config
+}
+
+func (f *fakeFactory) Create(config Config) Sandbox {
+	f.configs = append(f.configs, config)
+	return f.sandbox
 }
 
 type fakeSandbox struct {

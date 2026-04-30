@@ -1,63 +1,55 @@
-# terminal 4F tmux fixed-pane interaction SPEC
+# terminal session-scoped runtime reuse SPEC
 
 ## Scope
 
-- 本文件只约束 `4F`：将当前共享 `tmux session` 下的 `pane` 生命周期，从“空闲队列池化复用”收敛为“按逻辑 `pane_id` 长期固定绑定同一个 `pane`”。
-- `4F` 的目标是：同一 tool 实例继续只维护一个共享 `tmux session`，但每个逻辑 `pane_id` 在该 session 内长期绑定独立 `window/panel`；连续普通命令、`is_input=true`、空输入拉输出和 `C-c` 中断都稳定命中同一个底层 `pane`。
-- `4F` 的核心问题是：普通命令完成后不再归还 `pane` 到公共池，而是保留原绑定，让同一条逻辑终端链路持续保留 shell 上下文、工作目录、环境变量和交互语义。
-- `4F` 仍保持多活能力：不同逻辑 `pane_id` 可以同时存在，各自绑定独立 `window/panel` 并发执行、并发续写、并发拉输出与局部 reset。
-- `4F` 仍保持“上层决定运行环境，tool 只在当前运行环境执行”的边界，不要求区分宿主机、Docker 或 remote，也不要求引入 `PTY` 新能力。
+- 本文件只约束 terminal 当前下一步改造：把默认 `bash` 路径从“每次调用临时创建 executor/backend/sandbox”收敛为“按 `session.id` 复用会话级 executor/backend/runtime/sandbox”。
+- 当前步骤目标是：在保持 terminal 现有 `pane_id` 固定绑定语义不变的前提下，让同一逻辑会话内的多次 `bash` 调用稳定复用同一个 `Executor`、同一个 `TmuxBackend` 和同一个 Docker sandbox 容器。
+- 当前步骤只解决以下问题：
+  - `bash` 默认 Docker 路径的会话级复用主键与生命周期归属
+  - executor/backend/runtime/sandbox 的创建、缓存、失效淘汰与释放
+  - sandbox 初始化失败、依赖缺失或 backend 损坏时的稳定清理语义
+  - 默认 sandbox 镜像与 `TmuxBackend` 对 `tmux` / `bash` 依赖之间的一致性
+- 当前步骤不要求实现 remote runtime、agent-server、容器池预热、复杂失败恢复、命令拦截或更细粒度权限系统。
 
 ## Constraints
 
 - 工具名必须继续是 `bash`。
-- action 输入字段继续使用 `command`、`pane_id`、`is_input`、`timeout`、`reset`；`pane_id` 必须由上层显式传入，且表示稳定的逻辑终端链路标识，而不是底层 `tmux` pane id。
-- 未提供 `pane_id` 的调用必须返回稳定错误；禁止依赖“当前唯一活跃命令”之类的隐式猜测路由。
-- `working_dir` 必须继续作为当前运行环境参数或共享 session / 新建 pane 初始化参数存在，不得回流到 action。
-- 同一 tool 实例上的连续调用，在 `reset=false` 时必须继续优先复用同一个共享 `tmux session`，不得退回到“一条命令启动一个新 shell”的语义。
-- 内部状态必须收敛为：共享 `session` 状态、`pane_id -> pending` 状态映射、`pane_id -> window/panel` 长期绑定状态映射。
-- 不得再维护“空闲 `panel` 队列”“最大空闲数”“归还后等待复用”这类公共池化状态；普通命令完成后，其底层 `pane` 必须继续归属于原 `pane_id`。
-- 同一个逻辑 `pane_id` 在任意时刻最多只允许绑定一个底层 `window/panel`；同一个逻辑 `pane_id` 不得并发创建第二条新的 pending 交互链路。
-- 不同逻辑 `pane_id` 之间必须允许并发；多个普通命令可以在同一个共享 `session` 的不同固定 `window/panel` 上同时运行。
-- 当 `is_input=false` 且 `reset=false` 时，普通命令必须基于当前逻辑 `pane_id` 获取其长期绑定的 `window/panel`；若该 `pane_id` 尚未绑定 pane，才允许在共享 session 下创建新的 `window/panel`。
-- 普通命令执行完成后，只能清理该 `pane_id` 的 pending 状态，不得销毁固定 `pane`，也不得解除绑定。
-- 当 `is_input=true` 且 `reset=false` 且 `command` 非空时，必须把输入发送到当前逻辑 `pane_id` 已绑定的同一个固定 `window/panel` 前台进程，而不是新开 shell 执行。
-- 当 `is_input=true` 且 `reset=false` 且 `command` 为空时，必须允许基于当前逻辑 `pane_id` 空输入拉输出。
-- 当 `is_input=true` 且 `command` 为 `C-c`、`^C` 或等价中断指令时，必须映射为对当前逻辑 `pane_id` 绑定固定 `window/panel` 前台进程的中断，而不是把字面文本输入给 shell。
-- 若当前逻辑 `pane_id` 不存在活跃交互链路，则 `is_input=true` 且 `command` 非空必须返回稳定错误；`is_input=true` 且 `command` 为空时可以返回空输出，但不得隐式创建新命令或隐式分配新 `panel`。
-- 同一条逻辑 `pane_id` 链路内部，工作目录、环境变量和 shell 状态必须在其绑定的固定 `window/panel` 中持续可见；不同逻辑 `pane_id` 之间不得共享未清理状态。
-- 所有 `ReadScreen`、`SendKeys`、`Interrupt`、`PanePID`、`CurrentWorkingDir` 都必须稳定命中当前 `pane_id` 绑定的固定 pane；禁止在绑定不存在时回退到其他 pane。
-- `reset=true` 必须只表示 pane 级局部 reset：只清理当前 `pane_id` 的 pending 状态和固定绑定，并销毁该底层 `pane`；不得影响其他逻辑 `pane_id`。
-- reset 后同一个 `pane_id` 再次收到普通命令时，必须创建全新的 `window/panel`，而不是恢复旧 pane 或借用其他 `pane_id` 的 pane。
-- 若共享 `tmux session` 意外丢失或后端状态损坏，允许内部触发全局清理和重建，但不得将这种能力暴露为 action 字段。
+- action 输入字段继续使用 `command`、`pane_id`、`is_input`、`timeout`、`reset`；`working_dir` 不得回流到 action。
+- 当前 terminal 已有的固定 `pane_id -> tmux pane` 绑定语义必须保持不变；引入会话级复用后，不得退化为“一条命令一个新 shell”或“一次调用一个新 backend”。
+- `session.id` 必须作为 `bash` 默认 Docker 路径的会话级复用主键；不得仅依赖固定容器名、固定 tmux session 名或工作目录字符串来伪装复用。
+- 同一 `session.id` 下的连续 `bash` 调用，必须复用同一个 `Executor`；该 `Executor` 必须继续复用同一个 `TerminalBackend`、同一个 `Runtime` 和同一个 `Sandbox`。
+- 不同 `session.id` 之间必须隔离；不同会话不得共享同一个 `Executor`、同一个 `TmuxBackend` 或同一个 Docker 容器。
+- `pane_id` 仍然表示同一会话内的逻辑终端链路标识；`session.id` 负责会话级 executor/backend/sandbox 复用，二者职责不得混淆。
+- 宿主机 runtime 仍保留为显式非默认路径；sandbox 路径失败时不得静默回退到宿主机 runtime。
+- `TmuxBackend.Initialize()` 若因 sandbox 镜像缺少 `tmux`、缺少 `bash`、sandbox 启动失败或其他初始化错误而失败，必须清理当前已创建但不可用的 backend/runtime/sandbox，并从会话级缓存中移除失效实例。
+- 同一 `session.id` 的首次创建若失败，下次调用允许重新创建；不得把已失败实例永久留在缓存中。
+- 会话级缓存必须有明确释放语义；当会话结束、显式关闭或实现定义的空闲清理触发时，必须关闭 backend 并进一步释放 runtime/sandbox 资源。
 - `TerminalObservation` 的基础语义必须保持兼容，至少包括 `exit_code`、`timeout`、`metadata.pid`、`metadata.working_dir`。
-- 若当前运行环境缺少 `tmux`，必须返回稳定错误；所有失败路径必须返回稳定 observation error，禁止 panic。
-- 当前基础审计日志必须保持可用，且至少能定位共享 session、目标逻辑 `pane_id`、目标固定 `window/panel` 和 reset / 重建动作。
+- 当前基础审计必须保持可用；至少应能区分 `session.id`、逻辑 `pane_id`、当前 runtime 路径、sandbox/container 标识以及初始化失败/实例淘汰/释放等关键动作。
+- 默认 sandbox 镜像必须与 `TmuxBackend` 依赖保持一致；当默认路径要求在 sandbox 内运行 `tmux` 时，镜像中必须稳定提供 `tmux` 与 `bash` 或等价依赖，不得依赖运行时临时安装。
 - 导出元素和文档注释必须使用中文，并符合 GoDoc 规范。
-- 新增或删除 terminal 目录文件后，必须同步更新 `context.md`。
+- 更新 terminal 目录文件或行为契约后，必须同步更新 `context.md`。
 
 ## Definition of Done
 
-- 同一 tool 实例在 `reset=false` 的连续普通命令调用下，始终复用同一个共享 `tmux session`。
-- 同一个逻辑 `pane_id` 的连续普通命令调用，会始终命中同一个固定 `window/panel`，除非显式 `reset=true` 或底层 session 整体丢失后被内部重建。
-- 同一个逻辑 `pane_id` 的跨命令 shell 状态保持稳定，至少包括工作目录、环境变量和同一 shell 上下文的连续可见性。
-- 至少存在两个不同逻辑 `pane_id` 的普通命令能够在同一个共享 `tmux session` 的不同固定 `window/panel` 上同时运行，而不会相互阻塞或抢占同一个 pane。
-- 至少存在两条不同逻辑 `pane_id` 的需要后续输入的命令链路；后续 `is_input=true` 能继续命中各自原始固定 `window/panel`。
-- 至少存在一次空输入拉输出和一次 `C-c` 中断，都能按逻辑 `pane_id` 命中对应固定 `window/panel`。
-- 任意一个逻辑 `pane_id` 的交互命令完成或被中断后，pending 状态会被清理，但固定 pane 绑定仍然保留，可继续用于后续普通命令。
-- 默认 `reset=true` 后只会清理当前逻辑 `pane_id` 对应的活跃链路和固定 pane 绑定；其他逻辑 `pane_id` 的活跃命令与输入续写能力不受影响。
-- 同一个 `pane_id` 在 reset 后再次执行普通命令时，会得到全新的底层 pane，而不是旧 pane 或其他逻辑 `pane_id` 的 pane。
-- 底层共享 `tmux session` 意外丢失后，后续普通命令调用能够按统一策略恢复，不会留下错误的固定绑定状态。
-- `TerminalObservation` 返回结构保持兼容，且 `context.md` 已更新为最新真实状态。
+- 同一 `session.id` 下连续多次默认 `bash` 调用时，只会创建一次会话级 `Executor`。
+- 同一 `session.id` 下连续多次默认 `bash` 调用时，只会创建一次 `TmuxBackend` 和一次 Docker sandbox 容器，后续调用复用既有实例。
+- 不同 `session.id` 的调用会得到彼此隔离的 executor/backend/sandbox，不会串用 shell 状态、pane 绑定或容器实例。
+- 同一会话内现有 `pane_id` 固定绑定语义保持稳定；复用 executor/backend 后，跨命令上下文、工作目录和输入续写语义不发生回退。
+- 当 sandbox 初始化失败、镜像缺少 `tmux` / `bash`、backend 初始化失败或实例损坏时，系统会稳定返回错误，并清理当前失败实例，不留下悬空缓存或无用容器。
+- 会话结束或显式释放后，会话级 executor/backend/runtime/sandbox 会被关闭并从缓存中移除。
+- `context.md` 与 `spec.md` 已反映最新真实状态，不再描述“terminal 尚未接入 Docker runtime”的旧事实。
 
 ## Test Contract
 
-- 单元测试必须优先通过 mock `tmux` 适配层或命令执行层完成，禁止把真实 `tmux` 依赖作为单元测试前提。
-- 如需补充真实 `tmux` 的集成或 live 测试，必须默认跳过，并通过显式环境变量开启。
-- 共享 session 基线测试：连续普通命令始终复用同一个共享 `tmux session`，且验证一次 session 丢失后的重建路径。
-- 固定 pane 绑定测试：同一个 `pane_id` 首次执行会创建 pane，后续普通命令继续命中同一个固定 pane，命令完成后绑定仍然存在。
-- 跨命令状态保持测试：同一个 `pane_id` 上一条命令中的 `cd`、`export` 或等价 shell 状态修改，在下一条普通命令中仍然可见；不同 `pane_id` 之间不会共享状态。
-- 输入续写测试：`is_input=true` 的续写、空输入拉输出、`C-c` 中断都必须命中原固定 pane，且不同 `pane_id` 之间不会串线。
-- reset 测试：`reset=true` 只影响当前 `pane_id`，reset 后旧交互链路不可继续续写，下一条普通命令必须创建全新 pane。
-- 元数据与路由测试：`PanePID`、`CurrentWorkingDir`、`ReadScreen`、`SendKeys`、`Interrupt` 只会命中当前 `pane_id` 对应固定 pane，不会回退到其他 pane。
-- 超时与错误测试：固定 pane 模式下超时语义正确；分配失败、写入失败、拉输出失败、中断失败、结果解析失败或 `pane_id` 路由失败时返回稳定错误，且不会留下悬空绑定或误清理其他 `pane_id`。
+- 当前步骤测试以单元测试为主，优先通过 mock executor/backend/sandbox runner 完成；禁止把真实 Docker、真实 tmux 或真实镜像拉取作为单元测试前提。
+- 如需补充真实 Docker / tmux 集成测试，必须默认跳过，并通过显式环境变量开启。
+- 至少覆盖以下场景：
+  - 同一 `session.id` 连续调用默认 `bash` 路径时，只创建一次 executor/backend/sandbox
+  - 不同 `session.id` 会创建彼此隔离的 executor/backend/sandbox
+  - 同一 `session.id` 下多个不同 `pane_id` 仍能复用同一个 executor/backend，并保持原有固定 pane 语义
+  - sandbox 初始化失败后，失败实例会从缓存移除，并执行清理逻辑
+  - 下一次同一 `session.id` 调用在前一次失败后可以重新创建新实例
+  - 显式释放或会话结束后，缓存实例会被关闭并移除
+  - sandbox 路径失败时不会静默回退到宿主机 runtime
+- 禁止为了覆盖率编写低价值样板测试；优先验证复用边界、隔离边界、失败清理和释放语义。

@@ -8,8 +8,7 @@
 - `unimplemented.go`：提供当前阶段的 sandbox 占位实现，统一未实现生命周期行为。
 - `errors.go`：定义 sandbox 阶段 1 需要暴露的稳定错误。
 - `docker.go`：提供基于 Docker CLI runner 的最小真实 sandbox runtime，实现启动、关闭和容器内命令执行。
-- `policy.go`：定义 sandbox 阶段 4 的最小挂载与目录边界校验策略。
-- `limits.go`：定义 sandbox 输出限制、稳定截断语义和执行错误分类。
+- `docker_policy.go`：定义 Docker sandbox 的最小目录边界、只读挂载、输出限制和稳定错误分类策略。
 - `audit.go`：定义 sandbox 执行审计 span 的最小字段集合，并复用 `pkg/observability`。
 - `runtime.go`：提供“当前运行环境”的统一抽象，收敛 host runtime 与 sandbox runtime 的最小执行能力。
 - `terminal_runtime.go`：提供面向 terminal 的最小装配入口，显式创建绑定 host runtime 或 sandbox runtime 的 tmux backend。
@@ -20,21 +19,20 @@
 - `internal/sandbox` 已完成阶段 1、阶段 2、阶段 3，并已落地阶段 4 的最小安全控制闭环：当前已经具备抽象接口、默认管理入口、最小 Docker runtime、统一 runtime 抽象、terminal 装配入口以及基础安全控制。
 - 当前目标是让工具执行从“直接运行在宿主机”演进为“具备隔离、权限控制、审计与恢复能力的可控执行系统”。
 - 当前 terminal 能力已经基本收拢到 `internal/tool/terminal`：命令执行、交互式输入、`reset`、超时、输出截断、固定 `pane_id` 绑定和 backend 抽象都已具备。
-- 当前 terminal 默认仍使用宿主机 tmux backend，但 `TmuxBackend` 已新增可注入的当前运行环境 runner，后端本身不需要知道底层是不是 Docker。
+- 当前 terminal 后端本身仍保持 runtime 无感知；但默认工具入口已经切到 Docker sandbox，对应的 tmux backend 通过 runner 注入在沙箱内执行。
 - 当前 `internal/sandbox/runtime.go` 已把宿主机与 sandbox 收敛成统一的最小执行能力；host runtime 与 sandbox runtime 都可以作为“当前运行环境”注入 terminal。
 - 当前 `terminal_tool.go` 仍是兼容入口，`pane_id` 暂时可先固定，当前不需要先解决多 pane 调度问题才能开始 sandbox 基础建设。
 - 当前 sandbox 已支持最小 Docker runtime：可以创建 Docker sandbox、按默认镜像 `golang:alpine` 启动容器、约定容器内工作目录并执行基础命令。
 - 当前真实 runtime 仍保持收敛：基于可 mock 的 Docker CLI runner 实现，且 terminal 侧只消费统一 runner 能力，不暴露 Docker 显式语义。
-- 当前已提供显式装配入口，可以创建绑定 host runtime 或 sandbox runtime 的 tmux backend；但默认工具入口尚未切换到 sandbox，也尚未引入风险分级自动选择。
+- 当前已提供显式装配入口，可以创建绑定 host runtime 或 sandbox runtime 的 tmux backend；默认 `bash` 工具入口已切到 Docker sandbox，宿主机 runtime 仅保留为显式非默认路径，且 sandbox 准备失败时不会静默回退到宿主机。
 - 当前 Docker sandbox 已补最小目录边界：workspace 目录可写、根文件系统只读、运行时临时目录通过 `tmpfs` 提供，额外宿主机路径只允许只读挂载。
 - 当前已补最小执行保护：`Exec()` 支持统一超时兜底、聚合输出大小限制、稳定截断标记，以及超时/取消的稳定错误语义。
 - 当前已补最小审计字段：sandbox 执行会通过 `pkg/observability` 写入 runtime、container、image、workspace、command、exit_code、timed_out、output_truncated、stdout_bytes、stderr_bytes 和 error_reason 等语义。
 
 ## Next Step
 
-- 第一步：补更完整的阶段 4 测试与实现，继续覆盖更多 Docker 失败路径、工作区外路径暴露策略、只读挂载细节和审计字段完整性。
-- 第二步：决定上层装配层如何选择当前运行环境，并把默认工具入口切换策略收敛出来，但暂时不把风险判定下沉到 terminal 包内部。
-- 第三步：在最小闭环稳定后，再逐步补危险命令判定、执行拦截、更细粒度可读写范围限制、资源限制和审计增强。
+- 第一步：在默认 Docker 路径稳定后，回头补更完整的阶段 4 测试与实现，继续覆盖更多 Docker 失败路径、工作区外路径暴露策略、只读挂载细节和审计字段完整性。
+- 第二步：在最小闭环稳定后，再逐步补危险命令判定、执行拦截、更细粒度可读写范围限制、资源限制和审计增强。
 
 ## 分阶段推进
 
@@ -60,8 +58,7 @@
 - `internal/sandbox/unimplemented.go`：当前阶段占位实现。
 - `internal/sandbox/errors.go`：稳定错误定义。
 - `internal/sandbox/docker.go`：最小 Docker runtime 和 CLI runner 适配。
-- `internal/sandbox/policy.go`：最小目录边界与只读挂载校验。
-- `internal/sandbox/limits.go`：输出限制、截断与错误分类。
+- `internal/sandbox/docker_policy.go`：Docker sandbox 的目录边界、只读挂载、输出限制、截断与错误分类。
 - `internal/sandbox/audit.go`：sandbox 执行审计。
 - `internal/sandbox/runtime.go`：统一 runtime 抽象，以及 host runtime / sandbox runtime 适配。
 - `internal/sandbox/terminal_runtime.go`：terminal 装配入口，显式绑定当前运行环境。

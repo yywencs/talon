@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/wen/opentalon/internal/tool"
 	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/logger"
 	"github.com/wen/opentalon/pkg/observability"
@@ -92,7 +93,7 @@ func (s *Session) SubmitUserMessage(text string) error {
 	return nil
 }
 
-func (s *Session) Run(ctx context.Context) error {
+func (s *Session) Run(ctx context.Context) (runErr error) {
 	tracer := observability.TracerFor("internal/core/session")
 	ctx, span := tracer.StartSpan(ctx, "session.run",
 		observability.WithSpanKind(observability.SpanKindInternal),
@@ -103,6 +104,20 @@ func (s *Session) Run(ctx context.Context) error {
 		),
 	)
 	defer span.End()
+	defer func() {
+		if s == nil || s.state == nil {
+			return
+		}
+		if runErr == nil && s.state.Status != types.StatusFinished {
+			return
+		}
+		if err := tool.ReleaseBashSession(ctx, s.state.ID); err != nil {
+			logger.WarnWithCtx(ctx, "会话结束时释放 bash 会话级 executor 失败",
+				"session_id", s.state.ID,
+				"error", err.Error(),
+			)
+		}
+	}()
 
 	for {
 		if s.state.Status == types.StatusPaused || s.state.Status == types.StatusStuck {
@@ -116,12 +131,14 @@ func (s *Session) Run(ctx context.Context) error {
 		result, err := s.agent.StreamStep(ctx, s.state, s.handleAgentOutput)
 		if err != nil {
 			span.RecordError(err, observability.StatusFromError(err))
-			return err
+			runErr = err
+			return runErr
 		}
 		if result == nil {
 			nilResultErr := fmt.Errorf("session run: agent returned nil turn result")
 			span.RecordError(nilResultErr, observability.SpanStatusLLMInvalidResponse)
-			return nilResultErr
+			runErr = nilResultErr
+			return runErr
 		}
 		if result.Message != nil {
 			s.emit(s.eventFactory.NewMessageEvent(*result.Message, types.SourceAgent))
@@ -131,7 +148,8 @@ func (s *Session) Run(ctx context.Context) error {
 		if err != nil {
 			wrappedErr := fmt.Errorf("session run: build action events failed: %w", err)
 			span.RecordError(wrappedErr, observability.SpanStatusError)
-			return wrappedErr
+			runErr = wrappedErr
+			return runErr
 		}
 		actionEvents = hasFinishAction(actionEvents)
 		if len(actionEvents) == 0 {
@@ -141,7 +159,8 @@ func (s *Session) Run(ctx context.Context) error {
 			}
 			err := fmt.Errorf("session run: agent returned no actions and did not finish")
 			span.RecordError(err, observability.SpanStatusLLMInvalidResponse)
-			return err
+			runErr = err
+			return runErr
 		}
 		for _, actionEvent := range actionEvents {
 			s.emit(actionEvent)
@@ -155,6 +174,9 @@ func (s *Session) Run(ctx context.Context) error {
 
 // executeActionEvents 并行执行动作，并按输入顺序回调 ObservationEvent。
 func (s *Session) executeActionEvents(ctx context.Context, actionEvents []*types.ActionEvent) {
+	if s != nil && s.state != nil {
+		ctx = tool.ContextWithSessionID(ctx, s.state.ID)
+	}
 	results := s.toolRouter.ExecuteBatch(ctx, actionEvents, defaultActionParallelism)
 	for _, observationEvent := range results {
 		if observationEvent == nil {

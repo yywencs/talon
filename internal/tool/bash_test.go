@@ -6,351 +6,273 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	terminalpkg "github.com/wen/opentalon/internal/tool/terminal"
 	"github.com/wen/opentalon/internal/types"
 )
 
-func fptr(v float64) *float64 {
-	return &v
+type fakeToolBackend struct {
+	mu            sync.Mutex
+	screen        string
+	workingDir    string
+	initializeErr error
+	closeCount    int
+	sentPaneIDs   []string
 }
 
-func TestBash_SimpleEcho(t *testing.T) {
-	tool := newBashTool()
+func (b *fakeToolBackend) Initialize(ctx context.Context) error {
+	_ = ctx
+	return b.initializeErr
+}
+
+func (b *fakeToolBackend) Close(ctx context.Context) error {
+	_ = ctx
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.closeCount++
+	return nil
+}
+
+func (b *fakeToolBackend) SendKeys(ctx context.Context, paneID, text string, enter bool) error {
+	_ = ctx
+	_ = enter
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.sentPaneIDs = append(b.sentPaneIDs, paneID)
+
+	marker := extractToolTestMarker(text)
+	if marker == "" {
+		return nil
+	}
+	b.screen += "ok\n__OPENTALON_EXIT__:" + marker + ":0\n"
+	return nil
+}
+
+func (b *fakeToolBackend) ReadScreen(ctx context.Context, paneID string) (string, error) {
+	_ = ctx
+	_ = paneID
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.screen, nil
+}
+
+func (b *fakeToolBackend) ClearScreen(ctx context.Context, paneID string) error {
+	_ = ctx
+	_ = paneID
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.screen = ""
+	return nil
+}
+
+func (b *fakeToolBackend) Interrupt(ctx context.Context, paneID string) (bool, error) {
+	_ = ctx
+	_ = paneID
+	return true, nil
+}
+
+func (b *fakeToolBackend) IsRunning(ctx context.Context, paneID string) (bool, error) {
+	_ = ctx
+	_ = paneID
+	return false, nil
+}
+
+func (b *fakeToolBackend) PrepareCommand(ctx context.Context, paneID string) error {
+	_ = ctx
+	_ = paneID
+	return nil
+}
+
+func (b *fakeToolBackend) CompleteCommand(ctx context.Context, paneID string) error {
+	_ = ctx
+	_ = paneID
+	return nil
+}
+
+func (b *fakeToolBackend) InvalidateCommand(ctx context.Context, paneID string) error {
+	_ = ctx
+	_ = paneID
+	return nil
+}
+
+func (b *fakeToolBackend) ResetPane(ctx context.Context, paneID string) error {
+	_ = ctx
+	_ = paneID
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.screen = ""
+	return nil
+}
+
+func (b *fakeToolBackend) PanePID(ctx context.Context, paneID string) (*int, error) {
+	_ = ctx
+	_ = paneID
+	pid := 123
+	return &pid, nil
+}
+
+func (b *fakeToolBackend) CurrentWorkingDir(ctx context.Context, paneID string) (string, error) {
+	_ = ctx
+	_ = paneID
+	return b.workingDir, nil
+}
+
+func extractToolTestMarker(text string) string {
+	const prefix = "__OPENTALON_EXIT__:"
+	start := strings.Index(text, prefix)
+	if start < 0 {
+		return ""
+	}
+	start += len(prefix)
+	end := strings.Index(text[start:], ":")
+	if end < 0 {
+		return ""
+	}
+	return text[start : start+end]
+}
+
+func installBashToolTestHooks(t *testing.T, workingDir string, factory func(route bashRuntimeRoute, workingDir string) terminalpkg.TerminalBackend) {
+	t.Helper()
+
+	prevResolve := resolveBashWorkingDir
+	prevBackendFactory := newBashBackendForRoute
+	prevRegistry := bashSessionExecutors
+	resolveBashWorkingDir = func() string {
+		return workingDir
+	}
+	newBashBackendForRoute = func(ctx context.Context, route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+		_ = ctx
+		return factory(route, wd)
+	}
+	t.Cleanup(func() {
+		resolveBashWorkingDir = prevResolve
+		newBashBackendForRoute = prevBackendFactory
+		bashSessionExecutors = prevRegistry
+	})
+	bashSessionExecutors = newBashSessionRegistry()
+}
+
+func TestBashRegisteredToolUsesSandboxBackendByDefault(t *testing.T) {
+	workingDir := t.TempDir()
+	backend := &fakeToolBackend{workingDir: workingDir}
+	var gotRoute bashRuntimeRoute
+
+	installBashToolTestHooks(t, workingDir, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+		gotRoute = route
+		if wd != workingDir {
+			t.Fatalf("working dir = %q, want %q", wd, workingDir)
+		}
+		return backend
+	})
+
+	factory, ok := Get("bash")
+	if !ok {
+		t.Fatal("bash tool not registered")
+	}
+	tool := factory(context.Background())
 	rawArgs, _ := json.Marshal(TerminalAction{
 		ToolMetadata: types.ToolMetadata{
-			Summary:      "test",
+			Summary:      "test default sandbox route",
 			SecurityRisk: types.SecurityRisk_HIGH,
 		},
-		Command: "echo hello",
+		Command: "echo hi",
+	})
+
+	obs := tool.Execute(ContextWithSessionID(context.Background(), "session-default-route"), rawArgs)
+	output, ok := obs.(*TerminalObservation)
+	if !ok {
+		t.Fatalf("expected *TerminalObservation, got %T", obs)
+	}
+	if gotRoute != bashRuntimeRouteSandbox {
+		t.Fatalf("route = %q, want %q", gotRoute, bashRuntimeRouteSandbox)
+	}
+	if output.ExitCodeValue() != 0 {
+		t.Fatalf("expected exit code 0, got %d, content: %q", output.ExitCodeValue(), output.OutputText())
+	}
+	if output.OutputText() != "ok\n" {
+		t.Fatalf("expected output ok\\n, got %q", output.OutputText())
+	}
+	if len(backend.sentPaneIDs) != 1 || backend.sentPaneIDs[0] != "default_main" {
+		t.Fatalf("pane ids = %#v, want [default_main]", backend.sentPaneIDs)
+	}
+}
+
+func TestBashDefaultToolReturnsStableErrorWhenSandboxInitFails(t *testing.T) {
+	workingDir := t.TempDir()
+	var gotRoute bashRuntimeRoute
+
+	installBashToolTestHooks(t, workingDir, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+		gotRoute = route
+		return &fakeToolBackend{
+			workingDir:    wd,
+			initializeErr: context.DeadlineExceeded,
+		}
+	})
+
+	factory, ok := Get("bash")
+	if !ok {
+		t.Fatal("bash tool not registered")
+	}
+	tool := factory(context.Background())
+	rawArgs, _ := json.Marshal(TerminalAction{
+		ToolMetadata: types.ToolMetadata{
+			Summary:      "test sandbox init failure",
+			SecurityRisk: types.SecurityRisk_HIGH,
+		},
+		Command: "echo hi",
+	})
+
+	obs := tool.Execute(ContextWithSessionID(context.Background(), "session-default-sandbox"), rawArgs)
+	output, ok := obs.(*TerminalObservation)
+	if !ok {
+		t.Fatalf("expected *TerminalObservation, got %T", obs)
+	}
+	if gotRoute != bashRuntimeRouteSandbox {
+		t.Fatalf("route = %q, want %q", gotRoute, bashRuntimeRouteSandbox)
+	}
+	if output.ExitCodeValue() != -1 {
+		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
+	}
+	if !strings.Contains(output.OutputText(), "初始化终端会话") {
+		t.Fatalf("expected initialize error, got %q", output.OutputText())
+	}
+}
+
+func TestHostBashToolUsesExplicitHostBackend(t *testing.T) {
+	workingDir := t.TempDir()
+	backend := &fakeToolBackend{workingDir: workingDir}
+	var gotRoute bashRuntimeRoute
+
+	installBashToolTestHooks(t, workingDir, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+		gotRoute = route
+		return backend
+	})
+
+	tool := newHostBashTool()
+	rawArgs, _ := json.Marshal(TerminalAction{
+		ToolMetadata: types.ToolMetadata{
+			Summary:      "test explicit host route",
+			SecurityRisk: types.SecurityRisk_HIGH,
+		},
+		Command: "echo hi",
 	})
 
 	obs := tool.Execute(context.Background(), rawArgs)
 	output, ok := obs.(*TerminalObservation)
 	if !ok {
 		t.Fatalf("expected *TerminalObservation, got %T", obs)
+	}
+	if gotRoute != bashRuntimeRouteHost {
+		t.Fatalf("route = %q, want %q", gotRoute, bashRuntimeRouteHost)
 	}
 	if output.ExitCodeValue() != 0 {
 		t.Fatalf("expected exit code 0, got %d", output.ExitCodeValue())
 	}
-	if output.OutputText() != "hello\n" {
-		t.Fatalf("expected content 'hello\\n', got %q", output.OutputText())
-	}
 }
 
-func TestBash_WithTimeout(t *testing.T) {
-	tool := newBashTool()
-	rawArgs, _ := json.Marshal(TerminalAction{
-		ToolMetadata: types.ToolMetadata{
-			Summary:      "test with timeout",
-			SecurityRisk: types.SecurityRisk_HIGH,
-		},
-		Command: "sleep 1",
-		Timeout: fptr(5),
-	})
-
-	start := time.Now()
-	obs := tool.Execute(context.Background(), rawArgs)
-	elapsed := time.Since(start)
-
-	output, ok := obs.(*TerminalObservation)
-	if !ok {
-		t.Fatalf("expected *TerminalObservation, got %T", obs)
-	}
-	if output.ExitCodeValue() != 0 {
-		t.Fatalf("expected exit code 0, got %d", output.ExitCodeValue())
-	}
-	if elapsed < time.Second {
-		t.Fatalf("expected at least 1s elapsed, got %v", elapsed)
-	}
-}
-
-func TestBash_NonZeroExit(t *testing.T) {
-	tool := newBashTool()
-	rawArgs, _ := json.Marshal(TerminalAction{
-		ToolMetadata: types.ToolMetadata{
-			Summary:      "test non-zero exit",
-			SecurityRisk: types.SecurityRisk_HIGH,
-		},
-		Command: "exit 1",
-	})
-
-	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*TerminalObservation)
-	if !ok {
-		t.Fatalf("expected *TerminalObservation, got %T", obs)
-	}
-	if output.ExitCodeValue() != 1 {
-		t.Fatalf("expected exit code 1, got %d", output.ExitCodeValue())
-	}
-}
-
-func TestBash_EmptyCommand(t *testing.T) {
-	tool := newBashTool()
-	rawArgs, _ := json.Marshal(TerminalAction{
-		ToolMetadata: types.ToolMetadata{
-			Summary:      "test empty command",
-			SecurityRisk: types.SecurityRisk_HIGH,
-		},
-		Command: "",
-	})
-
-	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*TerminalObservation)
-	if !ok {
-		t.Fatalf("expected *TerminalObservation, got %T", obs)
-	}
-	if output.ExitCodeValue() != -1 {
-		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
-	}
-	if !strings.Contains(output.OutputText(), "command is empty") {
-		t.Fatalf("expected error message to contain 'command is empty', got %q", output.OutputText())
-	}
-}
-
-func TestBash_InvalidTimeout_Zero(t *testing.T) {
-	tool := newBashTool()
-	rawArgs, _ := json.Marshal(TerminalAction{
-		ToolMetadata: types.ToolMetadata{
-			Summary:      "test zero timeout",
-			SecurityRisk: types.SecurityRisk_HIGH,
-		},
-		Command: "echo hi",
-		Timeout: fptr(0),
-	})
-
-	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*TerminalObservation)
-	if !ok {
-		t.Fatalf("expected *TerminalObservation, got %T", obs)
-	}
-	if output.ExitCodeValue() != -1 {
-		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
-	}
-	if !strings.Contains(output.OutputText(), "timeout out of range") {
-		t.Fatalf("expected error message to contain 'timeout out of range', got %q", output.OutputText())
-	}
-}
-
-func TestBash_InvalidTimeout_Negative(t *testing.T) {
-	tool := newBashTool()
-	rawArgs, _ := json.Marshal(TerminalAction{
-		ToolMetadata: types.ToolMetadata{
-			Summary:      "test negative timeout",
-			SecurityRisk: types.SecurityRisk_HIGH,
-		},
-		Command: "echo hi",
-		Timeout: fptr(-1),
-	})
-
-	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*TerminalObservation)
-	if !ok {
-		t.Fatalf("expected *TerminalObservation, got %T", obs)
-	}
-	if output.ExitCodeValue() != -1 {
-		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
-	}
-	if !strings.Contains(output.OutputText(), "timeout out of range") {
-		t.Fatalf("expected error message to contain 'timeout out of range', got %q", output.OutputText())
-	}
-}
-
-func TestBash_InvalidTimeout_TooLarge(t *testing.T) {
-	tool := newBashTool()
-	rawArgs, _ := json.Marshal(TerminalAction{
-		ToolMetadata: types.ToolMetadata{
-			Summary:      "test too large timeout",
-			SecurityRisk: types.SecurityRisk_HIGH,
-		},
-		Command: "echo hi",
-		Timeout: fptr(301),
-	})
-
-	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*TerminalObservation)
-	if !ok {
-		t.Fatalf("expected *TerminalObservation, got %T", obs)
-	}
-	if output.ExitCodeValue() != -1 {
-		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
-	}
-	if !strings.Contains(output.OutputText(), "timeout out of range") {
-		t.Fatalf("expected error message to contain 'timeout out of range', got %q", output.OutputText())
-	}
-}
-
-func TestBash_TimeoutExceeded(t *testing.T) {
-	tool := newBashTool()
-	rawArgs, _ := json.Marshal(TerminalAction{
-		ToolMetadata: types.ToolMetadata{
-			Summary:      "test timeout exceeded",
-			SecurityRisk: types.SecurityRisk_HIGH,
-		},
-		Command: "sleep 10",
-		Timeout: fptr(1),
-	})
-
-	start := time.Now()
-	obs := tool.Execute(context.Background(), rawArgs)
-	elapsed := time.Since(start)
-
-	output, ok := obs.(*TerminalObservation)
-	if !ok {
-		t.Fatalf("expected *TerminalObservation, got %T", obs)
-	}
-	if output.ExitCodeValue() != -1 {
-		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
-	}
-	if !strings.Contains(output.OutputText(), "timed out") {
-		t.Fatalf("expected error message to contain 'timed out', got %q", output.OutputText())
-	}
-	if elapsed < time.Second && elapsed > 2*time.Second {
-		t.Fatalf("expected elapsed time around 1s, got %v", elapsed)
-	}
-}
-
-func TestBash_NonexistentWorkingDir(t *testing.T) {
-	executor := terminalpkg.NewExecutor(terminalpkg.ExecutorConfig{
-		WorkingDir: "/nonexistent/path/that/does/not/exist",
-	})
-
-	output := executor.Execute(context.Background(), TerminalAction{
-		ToolMetadata: types.ToolMetadata{
-			Summary:      "test nonexistent working dir",
-			SecurityRisk: types.SecurityRisk_HIGH,
-		},
-		Command: "echo hi",
-	})
-	if output.ExitCodeValue() != -1 {
-		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
-	}
-	if !strings.Contains(output.OutputText(), "working_dir does not exist") {
-		t.Fatalf("expected error message to contain 'working_dir does not exist', got %q", output.OutputText())
-	}
-}
-
-func TestBash_CtxCancelled(t *testing.T) {
-	tool := newBashTool()
-	ctx, cancel := context.WithCancel(context.Background())
-
-	rawArgs, _ := json.Marshal(TerminalAction{
-		ToolMetadata: types.ToolMetadata{
-			Summary:      "test context cancelled",
-			SecurityRisk: types.SecurityRisk_HIGH,
-		},
-		Command: "sleep 10",
-		Timeout: fptr(30),
-	})
-
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		cancel()
-	}()
-
-	obs := tool.Execute(ctx, rawArgs)
-	output, ok := obs.(*TerminalObservation)
-	if !ok {
-		t.Fatalf("expected *TerminalObservation, got %T", obs)
-	}
-	if output.ExitCodeValue() != -1 {
-		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
-	}
-	if !strings.Contains(output.OutputText(), "context cancelled") {
-		t.Fatalf("expected error message to contain 'context cancelled', got %q", output.OutputText())
-	}
-}
-
-func TestBash_OutputTruncation(t *testing.T) {
-	tool := newBashTool()
-	rawArgs, _ := json.Marshal(TerminalAction{
-		ToolMetadata: types.ToolMetadata{
-			Summary:      "test output truncation",
-			SecurityRisk: types.SecurityRisk_HIGH,
-		},
-		Command: "yes | head -c 2000000",
-		Timeout: fptr(30),
-	})
-
-	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*TerminalObservation)
-	if !ok {
-		t.Fatalf("expected *TerminalObservation, got %T", obs)
-	}
-	if output.ExitCodeValue() != 0 {
-		t.Fatalf("expected exit code 0, got %d", output.ExitCodeValue())
-	}
-	maxSize := 1024 * 1024
-	if len(output.OutputText()) > maxSize+len("[output truncated]") {
-		t.Fatalf("expected content length <= %d, got %d", maxSize+len("[output truncated]"), len(output.OutputText()))
-	}
-	if !strings.HasSuffix(output.OutputText(), "[output truncated]") {
-		t.Fatalf("expected content to end with '[output truncated]', got %q", output.OutputText())
-	}
-}
-
-func TestBash_ConcurrentExec(t *testing.T) {
-	tool := newBashTool()
-	commands := []string{
-		"echo 1",
-		"echo 2",
-		"echo 3",
-		"echo 4",
-		"echo 5",
-		"echo 6",
-		"echo 7",
-		"echo 8",
-		"echo 9",
-		"echo 10",
-	}
-
-	var wg sync.WaitGroup
-	results := make([]*TerminalObservation, len(commands))
-	var mu sync.Mutex
-
-	for i, cmd := range commands {
-		wg.Add(1)
-		go func(idx int, command string) {
-			defer wg.Done()
-			rawArgs, _ := json.Marshal(TerminalAction{
-				ToolMetadata: types.ToolMetadata{
-					Summary:      "concurrent test",
-					SecurityRisk: types.SecurityRisk_HIGH,
-				},
-				Command: command,
-			})
-			obs := tool.Execute(context.Background(), rawArgs)
-			output, ok := obs.(*TerminalObservation)
-			if !ok {
-				t.Errorf("expected *TerminalObservation, got %T", obs)
-				return
-			}
-			mu.Lock()
-			results[idx] = output
-			mu.Unlock()
-		}(i, cmd)
-	}
-
-	wg.Wait()
-
-	for i, output := range results {
-		if output == nil {
-			t.Errorf("result %d is nil", i)
-			continue
-		}
-		if output.ExitCodeValue() != 0 {
-			t.Errorf("result %d: expected exit code 0, got %d", i, output.ExitCodeValue())
-		}
-		expected := strings.TrimPrefix(commands[i], "echo ") + "\n"
-		if output.OutputText() != expected {
-			t.Errorf("result %d: expected %q, got %q", i, expected, output.OutputText())
-		}
-	}
-}
-
-func TestBash_NameAndDescription(t *testing.T) {
-	tool := newBashTool()
+func TestBashNameAndDescription(t *testing.T) {
+	tool := newHostBashTool()
 	if tool.Name() != "bash" {
 		t.Fatalf("expected name 'bash', got %q", tool.Name())
 	}
@@ -359,8 +281,8 @@ func TestBash_NameAndDescription(t *testing.T) {
 	}
 }
 
-func TestBash_ActionSchema(t *testing.T) {
-	converted, err := ToOpenAITool(newBashTool())
+func TestBashActionSchema(t *testing.T) {
+	converted, err := ToOpenAITool(newHostBashTool())
 	if err != nil {
 		t.Fatalf("ToOpenAITool failed: %v", err)
 	}
@@ -391,71 +313,288 @@ func TestBash_ActionSchema(t *testing.T) {
 	}
 }
 
-func TestBash_ValidWorkingDir(t *testing.T) {
-	executor := terminalpkg.NewExecutor(terminalpkg.ExecutorConfig{
-		WorkingDir: "/tmp",
-	})
-
-	output := executor.Execute(context.Background(), TerminalAction{
-		ToolMetadata: types.ToolMetadata{
-			Summary:      "test valid working dir",
-			SecurityRisk: types.SecurityRisk_HIGH,
-		},
-		Command: "pwd",
-	})
-	if output.ExitCodeValue() != 0 {
-		t.Fatalf("expected exit code 0, got %d, content: %q", output.ExitCodeValue(), output.OutputText())
+func TestBashInvalidJSONReturnsErrorObservation(t *testing.T) {
+	obs := newHostBashTool().Execute(context.Background(), []byte("{"))
+	if obs == nil {
+		t.Fatal("expected observation")
 	}
-	if !strings.Contains(output.OutputText(), "/tmp") {
-		t.Fatalf("expected content to contain '/tmp', got %q", output.OutputText())
+	if !obs.IsError() {
+		t.Fatal("expected error observation")
 	}
 }
 
-func TestBash_PipeCommand(t *testing.T) {
-	tool := newBashTool()
-	rawArgs, _ := json.Marshal(TerminalAction{
-		ToolMetadata: types.ToolMetadata{
-			Summary:      "test pipe command",
-			SecurityRisk: types.SecurityRisk_HIGH,
-		},
-		Command: "echo 'hello world' | tr 'a-z' 'A-Z'",
-		Timeout: fptr(30),
+func TestBashDefaultToolReusesExecutorWithinSameSession(t *testing.T) {
+	workingDir := t.TempDir()
+	var createCount int
+
+	installBashToolTestHooks(t, workingDir, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+		createCount++
+		if route != bashRuntimeRouteSandbox {
+			t.Fatalf("route = %q, want %q", route, bashRuntimeRouteSandbox)
+		}
+		return &fakeToolBackend{workingDir: wd}
 	})
 
-	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*TerminalObservation)
+	factory, ok := Get("bash")
 	if !ok {
-		t.Fatalf("expected *TerminalObservation, got %T", obs)
+		t.Fatal("bash tool not registered")
 	}
-	if output.ExitCodeValue() != 0 {
-		t.Fatalf("expected exit code 0, got %d", output.ExitCodeValue())
+	rawArgs, _ := json.Marshal(TerminalAction{
+		ToolMetadata: types.ToolMetadata{
+			Summary:      "test session executor reuse",
+			SecurityRisk: types.SecurityRisk_HIGH,
+		},
+		Command: "echo hi",
+		PaneID:  "pane-a",
+	})
+
+	sessionCtx := ContextWithSessionID(context.Background(), "session-reuse")
+	toolA := factory(context.Background())
+	toolB := factory(context.Background())
+	if obs := toolA.Execute(sessionCtx, rawArgs).(*TerminalObservation); obs.ExitCodeValue() != 0 {
+		t.Fatalf("first call exit code = %d, output = %q", obs.ExitCodeValue(), obs.OutputText())
 	}
-	expected := "HELLO WORLD\n"
-	if output.OutputText() != expected {
-		t.Fatalf("expected %q, got %q", expected, output.OutputText())
+	if obs := toolB.Execute(sessionCtx, rawArgs).(*TerminalObservation); obs.ExitCodeValue() != 0 {
+		t.Fatalf("second call exit code = %d, output = %q", obs.ExitCodeValue(), obs.OutputText())
+	}
+	if createCount != 1 {
+		t.Fatalf("backend create count = %d, want 1", createCount)
 	}
 }
 
-func TestBash_CommandNotFound(t *testing.T) {
-	tool := newBashTool()
-	rawArgs, _ := json.Marshal(TerminalAction{
-		ToolMetadata: types.ToolMetadata{
-			Summary:      "test command not found",
-			SecurityRisk: types.SecurityRisk_HIGH,
-		},
-		Command: "nonexistent_command_12345",
-		Timeout: fptr(30),
+func TestBashDefaultToolSeparatesExecutorsAcrossSessions(t *testing.T) {
+	workingDir := t.TempDir()
+	var createCount int
+
+	installBashToolTestHooks(t, workingDir, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+		createCount++
+		return &fakeToolBackend{workingDir: wd}
 	})
 
-	obs := tool.Execute(context.Background(), rawArgs)
-	output, ok := obs.(*TerminalObservation)
+	factory, ok := Get("bash")
 	if !ok {
-		t.Fatalf("expected *TerminalObservation, got %T", obs)
+		t.Fatal("bash tool not registered")
 	}
-	if output.ExitCodeValue() == 0 {
-		t.Fatalf("expected non-zero exit code, got 0")
+	rawArgs, _ := json.Marshal(TerminalAction{
+		ToolMetadata: types.ToolMetadata{
+			Summary:      "test session isolation",
+			SecurityRisk: types.SecurityRisk_HIGH,
+		},
+		Command: "echo hi",
+		PaneID:  "pane-a",
+	})
+
+	toolA := factory(context.Background())
+	toolB := factory(context.Background())
+	if obs := toolA.Execute(ContextWithSessionID(context.Background(), "session-a"), rawArgs).(*TerminalObservation); obs.ExitCodeValue() != 0 {
+		t.Fatalf("session-a exit code = %d, output = %q", obs.ExitCodeValue(), obs.OutputText())
 	}
-	if !strings.Contains(output.OutputText(), "未找到") && !strings.Contains(output.OutputText(), "not found") && !strings.Contains(output.OutputText(), "executable file not found") {
-		t.Fatalf("expected error about command not found, got %q", output.OutputText())
+	if obs := toolB.Execute(ContextWithSessionID(context.Background(), "session-b"), rawArgs).(*TerminalObservation); obs.ExitCodeValue() != 0 {
+		t.Fatalf("session-b exit code = %d, output = %q", obs.ExitCodeValue(), obs.OutputText())
+	}
+	if createCount != 2 {
+		t.Fatalf("backend create count = %d, want 2", createCount)
+	}
+}
+
+func TestBashDefaultToolRemovesFailedSessionExecutorAfterInitializeError(t *testing.T) {
+	workingDir := t.TempDir()
+	firstBackend := &fakeToolBackend{
+		workingDir:    workingDir,
+		initializeErr: context.DeadlineExceeded,
+	}
+	secondBackend := &fakeToolBackend{workingDir: workingDir}
+	createCount := 0
+
+	installBashToolTestHooks(t, workingDir, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+		createCount++
+		if createCount == 1 {
+			return firstBackend
+		}
+		return secondBackend
+	})
+
+	factory, ok := Get("bash")
+	if !ok {
+		t.Fatal("bash tool not registered")
+	}
+	rawArgs, _ := json.Marshal(TerminalAction{
+		ToolMetadata: types.ToolMetadata{
+			Summary:      "test failed executor cleanup",
+			SecurityRisk: types.SecurityRisk_HIGH,
+		},
+		Command: "echo hi",
+		PaneID:  "pane-a",
+	})
+
+	sessionCtx := ContextWithSessionID(context.Background(), "session-retry")
+	toolA := factory(context.Background())
+	firstObs := toolA.Execute(sessionCtx, rawArgs).(*TerminalObservation)
+	if firstObs.ExitCodeValue() != -1 {
+		t.Fatalf("first exit code = %d, want -1", firstObs.ExitCodeValue())
+	}
+	if firstBackend.closeCount != 1 {
+		t.Fatalf("first backend close count = %d, want 1", firstBackend.closeCount)
+	}
+
+	toolB := factory(context.Background())
+	secondObs := toolB.Execute(sessionCtx, rawArgs).(*TerminalObservation)
+	if secondObs.ExitCodeValue() != 0 {
+		t.Fatalf("second exit code = %d, output = %q", secondObs.ExitCodeValue(), secondObs.OutputText())
+	}
+	if createCount != 2 {
+		t.Fatalf("backend create count = %d, want 2", createCount)
+	}
+}
+
+func TestReleaseBashSessionClosesCachedExecutor(t *testing.T) {
+	workingDir := t.TempDir()
+	backend := &fakeToolBackend{workingDir: workingDir}
+	var createCount int
+
+	installBashToolTestHooks(t, workingDir, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+		createCount++
+		return backend
+	})
+
+	factory, ok := Get("bash")
+	if !ok {
+		t.Fatal("bash tool not registered")
+	}
+	rawArgs, _ := json.Marshal(TerminalAction{
+		ToolMetadata: types.ToolMetadata{
+			Summary:      "test release bash session",
+			SecurityRisk: types.SecurityRisk_HIGH,
+		},
+		Command: "echo hi",
+		PaneID:  "pane-a",
+	})
+
+	sessionID := "session-release"
+	sessionCtx := ContextWithSessionID(context.Background(), sessionID)
+	toolA := factory(context.Background())
+	if obs := toolA.Execute(sessionCtx, rawArgs).(*TerminalObservation); obs.ExitCodeValue() != 0 {
+		t.Fatalf("first exit code = %d, output = %q", obs.ExitCodeValue(), obs.OutputText())
+	}
+	if err := ReleaseBashSession(context.Background(), sessionID); err != nil {
+		t.Fatalf("ReleaseBashSession() error = %v", err)
+	}
+	if backend.closeCount != 1 {
+		t.Fatalf("backend close count = %d, want 1", backend.closeCount)
+	}
+
+	recreatedBackend := &fakeToolBackend{workingDir: workingDir}
+	newBashBackendForRoute = func(ctx context.Context, route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+		_ = ctx
+		createCount++
+		return recreatedBackend
+	}
+	toolB := factory(context.Background())
+	if obs := toolB.Execute(sessionCtx, rawArgs).(*TerminalObservation); obs.ExitCodeValue() != 0 {
+		t.Fatalf("second exit code = %d, output = %q", obs.ExitCodeValue(), obs.OutputText())
+	}
+	if createCount != 2 {
+		t.Fatalf("backend create count = %d, want 2", createCount)
+	}
+}
+
+func TestBashDefaultToolRequiresSessionID(t *testing.T) {
+	workingDir := t.TempDir()
+	installBashToolTestHooks(t, workingDir, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+		return &fakeToolBackend{workingDir: wd}
+	})
+
+	factory, ok := Get("bash")
+	if !ok {
+		t.Fatal("bash tool not registered")
+	}
+	rawArgs, _ := json.Marshal(TerminalAction{
+		ToolMetadata: types.ToolMetadata{
+			Summary:      "test missing session id",
+			SecurityRisk: types.SecurityRisk_HIGH,
+		},
+		Command: "echo hi",
+		PaneID:  "pane-a",
+	})
+
+	obs := factory(context.Background()).Execute(context.Background(), rawArgs).(*TerminalObservation)
+	if obs.ExitCodeValue() != -1 {
+		t.Fatalf("exit code = %d, want -1", obs.ExitCodeValue())
+	}
+	if !strings.Contains(obs.OutputText(), "session.id") {
+		t.Fatalf("expected missing session.id error, got %q", obs.OutputText())
+	}
+}
+
+func TestBashSessionRegistryRejectsDifferentWorkingDirForSameSession(t *testing.T) {
+	workingDirA := t.TempDir()
+	workingDirB := t.TempDir()
+	var createCount int
+
+	installBashToolTestHooks(t, workingDirA, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+		createCount++
+		if route != bashRuntimeRouteSandbox {
+			t.Fatalf("route = %q, want %q", route, bashRuntimeRouteSandbox)
+		}
+		return &fakeToolBackend{workingDir: wd}
+	})
+
+	registry := newBashSessionRegistry()
+	sessionID := "session-workingdir-mismatch"
+
+	firstExecutor, err := registry.executorForSession(context.Background(), sessionID, bashRuntimeRouteSandbox, workingDirA)
+	if err != nil {
+		t.Fatalf("first executorForSession() error = %v", err)
+	}
+	if firstExecutor == nil {
+		t.Fatal("expected first executor")
+	}
+
+	secondExecutor, err := registry.executorForSession(context.Background(), sessionID, bashRuntimeRouteSandbox, workingDirB)
+	if err == nil {
+		t.Fatal("expected working_dir mismatch error")
+	}
+	if secondExecutor != nil {
+		t.Fatalf("expected nil second executor, got %#v", secondExecutor)
+	}
+	if !strings.Contains(err.Error(), "工作目录") {
+		t.Fatalf("expected working dir error, got %v", err)
+	}
+	if createCount != 1 {
+		t.Fatalf("backend create count = %d, want 1", createCount)
+	}
+}
+
+func TestBashSessionRegistryHostRouteDoesNotUseSessionCache(t *testing.T) {
+	workingDir := t.TempDir()
+	var createCount int
+
+	installBashToolTestHooks(t, workingDir, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+		createCount++
+		if route != bashRuntimeRouteHost {
+			t.Fatalf("route = %q, want %q", route, bashRuntimeRouteHost)
+		}
+		return &fakeToolBackend{workingDir: wd}
+	})
+
+	registry := newBashSessionRegistry()
+	sessionID := "session-host-route"
+
+	firstExecutor, err := registry.executorForSession(context.Background(), sessionID, bashRuntimeRouteHost, workingDir)
+	if err != nil {
+		t.Fatalf("first executorForSession() error = %v", err)
+	}
+	secondExecutor, err := registry.executorForSession(context.Background(), sessionID, bashRuntimeRouteHost, workingDir)
+	if err != nil {
+		t.Fatalf("second executorForSession() error = %v", err)
+	}
+	if firstExecutor == nil || secondExecutor == nil {
+		t.Fatal("expected non-nil executors")
+	}
+	if firstExecutor == secondExecutor {
+		t.Fatal("expected host route executors to be distinct")
+	}
+	if createCount != 2 {
+		t.Fatalf("backend create count = %d, want 2", createCount)
 	}
 }

@@ -8,7 +8,7 @@ type Manager struct {
 // NewManager 创建 sandbox 管理入口。
 func NewManager(factory Factory) *Manager {
 	if factory == nil {
-		factory = PlaceholderFactory{}
+		factory = DockerFactory{}
 	}
 	return &Manager{factory: factory}
 }
@@ -18,7 +18,7 @@ func (m *Manager) Create(config Config) Sandbox {
 	return m.factory.Create(config)
 }
 
-// PlaceholderFactory 表示当前阶段的默认 sandbox 工厂。
+// PlaceholderFactory 表示当前阶段保留的占位 sandbox 工厂。
 type PlaceholderFactory struct{}
 
 // Create 创建 sandbox 占位实现。

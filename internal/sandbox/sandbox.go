@@ -7,7 +7,7 @@ import (
 
 const (
 	// DefaultDockerImage 表示阶段 2 默认使用的轻量 Go Docker 镜像。
-	DefaultDockerImage = "golang:alpine"
+	DefaultDockerImage = "opentalon/sandbox:dev"
 	// DefaultContainerWorkDir 表示 sandbox 在容器内的默认工作目录。
 	DefaultContainerWorkDir = "/workspace"
 	// DefaultOutputLimitBytes 表示 sandbox 聚合输出的默认大小限制。
