@@ -11,19 +11,16 @@ import (
 )
 
 type bashSessionExecutorEntry struct {
-	route      bashRuntimeRoute
-	workingDir string
-	executor   *terminalpkg.Executor
-	backend    terminalpkg.TerminalBackend
+	runtimeRoute        string
+	workingDir          string
+	executor            *terminalpkg.Executor
+	backend             terminalpkg.TerminalBackend
+	sandboxInfoProvider func() sandboxpkg.Info
 }
 
 type bashSessionRegistry struct {
 	mu       sync.Mutex
 	sessions map[string]*bashSessionExecutorEntry
-}
-
-type bashSandboxInfoProvider interface {
-	SandboxInfo() sandboxpkg.Info
 }
 
 func newBashSessionRegistry() *bashSessionRegistry {
@@ -32,10 +29,13 @@ func newBashSessionRegistry() *bashSessionRegistry {
 	}
 }
 
-func (r *bashSessionRegistry) executorForSession(ctx context.Context, sessionID string, route bashRuntimeRoute, workingDir string) (*terminalpkg.Executor, error) {
-	if route != bashRuntimeRouteSandbox {
-		return newBashExecutorWithBackend(workingDir, newBashBackendForRoute(ctx, route, workingDir)), nil
-	}
+func (r *bashSessionRegistry) executorForSession(
+	ctx context.Context,
+	sessionID string,
+	runtimeRoute string,
+	workingDir string,
+	createBundle func(context.Context, string) bashBackendBundle,
+) (*terminalpkg.Executor, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("bash 默认 sandbox 路径缺少 session.id，无法使用 executor")
 	}
@@ -44,12 +44,12 @@ func (r *bashSessionRegistry) executorForSession(ctx context.Context, sessionID 
 	defer r.mu.Unlock()
 
 	if entry, ok := r.sessions[sessionID]; ok && entry != nil && entry.executor != nil {
-		if entry.route != route {
+		if entry.runtimeRoute != runtimeRoute {
 			return nil, fmt.Errorf(
 				"bash session %q 已绑定运行路径 %q，不能复用为 %q",
 				sessionID,
-				entry.route,
-				route,
+				entry.runtimeRoute,
+				runtimeRoute,
 			)
 		}
 		if entry.workingDir != workingDir {
@@ -65,17 +65,15 @@ func (r *bashSessionRegistry) executorForSession(ctx context.Context, sessionID 
 	}
 
 	entry := &bashSessionExecutorEntry{
-		route:      route,
-		workingDir: workingDir,
+		runtimeRoute: runtimeRoute,
+		workingDir:   workingDir,
 	}
-	backend := newManagedBashBackend(
-		newBashBackendForRoute(ctx, route, workingDir),
-		func(callbackCtx context.Context, cause error) {
-			r.invalidateSession(callbackCtx, sessionID, entry, cause)
-		},
-	)
-	entry.backend = backend
-	entry.executor = newBashExecutorWithBackend(workingDir, backend)
+	bundle := createBundle(ctx, workingDir)
+	entry.backend = bundle.backend
+	entry.sandboxInfoProvider = bundle.sandboxInfoProvider
+	entry.executor = newBashExecutorWithBackend(workingDir, bundle.backend, func(callbackCtx context.Context, cause error) {
+		r.invalidateSession(callbackCtx, sessionID, entry, cause)
+	})
 	r.sessions[sessionID] = entry
 
 	logger.InfoWithCtx(ctx, "bash 会话级 executor 已创建", r.auditArgsLocked(sessionID, entry)...)
@@ -150,11 +148,11 @@ func (r *bashSessionRegistry) auditArgsLocked(sessionID string, entry *bashSessi
 		return args
 	}
 	args = append(args,
-		"runtime_route", string(entry.route),
+		"runtime_route", entry.runtimeRoute,
 		"working_dir", entry.workingDir,
 	)
-	if infoProvider, ok := entry.backend.(bashSandboxInfoProvider); ok {
-		info := infoProvider.SandboxInfo()
+	if entry.sandboxInfoProvider != nil {
+		info := entry.sandboxInfoProvider()
 		if info.Status != "" {
 			args = append(args, "sandbox_status", string(info.Status))
 		}
@@ -166,116 +164,4 @@ func (r *bashSessionRegistry) auditArgsLocked(sessionID string, entry *bashSessi
 		}
 	}
 	return args
-}
-
-type managedBashBackend struct {
-	inner               terminalpkg.TerminalBackend
-	mu                  sync.Mutex
-	initializeFailed    bool
-	onInitializeFailure func(context.Context, error)
-}
-
-func newManagedBashBackend(inner terminalpkg.TerminalBackend, onInitializeFailure func(context.Context, error)) terminalpkg.TerminalBackend {
-	return &managedBashBackend{
-		inner:               inner,
-		onInitializeFailure: onInitializeFailure,
-	}
-}
-
-func (b *managedBashBackend) Initialize(ctx context.Context) error {
-	if err := b.inner.Initialize(ctx); err != nil {
-		b.mu.Lock()
-		shouldInvalidate := !b.initializeFailed
-		b.initializeFailed = true
-		b.mu.Unlock()
-		if shouldInvalidate && b.onInitializeFailure != nil {
-			b.onInitializeFailure(ctx, err)
-		}
-		return err
-	}
-	return nil
-}
-
-func (b *managedBashBackend) Close(ctx context.Context) error {
-	return b.inner.Close(ctx)
-}
-
-func (b *managedBashBackend) SendKeys(ctx context.Context, paneID, text string, enter bool) error {
-	return b.inner.SendKeys(ctx, paneID, text, enter)
-}
-
-func (b *managedBashBackend) ReadScreen(ctx context.Context, paneID string) (string, error) {
-	return b.inner.ReadScreen(ctx, paneID)
-}
-
-func (b *managedBashBackend) ClearScreen(ctx context.Context, paneID string) error {
-	return b.inner.ClearScreen(ctx, paneID)
-}
-
-func (b *managedBashBackend) Interrupt(ctx context.Context, paneID string) (bool, error) {
-	return b.inner.Interrupt(ctx, paneID)
-}
-
-func (b *managedBashBackend) IsRunning(ctx context.Context, paneID string) (bool, error) {
-	return b.inner.IsRunning(ctx, paneID)
-}
-
-func (b *managedBashBackend) PrepareCommand(ctx context.Context, paneID string) error {
-	lifecycle, ok := b.inner.(interface {
-		PrepareCommand(context.Context, string) error
-	})
-	if !ok {
-		return nil
-	}
-	return lifecycle.PrepareCommand(ctx, paneID)
-}
-
-func (b *managedBashBackend) CompleteCommand(ctx context.Context, paneID string) error {
-	lifecycle, ok := b.inner.(interface {
-		CompleteCommand(context.Context, string) error
-	})
-	if !ok {
-		return nil
-	}
-	return lifecycle.CompleteCommand(ctx, paneID)
-}
-
-func (b *managedBashBackend) InvalidateCommand(ctx context.Context, paneID string) error {
-	lifecycle, ok := b.inner.(interface {
-		InvalidateCommand(context.Context, string) error
-	})
-	if !ok {
-		return nil
-	}
-	return lifecycle.InvalidateCommand(ctx, paneID)
-}
-
-func (b *managedBashBackend) ResetPane(ctx context.Context, paneID string) error {
-	lifecycle, ok := b.inner.(interface {
-		ResetPane(context.Context, string) error
-	})
-	if !ok {
-		return nil
-	}
-	return lifecycle.ResetPane(ctx, paneID)
-}
-
-func (b *managedBashBackend) PanePID(ctx context.Context, paneID string) (*int, error) {
-	metadata, ok := b.inner.(interface {
-		PanePID(context.Context, string) (*int, error)
-	})
-	if !ok {
-		return nil, nil
-	}
-	return metadata.PanePID(ctx, paneID)
-}
-
-func (b *managedBashBackend) CurrentWorkingDir(ctx context.Context, paneID string) (string, error) {
-	metadata, ok := b.inner.(interface {
-		CurrentWorkingDir(context.Context, string) (string, error)
-	})
-	if !ok {
-		return "", nil
-	}
-	return metadata.CurrentWorkingDir(ctx, paneID)
 }

@@ -28,11 +28,17 @@
 - 当前 Docker sandbox 已补最小目录边界：workspace 目录可写、根文件系统只读、运行时临时目录通过 `tmpfs` 提供，额外宿主机路径只允许只读挂载。
 - 当前已补最小执行保护：`Exec()` 支持统一超时兜底、聚合输出大小限制、稳定截断标记，以及超时/取消的稳定错误语义。
 - 当前已补最小审计字段：sandbox 执行会通过 `pkg/observability` 写入 runtime、container、image、workspace、command、exit_code、timed_out、output_truncated、stdout_bytes、stderr_bytes 和 error_reason 等语义。
+- 当前 `bash` 默认 sandbox 路径会把 session 级 executor 缓存在 `internal/tool/bash_session_registry.go`，以便同一个会话复用同一组 backend / runtime / sandbox。
+- 当前这套 session 级缓存只在两类时机清理：一是 `managedBashBackend.Initialize()` 初始化失败时触发失效回调；二是 `internal/core/session.go` 在会话结束时显式调用 `ReleaseBashSession()`。
+- 当前缺口是：如果 backend / runtime / sandbox 在初始化成功后再变成不可复用状态，registry 里的旧 entry 仍会继续存在并被复用；典型场景包括 tmux session 丢失、sandbox 容器被外部 kill、或后端内部状态损坏。
+- 当前缺口会带来两个问题：一是后续命令可能持续命中已损坏的 executor；二是旧 backend / sandbox 没有被及时关闭，容易堆积无效容器和失效会话资源。
 
 ## Next Step
 
-- 第一步：在默认 Docker 路径稳定后，回头补更完整的阶段 4 测试与实现，继续覆盖更多 Docker 失败路径、工作区外路径暴露策略、只读挂载细节和审计字段完整性。
-- 第二步：在最小闭环稳定后，再逐步补危险命令判定、执行拦截、更细粒度可读写范围限制、资源限制和审计增强。
+- 第一步：补上 session 级实例在“初始化成功后失效”的清理闭环；当 backend / runtime / sandbox 已损坏且不再适合继续复用时，立即把对应 entry 从 registry 移除并关闭旧 backend / sandbox。
+- 第二步：让下次同一 session 的 `bash` 调用走重新创建路径，而不是继续复用已损坏实例；同时补针对 tmux 丢失、sandbox 外部销毁和后端状态损坏等场景的单元测试。
+- 第三步：在上述最小失效清理闭环稳定后，再回头补更完整的 Docker 失败路径覆盖、工作区外路径暴露策略、只读挂载细节和审计字段完整性。
+- 第四步：在最小闭环稳定后，再逐步补危险命令判定、执行拦截、更细粒度可读写范围限制、资源限制和审计增强。
 
 ## 分阶段推进
 
@@ -50,6 +56,9 @@
 - 第一阶段先追求最小闭环，不要同时引入多种 runtime、复杂权限系统和远程执行链路。
 - 设计时要保留与现有 `TerminalBackend`、`TmuxBackend`、runner 注入点的兼容性，避免为了 sandbox 反向破坏已稳定的 terminal 语义。
 - 所有实现都应优先可测试，避免把创建容器、路径映射、命令执行和策略判断耦合在一个结构体里。
+- 当前这一步只补“已失效实例的摘除与关闭”，不在这里扩展成后台巡检、闲置回收、风险分级路由或跨 session 资源治理。
+- 失效后的重建仍应沿用原有 route 和 working directory 约束；允许“同一 session 重新创建新实例”，但不允许静默切换成宿主机 fallback。
+- 清理路径必须优先保证旧 entry 不再被 registry 继续返回，并确保旧 backend / sandbox 有明确关闭动作，避免重复复用已经损坏的实例。
 
 ## Code Anchor
 
@@ -63,6 +72,8 @@
 - `internal/sandbox/runtime.go`：统一 runtime 抽象，以及 host runtime / sandbox runtime 适配。
 - `internal/sandbox/terminal_runtime.go`：terminal 装配入口，显式绑定当前运行环境。
 - `internal/sandbox/sandbox_test.go`：阶段 1、阶段 2、阶段 3、阶段 4 契约测试。
+- `internal/tool/bash_session_registry.go`：`bash` 会话级 executor 注册、复用、失效摘除与关闭入口。
+- `internal/core/session.go`：会话结束时的 `ReleaseBashSession()` 清理时机。
 - `internal/tool/terminal/backend.go`：现有终端后端抽象，后续 sandbox 接入时必须兼容的能力面。
 - `internal/tool/terminal/tmux_backend.go`：现有 tmux backend 壳层和 runner 适配入口。
 - `internal/tool/terminal/tmux_pane_pool.go`：现有固定 `pane_id -> pane` 绑定、局部 reset 和 pane 生命周期主逻辑。

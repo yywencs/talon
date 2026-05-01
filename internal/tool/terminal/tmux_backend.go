@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
+	"github.com/wen/opentalon/pkg/logger"
 )
 
 type tmuxCommandRunner interface {
@@ -333,7 +334,9 @@ func (b *TmuxBackend) prepareCommandLocked(ctx context.Context, paneID string) e
 	if b.paneBindings == nil {
 		b.paneBindings = make(map[string]*tmuxPaneHandle)
 	}
+
 	if _, exists := b.paneBindings[paneID]; exists {
+		logger.Debug("tmux pane %q 已绑定过，无需再次绑定", paneID)
 		return nil
 	}
 
@@ -342,6 +345,7 @@ func (b *TmuxBackend) prepareCommandLocked(ctx context.Context, paneID string) e
 		return err
 	}
 	b.paneBindings[paneID] = pane
+	logger.Debug("tmux 成功绑定 pane %q", pane.PaneID)
 	return nil
 }
 

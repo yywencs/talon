@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/wen/opentalon/pkg/logger"
 )
 
 const (
@@ -96,7 +97,7 @@ func (s *DockerSandbox) Start(ctx context.Context) error {
 		_ = s.removeContainer(ctx, name)
 		return fmt.Errorf("failed to start docker sandbox %q: %w", name, err)
 	}
-
+	logger.Info("docker 成功启动 sandbox %q", name)
 	s.containerName = name
 	s.status = StatusRunning
 	s.touchActivity()

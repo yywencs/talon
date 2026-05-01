@@ -3,10 +3,12 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
 
+	sandboxpkg "github.com/wen/opentalon/internal/sandbox"
 	terminalpkg "github.com/wen/opentalon/internal/tool/terminal"
 	"github.com/wen/opentalon/internal/types"
 )
@@ -16,6 +18,8 @@ type fakeToolBackend struct {
 	screen        string
 	workingDir    string
 	initializeErr error
+	readErr       error
+	prepareErr    error
 	closeCount    int
 	sentPaneIDs   []string
 }
@@ -54,6 +58,9 @@ func (b *fakeToolBackend) ReadScreen(ctx context.Context, paneID string) (string
 	_ = paneID
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.readErr != nil {
+		return "", b.readErr
+	}
 	return b.screen, nil
 }
 
@@ -81,7 +88,7 @@ func (b *fakeToolBackend) IsRunning(ctx context.Context, paneID string) (bool, e
 func (b *fakeToolBackend) PrepareCommand(ctx context.Context, paneID string) error {
 	_ = ctx
 	_ = paneID
-	return nil
+	return b.prepareErr
 }
 
 func (b *fakeToolBackend) CompleteCommand(ctx context.Context, paneID string) error {
@@ -132,22 +139,35 @@ func extractToolTestMarker(text string) string {
 	return text[start : start+end]
 }
 
-func installBashToolTestHooks(t *testing.T, workingDir string, factory func(route bashRuntimeRoute, workingDir string) terminalpkg.TerminalBackend) {
+func installBashToolTestHooks(t *testing.T, workingDir string, factory func(runtimeRoute string, workingDir string) terminalpkg.TerminalBackend) {
+	t.Helper()
+	installBashToolBundleTestHooks(t, workingDir, func(runtimeRoute string, workingDir string) bashBackendBundle {
+		return bashBackendBundle{backend: factory(runtimeRoute, workingDir)}
+	})
+}
+
+func installBashToolBundleTestHooks(t *testing.T, workingDir string, factory func(runtimeRoute string, workingDir string) bashBackendBundle) {
 	t.Helper()
 
 	prevResolve := resolveBashWorkingDir
-	prevBackendFactory := newBashBackendForRoute
+	prevHostFactory := newHostBashBackendBundle
+	prevSandboxFactory := newSandboxBashBackendBundle
 	prevRegistry := bashSessionExecutors
 	resolveBashWorkingDir = func() string {
 		return workingDir
 	}
-	newBashBackendForRoute = func(ctx context.Context, route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+	newHostBashBackendBundle = func(ctx context.Context, wd string) bashBackendBundle {
 		_ = ctx
-		return factory(route, wd)
+		return factory(bashRuntimeLabelHost, wd)
+	}
+	newSandboxBashBackendBundle = func(ctx context.Context, wd string) bashBackendBundle {
+		_ = ctx
+		return factory(bashRuntimeLabelSandbox, wd)
 	}
 	t.Cleanup(func() {
 		resolveBashWorkingDir = prevResolve
-		newBashBackendForRoute = prevBackendFactory
+		newHostBashBackendBundle = prevHostFactory
+		newSandboxBashBackendBundle = prevSandboxFactory
 		bashSessionExecutors = prevRegistry
 	})
 	bashSessionExecutors = newBashSessionRegistry()
@@ -156,10 +176,10 @@ func installBashToolTestHooks(t *testing.T, workingDir string, factory func(rout
 func TestBashRegisteredToolUsesSandboxBackendByDefault(t *testing.T) {
 	workingDir := t.TempDir()
 	backend := &fakeToolBackend{workingDir: workingDir}
-	var gotRoute bashRuntimeRoute
+	var gotRoute string
 
-	installBashToolTestHooks(t, workingDir, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
-		gotRoute = route
+	installBashToolTestHooks(t, workingDir, func(runtimeRoute string, wd string) terminalpkg.TerminalBackend {
+		gotRoute = runtimeRoute
 		if wd != workingDir {
 			t.Fatalf("working dir = %q, want %q", wd, workingDir)
 		}
@@ -184,8 +204,8 @@ func TestBashRegisteredToolUsesSandboxBackendByDefault(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *TerminalObservation, got %T", obs)
 	}
-	if gotRoute != bashRuntimeRouteSandbox {
-		t.Fatalf("route = %q, want %q", gotRoute, bashRuntimeRouteSandbox)
+	if gotRoute != bashRuntimeLabelSandbox {
+		t.Fatalf("route = %q, want %q", gotRoute, bashRuntimeLabelSandbox)
 	}
 	if output.ExitCodeValue() != 0 {
 		t.Fatalf("expected exit code 0, got %d, content: %q", output.ExitCodeValue(), output.OutputText())
@@ -200,10 +220,10 @@ func TestBashRegisteredToolUsesSandboxBackendByDefault(t *testing.T) {
 
 func TestBashDefaultToolReturnsStableErrorWhenSandboxInitFails(t *testing.T) {
 	workingDir := t.TempDir()
-	var gotRoute bashRuntimeRoute
+	var gotRoute string
 
-	installBashToolTestHooks(t, workingDir, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
-		gotRoute = route
+	installBashToolTestHooks(t, workingDir, func(runtimeRoute string, wd string) terminalpkg.TerminalBackend {
+		gotRoute = runtimeRoute
 		return &fakeToolBackend{
 			workingDir:    wd,
 			initializeErr: context.DeadlineExceeded,
@@ -228,8 +248,8 @@ func TestBashDefaultToolReturnsStableErrorWhenSandboxInitFails(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *TerminalObservation, got %T", obs)
 	}
-	if gotRoute != bashRuntimeRouteSandbox {
-		t.Fatalf("route = %q, want %q", gotRoute, bashRuntimeRouteSandbox)
+	if gotRoute != bashRuntimeLabelSandbox {
+		t.Fatalf("route = %q, want %q", gotRoute, bashRuntimeLabelSandbox)
 	}
 	if output.ExitCodeValue() != -1 {
 		t.Fatalf("expected exit code -1, got %d", output.ExitCodeValue())
@@ -242,10 +262,10 @@ func TestBashDefaultToolReturnsStableErrorWhenSandboxInitFails(t *testing.T) {
 func TestHostBashToolUsesExplicitHostBackend(t *testing.T) {
 	workingDir := t.TempDir()
 	backend := &fakeToolBackend{workingDir: workingDir}
-	var gotRoute bashRuntimeRoute
+	var gotRoute string
 
-	installBashToolTestHooks(t, workingDir, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
-		gotRoute = route
+	installBashToolTestHooks(t, workingDir, func(runtimeRoute string, wd string) terminalpkg.TerminalBackend {
+		gotRoute = runtimeRoute
 		return backend
 	})
 
@@ -263,8 +283,8 @@ func TestHostBashToolUsesExplicitHostBackend(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *TerminalObservation, got %T", obs)
 	}
-	if gotRoute != bashRuntimeRouteHost {
-		t.Fatalf("route = %q, want %q", gotRoute, bashRuntimeRouteHost)
+	if gotRoute != bashRuntimeLabelHost {
+		t.Fatalf("route = %q, want %q", gotRoute, bashRuntimeLabelHost)
 	}
 	if output.ExitCodeValue() != 0 {
 		t.Fatalf("expected exit code 0, got %d", output.ExitCodeValue())
@@ -327,10 +347,10 @@ func TestBashDefaultToolReusesExecutorWithinSameSession(t *testing.T) {
 	workingDir := t.TempDir()
 	var createCount int
 
-	installBashToolTestHooks(t, workingDir, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+	installBashToolTestHooks(t, workingDir, func(runtimeRoute string, wd string) terminalpkg.TerminalBackend {
 		createCount++
-		if route != bashRuntimeRouteSandbox {
-			t.Fatalf("route = %q, want %q", route, bashRuntimeRouteSandbox)
+		if runtimeRoute != bashRuntimeLabelSandbox {
+			t.Fatalf("route = %q, want %q", runtimeRoute, bashRuntimeLabelSandbox)
 		}
 		return &fakeToolBackend{workingDir: wd}
 	})
@@ -366,7 +386,7 @@ func TestBashDefaultToolSeparatesExecutorsAcrossSessions(t *testing.T) {
 	workingDir := t.TempDir()
 	var createCount int
 
-	installBashToolTestHooks(t, workingDir, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+	installBashToolTestHooks(t, workingDir, func(runtimeRoute string, wd string) terminalpkg.TerminalBackend {
 		createCount++
 		return &fakeToolBackend{workingDir: wd}
 	})
@@ -406,7 +426,7 @@ func TestBashDefaultToolRemovesFailedSessionExecutorAfterInitializeError(t *test
 	secondBackend := &fakeToolBackend{workingDir: workingDir}
 	createCount := 0
 
-	installBashToolTestHooks(t, workingDir, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+	installBashToolTestHooks(t, workingDir, func(runtimeRoute string, wd string) terminalpkg.TerminalBackend {
 		createCount++
 		if createCount == 1 {
 			return firstBackend
@@ -452,7 +472,7 @@ func TestReleaseBashSessionClosesCachedExecutor(t *testing.T) {
 	backend := &fakeToolBackend{workingDir: workingDir}
 	var createCount int
 
-	installBashToolTestHooks(t, workingDir, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+	installBashToolTestHooks(t, workingDir, func(runtimeRoute string, wd string) terminalpkg.TerminalBackend {
 		createCount++
 		return backend
 	})
@@ -484,10 +504,10 @@ func TestReleaseBashSessionClosesCachedExecutor(t *testing.T) {
 	}
 
 	recreatedBackend := &fakeToolBackend{workingDir: workingDir}
-	newBashBackendForRoute = func(ctx context.Context, route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+	newSandboxBashBackendBundle = func(ctx context.Context, wd string) bashBackendBundle {
 		_ = ctx
 		createCount++
-		return recreatedBackend
+		return bashBackendBundle{backend: recreatedBackend}
 	}
 	toolB := factory(context.Background())
 	if obs := toolB.Execute(sessionCtx, rawArgs).(*TerminalObservation); obs.ExitCodeValue() != 0 {
@@ -498,9 +518,60 @@ func TestReleaseBashSessionClosesCachedExecutor(t *testing.T) {
 	}
 }
 
+func TestBashDefaultToolRemovesFailedSessionExecutorAfterRuntimeFailure(t *testing.T) {
+	workingDir := t.TempDir()
+	firstBackend := &fakeToolBackend{
+		workingDir: workingDir,
+		readErr:    errors.New("tmux session disappeared"),
+	}
+	secondBackend := &fakeToolBackend{workingDir: workingDir}
+	createCount := 0
+
+	installBashToolTestHooks(t, workingDir, func(runtimeRoute string, wd string) terminalpkg.TerminalBackend {
+		createCount++
+		if createCount == 1 {
+			return firstBackend
+		}
+		return secondBackend
+	})
+
+	factory, ok := Get("bash")
+	if !ok {
+		t.Fatal("bash tool not registered")
+	}
+	rawArgs, _ := json.Marshal(TerminalAction{
+		ToolMetadata: types.ToolMetadata{
+			Summary:      "test failed executor runtime cleanup",
+			SecurityRisk: types.SecurityRisk_HIGH,
+		},
+		Command: "echo hi",
+		PaneID:  "pane-a",
+	})
+
+	sessionCtx := ContextWithSessionID(context.Background(), "session-runtime-failure")
+	firstObs := factory(context.Background()).Execute(sessionCtx, rawArgs).(*TerminalObservation)
+	if firstObs.ExitCodeValue() != -1 {
+		t.Fatalf("first exit code = %d, want -1", firstObs.ExitCodeValue())
+	}
+	if !strings.Contains(firstObs.OutputText(), "读取终端屏幕") && !strings.Contains(firstObs.OutputText(), "执行命令前读取终端屏幕") {
+		t.Fatalf("expected read screen error, got %q", firstObs.OutputText())
+	}
+	if firstBackend.closeCount != 1 {
+		t.Fatalf("first backend close count = %d, want 1", firstBackend.closeCount)
+	}
+
+	secondObs := factory(context.Background()).Execute(sessionCtx, rawArgs).(*TerminalObservation)
+	if secondObs.ExitCodeValue() != 0 {
+		t.Fatalf("second exit code = %d, output = %q", secondObs.ExitCodeValue(), secondObs.OutputText())
+	}
+	if createCount != 2 {
+		t.Fatalf("backend create count = %d, want 2", createCount)
+	}
+}
+
 func TestBashDefaultToolRequiresSessionID(t *testing.T) {
 	workingDir := t.TempDir()
-	installBashToolTestHooks(t, workingDir, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+	installBashToolTestHooks(t, workingDir, func(runtimeRoute string, wd string) terminalpkg.TerminalBackend {
 		return &fakeToolBackend{workingDir: wd}
 	})
 
@@ -531,10 +602,10 @@ func TestBashSessionRegistryRejectsDifferentWorkingDirForSameSession(t *testing.
 	workingDirB := t.TempDir()
 	var createCount int
 
-	installBashToolTestHooks(t, workingDirA, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+	installBashToolTestHooks(t, workingDirA, func(runtimeRoute string, wd string) terminalpkg.TerminalBackend {
 		createCount++
-		if route != bashRuntimeRouteSandbox {
-			t.Fatalf("route = %q, want %q", route, bashRuntimeRouteSandbox)
+		if runtimeRoute != bashRuntimeLabelSandbox {
+			t.Fatalf("route = %q, want %q", runtimeRoute, bashRuntimeLabelSandbox)
 		}
 		return &fakeToolBackend{workingDir: wd}
 	})
@@ -542,7 +613,9 @@ func TestBashSessionRegistryRejectsDifferentWorkingDirForSameSession(t *testing.
 	registry := newBashSessionRegistry()
 	sessionID := "session-workingdir-mismatch"
 
-	firstExecutor, err := registry.executorForSession(context.Background(), sessionID, bashRuntimeRouteSandbox, workingDirA)
+	firstExecutor, err := registry.executorForSession(context.Background(), sessionID, bashRuntimeLabelSandbox, workingDirA, func(ctx context.Context, wd string) bashBackendBundle {
+		return newSandboxBashBackendBundle(ctx, wd)
+	})
 	if err != nil {
 		t.Fatalf("first executorForSession() error = %v", err)
 	}
@@ -550,7 +623,9 @@ func TestBashSessionRegistryRejectsDifferentWorkingDirForSameSession(t *testing.
 		t.Fatal("expected first executor")
 	}
 
-	secondExecutor, err := registry.executorForSession(context.Background(), sessionID, bashRuntimeRouteSandbox, workingDirB)
+	secondExecutor, err := registry.executorForSession(context.Background(), sessionID, bashRuntimeLabelSandbox, workingDirB, func(ctx context.Context, wd string) bashBackendBundle {
+		return newSandboxBashBackendBundle(ctx, wd)
+	})
 	if err == nil {
 		t.Fatal("expected working_dir mismatch error")
 	}
@@ -565,28 +640,28 @@ func TestBashSessionRegistryRejectsDifferentWorkingDirForSameSession(t *testing.
 	}
 }
 
-func TestBashSessionRegistryHostRouteDoesNotUseSessionCache(t *testing.T) {
+func TestResolveBashExecutorHostRouteDoesNotUseSessionCache(t *testing.T) {
 	workingDir := t.TempDir()
 	var createCount int
 
-	installBashToolTestHooks(t, workingDir, func(route bashRuntimeRoute, wd string) terminalpkg.TerminalBackend {
+	installBashToolTestHooks(t, workingDir, func(runtimeRoute string, wd string) terminalpkg.TerminalBackend {
 		createCount++
-		if route != bashRuntimeRouteHost {
-			t.Fatalf("route = %q, want %q", route, bashRuntimeRouteHost)
+		if runtimeRoute != bashRuntimeLabelHost {
+			t.Fatalf("route = %q, want %q", runtimeRoute, bashRuntimeLabelHost)
 		}
 		return &fakeToolBackend{workingDir: wd}
 	})
 
-	registry := newBashSessionRegistry()
 	sessionID := "session-host-route"
+	hostCtx := ContextWithSessionID(context.Background(), sessionID)
 
-	firstExecutor, err := registry.executorForSession(context.Background(), sessionID, bashRuntimeRouteHost, workingDir)
+	firstExecutor, err := resolveEphemeralBashExecutor(hostCtx, workingDir, newHostBashBackendBundle)
 	if err != nil {
-		t.Fatalf("first executorForSession() error = %v", err)
+		t.Fatalf("first resolveBashExecutor() error = %v", err)
 	}
-	secondExecutor, err := registry.executorForSession(context.Background(), sessionID, bashRuntimeRouteHost, workingDir)
+	secondExecutor, err := resolveEphemeralBashExecutor(hostCtx, workingDir, newHostBashBackendBundle)
 	if err != nil {
-		t.Fatalf("second executorForSession() error = %v", err)
+		t.Fatalf("second resolveBashExecutor() error = %v", err)
 	}
 	if firstExecutor == nil || secondExecutor == nil {
 		t.Fatal("expected non-nil executors")
@@ -597,4 +672,111 @@ func TestBashSessionRegistryHostRouteDoesNotUseSessionCache(t *testing.T) {
 	if createCount != 2 {
 		t.Fatalf("backend create count = %d, want 2", createCount)
 	}
+}
+
+func TestBashSessionRegistryInvalidateSessionDoesNotDeleteReplacementEntry(t *testing.T) {
+	workingDir := t.TempDir()
+	firstBackend := &fakeToolBackend{workingDir: workingDir}
+	replacementBackend := &fakeToolBackend{workingDir: workingDir}
+	createCount := 0
+
+	installBashToolTestHooks(t, workingDir, func(runtimeRoute string, wd string) terminalpkg.TerminalBackend {
+		createCount++
+		if createCount == 1 {
+			return firstBackend
+		}
+		return replacementBackend
+	})
+
+	registry := newBashSessionRegistry()
+	sessionID := "session-replacement-safety"
+
+	firstExecutor, err := registry.executorForSession(context.Background(), sessionID, bashRuntimeLabelSandbox, workingDir, func(ctx context.Context, wd string) bashBackendBundle {
+		return newSandboxBashBackendBundle(ctx, wd)
+	})
+	if err != nil {
+		t.Fatalf("first executorForSession() error = %v", err)
+	}
+	firstEntry := registry.sessions[sessionID]
+	if firstEntry == nil {
+		t.Fatal("expected first cached entry")
+	}
+
+	if releaseErr := registry.releaseSession(context.Background(), sessionID); releaseErr != nil {
+		t.Fatalf("unexpected release error: %v", releaseErr)
+	}
+
+	replacementExecutor, err := registry.executorForSession(context.Background(), sessionID, bashRuntimeLabelSandbox, workingDir, func(ctx context.Context, wd string) bashBackendBundle {
+		return newSandboxBashBackendBundle(ctx, wd)
+	})
+	if err != nil {
+		t.Fatalf("replacement executorForSession() error = %v", err)
+	}
+	replacementEntry := registry.sessions[sessionID]
+	if replacementEntry == nil {
+		t.Fatal("expected replacement cached entry")
+	}
+
+	registry.invalidateSession(context.Background(), sessionID, firstEntry, errors.New("late failure callback"))
+
+	currentEntry := registry.sessions[sessionID]
+	if currentEntry != replacementEntry {
+		t.Fatal("expected replacement entry to remain cached")
+	}
+	if replacementExecutor == nil || firstExecutor == nil {
+		t.Fatal("expected non-nil executors")
+	}
+}
+
+func TestBashSessionRegistryAuditArgsUseSandboxInfoProviderInsteadOfBackendAssertion(t *testing.T) {
+	workingDir := t.TempDir()
+	info := sandboxpkg.Info{
+		Status:        sandboxpkg.StatusRunning,
+		Image:         "sandbox-image",
+		ContainerName: "sandbox-container",
+	}
+
+	installBashToolBundleTestHooks(t, workingDir, func(runtimeRoute string, wd string) bashBackendBundle {
+		if runtimeRoute != bashRuntimeLabelSandbox {
+			t.Fatalf("route = %q, want %q", runtimeRoute, bashRuntimeLabelSandbox)
+		}
+		return bashBackendBundle{
+			backend: &fakeToolBackend{workingDir: wd},
+			sandboxInfoProvider: func() sandboxpkg.Info {
+				return info
+			},
+		}
+	})
+
+	registry := newBashSessionRegistry()
+	sessionID := "session-audit-provider"
+	executor, err := registry.executorForSession(context.Background(), sessionID, bashRuntimeLabelSandbox, workingDir, func(ctx context.Context, wd string) bashBackendBundle {
+		return newSandboxBashBackendBundle(ctx, wd)
+	})
+	if err != nil {
+		t.Fatalf("executorForSession() error = %v", err)
+	}
+	if executor == nil {
+		t.Fatal("expected executor")
+	}
+
+	args := registry.auditArgsForSession(sessionID)
+	if !containsAuditArg(args, "sandbox_status", string(info.Status)) {
+		t.Fatalf("expected sandbox_status in args, got %#v", args)
+	}
+	if !containsAuditArg(args, "sandbox_image", info.Image) {
+		t.Fatalf("expected sandbox_image in args, got %#v", args)
+	}
+	if !containsAuditArg(args, "sandbox_container", info.ContainerName) {
+		t.Fatalf("expected sandbox_container in args, got %#v", args)
+	}
+}
+
+func containsAuditArg(args []any, key string, value any) bool {
+	for i := 0; i+1 < len(args); i += 2 {
+		if args[i] == key && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }

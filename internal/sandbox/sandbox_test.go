@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	terminalpkg "github.com/wen/opentalon/internal/tool/terminal"
 	"github.com/wen/opentalon/pkg/observability"
 )
 
@@ -476,6 +477,97 @@ func TestSandboxTmuxBackendUsesInjectedRuntimeWithoutDockerField(t *testing.T) {
 	}
 }
 
+func TestNewSandboxTmuxBackendExposesLifecycleAndMetadataCapabilities(t *testing.T) {
+	sb := &fakeSandbox{
+		info: Info{Status: StatusCreated},
+	}
+	backend := NewSandboxTmuxBackend("/tmp/project", sb)
+
+	if lifecycle := terminalpkg.AsTerminalBackendCommandLifecycle(backend); lifecycle == nil {
+		t.Fatal("expected sandbox tmux backend to expose lifecycle capabilities")
+	}
+	if metadata := terminalpkg.AsTerminalBackendMetadata(backend); metadata == nil {
+		t.Fatal("expected sandbox tmux backend to expose metadata capabilities")
+	}
+}
+
+func TestNewSandboxTmuxBackendPreservesTmuxPaneBindingAndMetadata(t *testing.T) {
+	sb := &fakeSandbox{
+		info: Info{Status: StatusCreated},
+		execFunc: func(command string, args ...string) (string, error) {
+			if command == "sh" && len(args) >= 2 && args[0] == "-lc" {
+				script := args[1]
+				switch {
+				case strings.Contains(script, "tmux"):
+					return "/usr/bin/tmux\n", nil
+				case strings.Contains(script, "bash"):
+					return "/bin/bash\n", nil
+				default:
+					return "", exec.ErrNotFound
+				}
+			}
+			if command != "tmux" {
+				t.Fatalf("unexpected command name: %q", command)
+			}
+			if len(args) == 0 {
+				t.Fatal("expected tmux arguments")
+			}
+			switch args[0] {
+			case "new-session":
+				return "%1\n", nil
+			case "set-option", "send-keys", "clear-history":
+				return "", nil
+			case "capture-pane":
+				return "screen\n", nil
+			case "display-message":
+				switch args[len(args)-1] {
+				case "#{pane_pid}":
+					return "1234\n", nil
+				case "#{pane_current_path}":
+					return "/tmp/project\n", nil
+				default:
+					return "", nil
+				}
+			default:
+				return "", nil
+			}
+		},
+	}
+
+	backend := NewSandboxTmuxBackend("/tmp/project", sb)
+	lifecycle := terminalpkg.AsTerminalBackendCommandLifecycle(backend)
+	if lifecycle == nil {
+		t.Fatal("expected lifecycle capabilities")
+	}
+	metadata := terminalpkg.AsTerminalBackendMetadata(backend)
+	if metadata == nil {
+		t.Fatal("expected metadata capabilities")
+	}
+
+	if err := lifecycle.PrepareCommand(context.Background(), "pane-1"); err != nil {
+		t.Fatalf("prepare command through backend: %v", err)
+	}
+	if _, err := backend.ReadScreen(context.Background(), "pane-1"); err != nil {
+		t.Fatalf("read screen after prepare through backend: %v", err)
+	}
+
+	pid, err := metadata.PanePID(context.Background(), "pane-1")
+	if err != nil {
+		t.Fatalf("pane pid through backend: %v", err)
+	}
+	if pid == nil || *pid != 1234 {
+		t.Fatalf("pid = %v, want 1234", pid)
+	}
+
+	workingDir, err := metadata.CurrentWorkingDir(context.Background(), "pane-1")
+	if err != nil {
+		t.Fatalf("working dir through backend: %v", err)
+	}
+	if workingDir != "/tmp/project" {
+		t.Fatalf("working dir = %q, want %q", workingDir, "/tmp/project")
+	}
+}
+
 func TestDefaultTmuxBackendUsesManagerCreatedSandbox(t *testing.T) {
 	sb := &fakeSandbox{
 		info: Info{Status: StatusCreated},
@@ -555,6 +647,7 @@ type fakeSandbox struct {
 	info       Info
 	startCalls int
 	execCalls  [][]string
+	execFunc   func(command string, args ...string) (string, error)
 }
 
 func (s *fakeSandbox) Start(ctx context.Context) error {
@@ -574,6 +667,9 @@ func (s *fakeSandbox) Exec(ctx context.Context, command string, args ...string) 
 	_ = ctx
 	call := append([]string{command}, args...)
 	s.execCalls = append(s.execCalls, call)
+	if s.execFunc != nil {
+		return s.execFunc(command, args...)
+	}
 	if command == "sh" && len(args) >= 2 && args[0] == "-lc" {
 		script := args[1]
 		switch {

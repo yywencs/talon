@@ -7,19 +7,6 @@ import (
 	terminalpkg "github.com/wen/opentalon/internal/tool/terminal"
 )
 
-type sandboxTmuxBackend struct {
-	terminalpkg.TerminalBackend
-	sandbox Sandbox
-}
-
-// SandboxInfo 返回当前 sandbox tmux backend 绑定的 sandbox 状态快照。
-func (b *sandboxTmuxBackend) SandboxInfo() Info {
-	if b == nil || b.sandbox == nil {
-		return Info{}
-	}
-	return b.sandbox.Info()
-}
-
 type unavailableRuntime struct {
 	err error
 }
@@ -53,10 +40,7 @@ func NewSandboxTmuxBackend(workingDir string, sb Sandbox) terminalpkg.TerminalBa
 	if runtime == nil {
 		runtime = unavailableRuntime{err: fmt.Errorf("sandbox runtime is unavailable")}
 	}
-	return &sandboxTmuxBackend{
-		TerminalBackend: terminalpkg.NewTmuxBackendWithRunner(workingDir, runtime),
-		sandbox:         sb,
-	}
+	return terminalpkg.NewTmuxBackendWithRunner(workingDir, runtime)
 }
 
 // NewHostTmuxBackend 创建绑定宿主机 runtime 的 tmux backend。

@@ -38,16 +38,21 @@ type ExecutorConfig struct {
 	DefaultTimeout time.Duration
 	// Backend 表示执行器使用的终端会话后端。
 	Backend TerminalBackend
+	// OnBackendFailure 表示 backend 返回错误时的可选回调。
+	OnBackendFailure func(context.Context, error)
 }
 
 // Executor 表示终端工具在当前运行环境中的执行器。
 type Executor struct {
-	workingDir     string
-	defaultTimeout time.Duration
-	backend        TerminalBackend
-	mu             sync.Mutex
-	pending        map[string]*pendingExecution
-	paneLocks      map[string]*sync.Mutex
+	workingDir       string
+	defaultTimeout   time.Duration
+	backend          TerminalBackend
+	lifecycle        TerminalBackendCommandLifecycle
+	metadata         TerminalBackendMetadata
+	onBackendFailure func(context.Context, error)
+	mu               sync.Mutex
+	pending          map[string]*pendingExecution
+	paneLocks        map[string]*sync.Mutex
 }
 
 var defaultExecutor = NewExecutor(ExecutorConfig{})
@@ -63,11 +68,14 @@ func NewExecutor(config ExecutorConfig) *Executor {
 		backend = NewTmuxBackend(config.WorkingDir)
 	}
 	return &Executor{
-		workingDir:     config.WorkingDir,
-		defaultTimeout: defaultTimeout,
-		backend:        backend,
-		pending:        make(map[string]*pendingExecution),
-		paneLocks:      make(map[string]*sync.Mutex),
+		workingDir:       config.WorkingDir,
+		defaultTimeout:   defaultTimeout,
+		backend:          backend,
+		lifecycle:        AsTerminalBackendCommandLifecycle(backend),
+		metadata:         AsTerminalBackendMetadata(backend),
+		onBackendFailure: config.OnBackendFailure,
+		pending:          make(map[string]*pendingExecution),
+		paneLocks:        make(map[string]*sync.Mutex),
 	}
 }
 
@@ -157,6 +165,7 @@ func (e *Executor) executeWithBackend(ctx context.Context, action TerminalAction
 	}
 
 	if err := e.backend.Initialize(ctx); err != nil {
+		e.notifyBackendFailure(ctx, err)
 		return commandResult{
 			ExitCode: -1,
 			Err: NewTerminalBackendOperationError(
@@ -247,9 +256,8 @@ func (e *Executor) executeCommand(ctx context.Context, paneID, command string) c
 		}
 	}
 
-	lifecycle := e.backendLifecycle()
-	if lifecycle != nil {
-		if err := lifecycle.PrepareCommand(ctx, paneID); err != nil {
+	if e.lifecycle != nil {
+		if err := e.prepareBackendCommand(ctx, paneID); err != nil {
 			return commandResult{
 				ExitCode: -1,
 				Err: NewTerminalBackendOperationError(
@@ -263,6 +271,7 @@ func (e *Executor) executeCommand(ctx context.Context, paneID, command string) c
 
 	screen, err := e.backend.ReadScreen(ctx, paneID)
 	if err != nil {
+		e.notifyBackendFailure(ctx, err)
 		e.invalidateBackendCommand(ctx, paneID)
 		return commandResult{
 			ExitCode: -1,
@@ -277,6 +286,7 @@ func (e *Executor) executeCommand(ctx context.Context, paneID, command string) c
 
 	marker := newExecutionMarker()
 	if err := e.backend.SendKeys(ctx, paneID, wrapCommandForSession(command, marker), true); err != nil {
+		e.notifyBackendFailure(ctx, err)
 		e.invalidateBackendCommand(ctx, paneID)
 		return commandResult{
 			ExitCode: -1,
@@ -340,6 +350,7 @@ func (e *Executor) executeInput(ctx context.Context, paneID, command string) com
 		if isInterruptCommand(trimmed) {
 			interrupted, err := e.backend.Interrupt(ctx, paneID)
 			if err != nil {
+				e.notifyBackendFailure(ctx, err)
 				return commandResult{
 					ExitCode: -1,
 					PID:      e.currentPID(ctx, paneID),
@@ -362,6 +373,7 @@ func (e *Executor) executeInput(ctx context.Context, paneID, command string) com
 			}
 		} else {
 			if err := e.backend.SendKeys(ctx, paneID, command, true); err != nil {
+				e.notifyBackendFailure(ctx, err)
 				return commandResult{
 					ExitCode: -1,
 					PID:      e.currentPID(ctx, paneID),
@@ -394,6 +406,7 @@ func (e *Executor) collectPendingResult(ctx context.Context, paneID string) comm
 	for {
 		screen, err := e.backend.ReadScreen(ctx, paneID)
 		if err != nil {
+			e.notifyBackendFailure(ctx, err)
 			e.clearPending(paneID)
 			e.invalidateBackendCommand(ctx, paneID)
 			return commandResult{
@@ -477,6 +490,7 @@ func (e *Executor) syncPendingState(ctx context.Context, paneID string) (bool, e
 
 	running, err := e.backend.IsRunning(ctx, paneID)
 	if err != nil {
+		e.notifyBackendFailure(ctx, err)
 		e.clearPending(paneID)
 		return false, NewTerminalBackendOperationError(
 			"检查终端会话运行状态",
@@ -501,36 +515,53 @@ func (e *Executor) syncPendingState(ctx context.Context, paneID string) (bool, e
 	return true, nil
 }
 
-func (e *Executor) backendLifecycle() terminalBackendCommandLifecycle {
-	lifecycle, ok := e.backend.(terminalBackendCommandLifecycle)
-	if !ok {
+func (e *Executor) notifyBackendFailure(ctx context.Context, cause error) {
+	if cause == nil || e.onBackendFailure == nil {
+		return
+	}
+	e.onBackendFailure(ctx, cause)
+}
+
+func (e *Executor) prepareBackendCommand(ctx context.Context, paneID string) error {
+	if e.lifecycle == nil {
 		return nil
 	}
-	return lifecycle
+	err := e.lifecycle.PrepareCommand(ctx, paneID)
+	if err != nil {
+		e.notifyBackendFailure(ctx, err)
+	}
+	return err
 }
 
 func (e *Executor) completeBackendCommand(ctx context.Context, paneID string) error {
-	lifecycle := e.backendLifecycle()
-	if lifecycle == nil {
+	if e.lifecycle == nil {
 		return nil
 	}
-	return lifecycle.CompleteCommand(ctx, paneID)
+	err := e.lifecycle.CompleteCommand(ctx, paneID)
+	if err != nil {
+		e.notifyBackendFailure(ctx, err)
+	}
+	return err
 }
 
 func (e *Executor) invalidateBackendCommand(ctx context.Context, paneID string) {
-	lifecycle := e.backendLifecycle()
-	if lifecycle == nil {
+	if e.lifecycle == nil {
 		return
 	}
-	_ = lifecycle.InvalidateCommand(ctx, paneID)
+	if err := e.lifecycle.InvalidateCommand(ctx, paneID); err != nil {
+		e.notifyBackendFailure(ctx, err)
+	}
 }
 
 func (e *Executor) resetBackendPane(ctx context.Context, paneID string) error {
-	lifecycle := e.backendLifecycle()
-	if lifecycle == nil {
+	if e.lifecycle == nil {
 		return nil
 	}
-	return lifecycle.ResetPane(ctx, paneID)
+	err := e.lifecycle.ResetPane(ctx, paneID)
+	if err != nil {
+		e.notifyBackendFailure(ctx, err)
+	}
+	return err
 }
 
 func (e *Executor) captureCurrentMetadata(ctx context.Context, paneID, fallbackWorkingDir string) (*int, string) {
@@ -540,11 +571,10 @@ func (e *Executor) captureCurrentMetadata(ctx context.Context, paneID, fallbackW
 }
 
 func (e *Executor) currentPID(ctx context.Context, paneID string) *int {
-	metadataBackend, ok := e.backend.(terminalBackendMetadata)
-	if !ok {
+	if e.metadata == nil {
 		return nil
 	}
-	pid, err := metadataBackend.PanePID(ctx, paneID)
+	pid, err := e.metadata.PanePID(ctx, paneID)
 	if err != nil {
 		return nil
 	}
@@ -552,11 +582,10 @@ func (e *Executor) currentPID(ctx context.Context, paneID string) *int {
 }
 
 func (e *Executor) currentWorkingDir(ctx context.Context, paneID, fallback string) string {
-	metadataBackend, ok := e.backend.(terminalBackendMetadata)
-	if !ok {
+	if e.metadata == nil {
 		return fallback
 	}
-	workingDir, err := metadataBackend.CurrentWorkingDir(ctx, paneID)
+	workingDir, err := e.metadata.CurrentWorkingDir(ctx, paneID)
 	if err != nil || workingDir == "" {
 		return fallback
 	}

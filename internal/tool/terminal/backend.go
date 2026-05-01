@@ -24,18 +24,43 @@ type TerminalBackend interface {
 	IsRunning(ctx context.Context, paneID string) (bool, error)
 }
 
-// terminalBackendCommandLifecycle 定义终端后端可选暴露的命令生命周期管理能力。
-type terminalBackendCommandLifecycle interface {
+// TerminalBackendCommandLifecycle 定义终端后端可选暴露的命令生命周期管理能力。
+type TerminalBackendCommandLifecycle interface {
 	PrepareCommand(ctx context.Context, paneID string) error
 	CompleteCommand(ctx context.Context, paneID string) error
 	InvalidateCommand(ctx context.Context, paneID string) error
 	ResetPane(ctx context.Context, paneID string) error
 }
 
-// terminalBackendMetadata 定义终端后端可选暴露的元信息能力。
-type terminalBackendMetadata interface {
+// TerminalBackendMetadata 定义终端后端可选暴露的元信息能力。
+type TerminalBackendMetadata interface {
 	PanePID(ctx context.Context, paneID string) (*int, error)
 	CurrentWorkingDir(ctx context.Context, paneID string) (string, error)
+}
+
+// TerminalBackendCapabilities 定义 terminal 内部使用的完整 backend 能力面。
+type TerminalBackendCapabilities interface {
+	TerminalBackend
+	TerminalBackendCommandLifecycle
+	TerminalBackendMetadata
+}
+
+// AsTerminalBackendCommandLifecycle 返回 backend 暴露的命令生命周期能力。
+func AsTerminalBackendCommandLifecycle(backend TerminalBackend) TerminalBackendCommandLifecycle {
+	lifecycle, ok := backend.(TerminalBackendCommandLifecycle)
+	if !ok {
+		return nil
+	}
+	return lifecycle
+}
+
+// AsTerminalBackendMetadata 返回 backend 暴露的 metadata 能力。
+func AsTerminalBackendMetadata(backend TerminalBackend) TerminalBackendMetadata {
+	metadata, ok := backend.(TerminalBackendMetadata)
+	if !ok {
+		return nil
+	}
+	return metadata
 }
 
 // PTYBackend 表示 PTY 会话后端占位实现。
