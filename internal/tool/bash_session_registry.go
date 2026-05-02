@@ -140,6 +140,21 @@ func (r *bashSessionRegistry) auditArgsForSession(sessionID string) []any {
 	return r.auditArgsLocked(sessionID, r.sessions[sessionID])
 }
 
+func (r *bashSessionRegistry) pathMapperForSession(sessionID string) (PathMapper, bool) {
+	if sessionID == "" {
+		return PathMapper{}, false
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	entry := r.sessions[sessionID]
+	if entry == nil {
+		return PathMapper{}, false
+	}
+	return r.pathMapperLocked(entry)
+}
+
 func (r *bashSessionRegistry) auditArgsLocked(sessionID string, entry *bashSessionExecutorEntry) []any {
 	args := []any{
 		"session_id", sessionID,
@@ -164,4 +179,26 @@ func (r *bashSessionRegistry) auditArgsLocked(sessionID string, entry *bashSessi
 		}
 	}
 	return args
+}
+
+func (r *bashSessionRegistry) pathMapperLocked(entry *bashSessionExecutorEntry) (PathMapper, bool) {
+	if entry == nil {
+		return PathMapper{}, false
+	}
+
+	hostRoot := entry.workingDir
+	runtimeRoot := entry.workingDir
+	if entry.sandboxInfoProvider != nil {
+		info := entry.sandboxInfoProvider()
+		if info.HostWorkingDir != "" {
+			hostRoot = info.HostWorkingDir
+		}
+		if info.ContainerWorkDir != "" {
+			runtimeRoot = info.ContainerWorkDir
+		}
+	}
+	if hostRoot == "" || runtimeRoot == "" {
+		return PathMapper{}, false
+	}
+	return NewPathMapper(hostRoot, runtimeRoot), true
 }

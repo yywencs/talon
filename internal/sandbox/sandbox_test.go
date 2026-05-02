@@ -493,7 +493,11 @@ func TestNewSandboxTmuxBackendExposesLifecycleAndMetadataCapabilities(t *testing
 
 func TestNewSandboxTmuxBackendPreservesTmuxPaneBindingAndMetadata(t *testing.T) {
 	sb := &fakeSandbox{
-		info: Info{Status: StatusCreated},
+		info: Info{
+			Status:           StatusCreated,
+			HostWorkingDir:   "/tmp/project",
+			ContainerWorkDir: "/workspace",
+		},
 		execFunc: func(command string, args ...string) (string, error) {
 			if command == "sh" && len(args) >= 2 && args[0] == "-lc" {
 				script := args[1]
@@ -524,7 +528,7 @@ func TestNewSandboxTmuxBackendPreservesTmuxPaneBindingAndMetadata(t *testing.T) 
 				case "#{pane_pid}":
 					return "1234\n", nil
 				case "#{pane_current_path}":
-					return "/tmp/project\n", nil
+					return "/workspace/subdir\n", nil
 				default:
 					return "", nil
 				}
@@ -563,8 +567,23 @@ func TestNewSandboxTmuxBackendPreservesTmuxPaneBindingAndMetadata(t *testing.T) 
 	if err != nil {
 		t.Fatalf("working dir through backend: %v", err)
 	}
-	if workingDir != "/tmp/project" {
-		t.Fatalf("working dir = %q, want %q", workingDir, "/tmp/project")
+	if workingDir != "/tmp/project/subdir" {
+		t.Fatalf("working dir = %q, want %q", workingDir, "/tmp/project/subdir")
+	}
+
+	var sawRuntimeWorkingDir bool
+	for _, call := range sb.execCalls {
+		if len(call) < 1 || call[0] != "tmux" {
+			continue
+		}
+		joined := strings.Join(call, " ")
+		if strings.Contains(joined, "new-session") && strings.Contains(joined, "-c /workspace") {
+			sawRuntimeWorkingDir = true
+			break
+		}
+	}
+	if !sawRuntimeWorkingDir {
+		t.Fatalf("expected tmux session to start in container working dir, calls = %#v", sb.execCalls)
 	}
 }
 

@@ -25,6 +25,13 @@ func (e *FileEditor) Execute(ctx context.Context, action FileEditorAction) *File
 		return NewErrorObservation(action.Command, action.Path, err)
 	}
 	action.Path = validatedPath
+	if strings.TrimSpace(action.ResolvedPath) != "" {
+		resolvedPath, err := ValidatePath(action.ResolvedPath)
+		if err != nil {
+			return NewErrorObservation(action.Command, action.Path, err)
+		}
+		action.ResolvedPath = resolvedPath
+	}
 
 	switch action.Command {
 	case FileEditorCommandView:
@@ -45,6 +52,7 @@ func (e *FileEditor) Execute(ctx context.Context, action FileEditorAction) *File
 // executeCreate 执行文件创建命令。
 func (e *FileEditor) executeCreate(ctx context.Context, action FileEditorAction) *FileEditorObservation {
 	_ = ctx
+	filePath := action.executionPath()
 
 	if action.FileText == nil {
 		return NewErrorObservation(action.Command, action.Path, NewEditorToolParameterMissingError(action.Command, "file_text"))
@@ -56,7 +64,7 @@ func (e *FileEditor) executeCreate(ctx context.Context, action FileEditorAction)
 			NewFileValidationError(action.Path, fmt.Sprintf("文件内容太大：%.2fMB，最大允许 %dMB", bytesToMB(int64(len(*action.FileText))), e.MAX_FILE_SIZE_MB), nil),
 		)
 	}
-	if info, err := os.Stat(action.Path); err == nil {
+	if info, err := os.Stat(filePath); err == nil {
 		if info.IsDir() {
 			return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "目标路径已存在且是目录", nil))
 		}
@@ -65,7 +73,7 @@ func (e *FileEditor) executeCreate(ctx context.Context, action FileEditorAction)
 		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "检查目标路径状态失败", err))
 	}
 
-	parentDir := filepath.Dir(action.Path)
+	parentDir := filepath.Dir(filePath)
 	parentInfo, err := os.Stat(parentDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -77,22 +85,22 @@ func (e *FileEditor) executeCreate(ctx context.Context, action FileEditorAction)
 		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "父路径不是目录", nil))
 	}
 
-	file, err := os.OpenFile(action.Path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
 		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "创建文件失败", err))
 	}
 	if _, writeErr := file.WriteString(*action.FileText); writeErr != nil {
 		_ = file.Close()
-		_ = os.Remove(action.Path)
+		_ = os.Remove(filePath)
 		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "写入文件失败", writeErr))
 	}
 	if closeErr := file.Close(); closeErr != nil {
-		_ = os.Remove(action.Path)
+		_ = os.Remove(filePath)
 		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "关闭文件失败", closeErr))
 	}
 
-	if err := e.appendVersionToHistoryChain(action.Path, ""); err != nil {
-		_ = os.Remove(action.Path)
+	if err := e.appendVersionToHistoryChain(filePath, ""); err != nil {
+		_ = os.Remove(filePath)
 		return NewErrorObservation(action.Command, action.Path, fmt.Errorf("append create operation to version chain: %w", err))
 	}
 
@@ -109,8 +117,9 @@ func (e *FileEditor) executeCreate(ctx context.Context, action FileEditorAction)
 // executeStrReplace 执行字符串替换命令。
 func (e *FileEditor) executeStrReplace(ctx context.Context, action FileEditorAction) *FileEditorObservation {
 	_ = ctx
+	filePath := action.executionPath()
 
-	info, err := os.Stat(action.Path)
+	info, err := os.Stat(filePath)
 	if err != nil {
 		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "目标文件不存在或不可访问", err))
 	}
@@ -125,7 +134,7 @@ func (e *FileEditor) executeStrReplace(ctx context.Context, action FileEditorAct
 		)
 	}
 
-	oldContent, fileEncoding, err := readTextFile(action.Path)
+	oldContent, fileEncoding, err := readTextFile(filePath)
 	if err != nil {
 		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, fmt.Sprintf("读取文本文件失败: %v", err), err))
 	}
@@ -166,13 +175,13 @@ func (e *FileEditor) executeStrReplace(ctx context.Context, action FileEditorAct
 	if len(matches) > 1 {
 		return NewErrorObservation(action.Command, action.Path, fmt.Errorf("没有进行替换，因为找到多处旧字符串"))
 	}
-	if err := e.appendVersionToHistoryChain(action.Path, oldContent); err != nil {
+	if err := e.appendVersionToHistoryChain(filePath, oldContent); err != nil {
 		return NewErrorObservation(action.Command, action.Path, fmt.Errorf("append replace operation to version chain: %w", err))
 	}
 
 	newContent := matchRegexp.ReplaceAllString(oldContent, replacement)
-	if err := writeTextFile(action.Path, newContent, fileEncoding, 0o644); err != nil {
-		if rollbackErr := e.rollbackLatestVersionFromHistoryChain(action.Path); rollbackErr != nil {
+	if err := writeTextFile(filePath, newContent, fileEncoding, 0o644); err != nil {
+		if rollbackErr := e.rollbackLatestVersionFromHistoryChain(filePath); rollbackErr != nil {
 			return NewErrorObservation(action.Command, action.Path, fmt.Errorf("写回文件失败，且回滚版本链失败: write_err=%v rollback_err=%v", err, rollbackErr))
 		}
 		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "写回文件失败", err))
@@ -237,8 +246,9 @@ func buildChangedLinesPreview(path, oldContent, newContent string, matchStart in
 // executeInsert 执行按行插入命令。
 func (e *FileEditor) executeInsert(ctx context.Context, action FileEditorAction) *FileEditorObservation {
 	_ = ctx
+	filePath := action.executionPath()
 
-	info, err := os.Stat(action.Path)
+	info, err := os.Stat(filePath)
 	if err != nil {
 		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "目标文件不存在或不可访问", err))
 	}
@@ -253,7 +263,7 @@ func (e *FileEditor) executeInsert(ctx context.Context, action FileEditorAction)
 		)
 	}
 
-	oldContent, fileEncoding, err := readTextFile(action.Path)
+	oldContent, fileEncoding, err := readTextFile(filePath)
 	if err != nil {
 		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, fmt.Sprintf("读取文本文件失败: %v", err), err))
 	}
@@ -286,13 +296,13 @@ func (e *FileEditor) executeInsert(ctx context.Context, action FileEditorAction)
 		)
 	}
 
-	if err := e.appendVersionToHistoryChain(action.Path, oldContent); err != nil {
+	if err := e.appendVersionToHistoryChain(filePath, oldContent); err != nil {
 		return NewErrorObservation(action.Command, action.Path, fmt.Errorf("append insert operation to version chain: %w", err))
 	}
 
 	newContent := buildInsertedContent(oldLines, insertLine, insertText)
-	if err := writeTextFile(action.Path, newContent, fileEncoding, 0o644); err != nil {
-		if rollbackErr := e.rollbackLatestVersionFromHistoryChain(action.Path); rollbackErr != nil {
+	if err := writeTextFile(filePath, newContent, fileEncoding, 0o644); err != nil {
+		if rollbackErr := e.rollbackLatestVersionFromHistoryChain(filePath); rollbackErr != nil {
 			return NewErrorObservation(action.Command, action.Path, fmt.Errorf("写回文件失败，且回滚版本链失败: write_err=%v rollback_err=%v", err, rollbackErr))
 		}
 		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "写回文件失败", err))
@@ -360,8 +370,9 @@ func buildInsertedContextPreview(path, content string, insertLine, maxLines int)
 // executeUndoEdit 执行撤销编辑命令。
 func (e *FileEditor) executeUndoEdit(ctx context.Context, action FileEditorAction) *FileEditorObservation {
 	_ = ctx
+	filePath := action.executionPath()
 
-	info, err := os.Stat(action.Path)
+	info, err := os.Stat(filePath)
 	if err != nil {
 		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "目标文件不存在或不可访问", err))
 	}
@@ -376,7 +387,7 @@ func (e *FileEditor) executeUndoEdit(ctx context.Context, action FileEditorActio
 		)
 	}
 
-	currentContent, fileEncoding, err := readTextFile(action.Path)
+	currentContent, fileEncoding, err := readTextFile(filePath)
 	if err != nil {
 		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, fmt.Sprintf("读取文本文件失败: %v", err), err))
 	}
@@ -391,7 +402,7 @@ func (e *FileEditor) executeUndoEdit(ctx context.Context, action FileEditorActio
 		return NewErrorObservation(action.Command, action.Path, fmt.Errorf("file editor history manager is nil"))
 	}
 
-	previousContent, found, err := e.historyManager.pop(action.Path)
+	previousContent, found, err := e.historyManager.pop(filePath)
 	if err != nil {
 		return NewErrorObservation(action.Command, action.Path, fmt.Errorf("pop latest version from history chain: %w", err))
 	}
@@ -399,8 +410,8 @@ func (e *FileEditor) executeUndoEdit(ctx context.Context, action FileEditorActio
 		return NewErrorObservation(action.Command, action.Path, fmt.Errorf("没有编辑历史"))
 	}
 
-	if err := writeTextFile(action.Path, previousContent, fileEncoding, 0o644); err != nil {
-		_ = e.appendVersionToHistoryChain(action.Path, previousContent)
+	if err := writeTextFile(filePath, previousContent, fileEncoding, 0o644); err != nil {
+		_ = e.appendVersionToHistoryChain(filePath, previousContent)
 		return NewErrorObservation(action.Command, action.Path, NewFileValidationError(action.Path, "写回文件失败", err))
 	}
 

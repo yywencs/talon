@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -72,13 +73,14 @@ func (r *commandRunnerTmuxAdapter) Close(ctx context.Context) error {
 
 // TmuxBackend 表示基于 tmux session 的终端后端。
 type TmuxBackend struct {
-	workingDir   string
-	session      string
-	shellPath    string
-	runner       tmuxCommandRunner
-	initialized  bool
-	sessionRoot  *tmuxPaneHandle
-	paneBindings map[string]*tmuxPaneHandle
+	workingDir     string
+	hostWorkingDir string
+	session        string
+	shellPath      string
+	runner         tmuxCommandRunner
+	initialized    bool
+	sessionRoot    *tmuxPaneHandle
+	paneBindings   map[string]*tmuxPaneHandle
 
 	mu sync.Mutex
 }
@@ -86,16 +88,26 @@ type TmuxBackend struct {
 // NewTmuxBackend 创建 tmux 会话后端。
 func NewTmuxBackend(workingDir string) *TmuxBackend {
 	return &TmuxBackend{
-		workingDir:   workingDir,
-		session:      "opentalon-" + uuid.NewString(),
-		runner:       &execTmuxCommandRunner{},
-		paneBindings: make(map[string]*tmuxPaneHandle),
+		workingDir:     workingDir,
+		hostWorkingDir: workingDir,
+		session:        "opentalon-" + uuid.NewString(),
+		runner:         &execTmuxCommandRunner{},
+		paneBindings:   make(map[string]*tmuxPaneHandle),
 	}
 }
 
 // NewTmuxBackendWithRunner 创建绑定当前运行环境命令执行器的 tmux 会话后端。
 func NewTmuxBackendWithRunner(workingDir string, runner CommandRunner) *TmuxBackend {
-	backend := NewTmuxBackend(workingDir)
+	backend := NewTmuxBackendWithRuntimeLayout(workingDir, workingDir, runner)
+	return backend
+}
+
+// NewTmuxBackendWithRuntimeLayout 创建同时感知 host 与 runtime 工作目录的 tmux 会话后端。
+func NewTmuxBackendWithRuntimeLayout(hostWorkingDir, runtimeWorkingDir string, runner CommandRunner) *TmuxBackend {
+	backend := NewTmuxBackend(runtimeWorkingDir)
+	if hostWorkingDir != "" {
+		backend.hostWorkingDir = hostWorkingDir
+	}
 	if runner != nil {
 		backend.runner = &commandRunnerTmuxAdapter{runner: runner}
 	}
@@ -520,7 +532,32 @@ func (b *TmuxBackend) currentPaneWorkingDirLocked(ctx context.Context, paneID st
 	if err != nil {
 		return "", fmt.Errorf("failed to inspect tmux working directory: %w", err)
 	}
-	return strings.TrimSpace(out), nil
+	return b.toHostWorkingDir(strings.TrimSpace(out)), nil
+}
+
+func (b *TmuxBackend) toHostWorkingDir(runtimeWorkingDir string) string {
+	runtimeWorkingDir = strings.TrimSpace(runtimeWorkingDir)
+	if runtimeWorkingDir == "" {
+		return ""
+	}
+	if b.hostWorkingDir == "" || b.workingDir == "" || b.hostWorkingDir == b.workingDir {
+		return runtimeWorkingDir
+	}
+	cleanRuntimeRoot := filepath.Clean(b.workingDir)
+	cleanHostRoot := filepath.Clean(b.hostWorkingDir)
+	cleanRuntimeWorkingDir := filepath.Clean(runtimeWorkingDir)
+	if cleanRuntimeWorkingDir == cleanRuntimeRoot {
+		return cleanHostRoot
+	}
+	runtimePrefix := cleanRuntimeRoot + string(filepath.Separator)
+	if !strings.HasPrefix(cleanRuntimeWorkingDir, runtimePrefix) {
+		return runtimeWorkingDir
+	}
+	relPath := strings.TrimPrefix(cleanRuntimeWorkingDir, runtimePrefix)
+	if relPath == "" {
+		return cleanHostRoot
+	}
+	return filepath.Join(cleanHostRoot, relPath)
 }
 
 func (b *TmuxBackend) currentMetadataPaneLocked(paneID string) (*tmuxPaneHandle, error) {

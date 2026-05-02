@@ -32,8 +32,8 @@
 - `Phase C` 已完成：把 session 级实例失效摘除职责收回 `Executor + bashSessionRegistry` 协作链路，移除 `managedBashBackend` 这种职责混合代理。
 - `Phase D` 已完成：把 `SandboxInfo()` 从 backend 能力面中解耦，改为由装配阶段单独注入给 session entry，registry 不再通过 backend 类型断言读取审计信息。
 - `Phase E` 已完成：继续减少 `sandboxTmuxBackend` 这类代理层，收敛 `internal/sandbox/terminal_runtime.go` 的装配方式；默认 sandbox 路径已经不再为了能力适配保留多余 backend 包装。
-- `Phase F` 进行中：把 host / sandbox 差异进一步收敛到 runtime、runner 或构造阶段，保持当前默认 tmux 路径稳定，同时避免把终端核心抽象永久绑定到 tmux，为后续引入 PTY 预留实现空间。当前前三轮已完成：route 分叉已从 registry 核心路径拿掉，`execution profile` 中间层已压掉，共享执行链里的 `bashRuntimeRoute` 枚举与显式 switch 也已移除，差异主要收敛到默认 sandbox / 显式 host 两个薄构造入口。
-- `Phase G` 待完成：补齐 session 主动释放、默认 sandbox 镜像依赖对齐，以及同 session 复用、跨 session 隔离、失败清理和 session 结束回收测试。
+- `Phase F` 已完成：把 host / sandbox 差异进一步收敛到 runtime、runner 或构造阶段，保持当前默认 tmux 路径稳定，同时避免把终端核心抽象永久绑定到 tmux，为后续引入 PTY 预留实现空间。当前前三轮已完成：route 分叉已从 registry 核心路径拿掉，`execution profile` 中间层已压掉，共享执行链里的 `bashRuntimeRoute` 枚举与显式 switch 也已移除，差异主要收敛到默认 sandbox / 显式 host 两个薄构造入口。
+- `Phase G` 已完成大半：补齐 session 主动释放、默认 sandbox 镜像依赖对齐，以及同 session 复用、跨 session 隔离、失败清理和 session 结束回收测试。
 - 最终目标：让 `session registry` 只负责实例缓存、复用约束、失效摘除和释放；让 backend 只负责终端能力；让 host / sandbox 差异不再通过多层 backend wrapper 传递。
 
 ## Constraints

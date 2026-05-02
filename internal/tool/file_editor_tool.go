@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	fileeditor "github.com/wen/opentalon/internal/tool/file_editor"
 )
@@ -44,7 +45,24 @@ func fileEditorExecutor(ctx context.Context, action fileeditor.FileEditorAction)
 	if err != nil {
 		return fileeditor.NewErrorObservation(action.Command, action.Path, fmt.Errorf("create default file editor: %w", err))
 	}
+	action = normalizeFileEditorActionPath(ctx, action)
 	return editor.Execute(ctx, action)
+}
+
+func normalizeFileEditorActionPath(ctx context.Context, action fileeditor.FileEditorAction) fileeditor.FileEditorAction {
+	mapper, ok := bashWorkspacePathMapperForContext(ctx)
+	if !ok {
+		return action
+	}
+
+	if resolvedPath, ok := mapper.RuntimeToHost(action.Path); ok {
+		action.ResolvedPath = resolvedPath
+		return action
+	}
+	if mapper.IsHostPath(action.Path) {
+		action.ResolvedPath = filepath.Clean(action.Path)
+	}
+	return action
 }
 
 func newFileEditorTool() *BaseTool[fileeditor.FileEditorAction, *fileeditor.FileEditorObservation] {

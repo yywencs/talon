@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
 	sandboxpkg "github.com/wen/opentalon/internal/sandbox"
+	fileeditor "github.com/wen/opentalon/internal/tool/file_editor"
 	terminalpkg "github.com/wen/opentalon/internal/tool/terminal"
 	"github.com/wen/opentalon/internal/types"
 )
@@ -769,6 +771,94 @@ func TestBashSessionRegistryAuditArgsUseSandboxInfoProviderInsteadOfBackendAsser
 	}
 	if !containsAuditArg(args, "sandbox_container", info.ContainerName) {
 		t.Fatalf("expected sandbox_container in args, got %#v", args)
+	}
+}
+
+func TestBashWorkspacePathMapperForContextUsesSessionSandboxRoots(t *testing.T) {
+	workingDir := t.TempDir()
+	hostFilePath := workingDir + "/qs.go"
+
+	installBashToolBundleTestHooks(t, workingDir, func(runtimeRoute string, wd string) bashBackendBundle {
+		if runtimeRoute != bashRuntimeLabelSandbox {
+			t.Fatalf("route = %q, want %q", runtimeRoute, bashRuntimeLabelSandbox)
+		}
+		return bashBackendBundle{
+			backend: &fakeToolBackend{workingDir: wd},
+			sandboxInfoProvider: func() sandboxpkg.Info {
+				return sandboxpkg.Info{
+					HostWorkingDir:   workingDir,
+					ContainerWorkDir: "/workspace",
+				}
+			},
+		}
+	})
+
+	sessionID := "session-path-mapper"
+	_, err := bashSessionExecutors.executorForSession(
+		ContextWithSessionID(context.Background(), sessionID),
+		sessionID,
+		bashRuntimeLabelSandbox,
+		workingDir,
+		func(ctx context.Context, wd string) bashBackendBundle {
+			return newSandboxBashBackendBundle(ctx, wd)
+		},
+	)
+	if err != nil {
+		t.Fatalf("executorForSession() error = %v", err)
+	}
+
+	mapper, ok := bashWorkspacePathMapperForContext(ContextWithSessionID(context.Background(), sessionID))
+	if !ok {
+		t.Fatal("expected path mapper for sandbox session")
+	}
+
+	got, ok := mapper.RuntimeToHost("/workspace/qs.go")
+	if !ok {
+		t.Fatal("expected runtime path to map into host path")
+	}
+	if got != hostFilePath {
+		t.Fatalf("mapped path = %q, want %q", got, hostFilePath)
+	}
+}
+
+func TestNormalizeFileEditorActionPathMapsRuntimePathIntoResolvedHostPath(t *testing.T) {
+	workingDir := t.TempDir()
+
+	installBashToolBundleTestHooks(t, workingDir, func(runtimeRoute string, wd string) bashBackendBundle {
+		return bashBackendBundle{
+			backend: &fakeToolBackend{workingDir: wd},
+			sandboxInfoProvider: func() sandboxpkg.Info {
+				return sandboxpkg.Info{
+					HostWorkingDir:   workingDir,
+					ContainerWorkDir: "/workspace",
+				}
+			},
+		}
+	})
+
+	sessionID := "session-file-editor-path"
+	_, err := bashSessionExecutors.executorForSession(
+		ContextWithSessionID(context.Background(), sessionID),
+		sessionID,
+		bashRuntimeLabelSandbox,
+		workingDir,
+		func(ctx context.Context, wd string) bashBackendBundle {
+			return newSandboxBashBackendBundle(ctx, wd)
+		},
+	)
+	if err != nil {
+		t.Fatalf("executorForSession() error = %v", err)
+	}
+
+	action := normalizeFileEditorActionPath(
+		ContextWithSessionID(context.Background(), sessionID),
+		fileeditor.FileEditorAction{Path: "/workspace/qs.go"},
+	)
+	if action.Path != "/workspace/qs.go" {
+		t.Fatalf("action.Path = %q, want runtime path unchanged", action.Path)
+	}
+	if action.ResolvedPath != filepath.Join(workingDir, "qs.go") {
+		t.Fatalf("action.ResolvedPath = %q, want %q", action.ResolvedPath, filepath.Join(workingDir, "qs.go"))
 	}
 }
 

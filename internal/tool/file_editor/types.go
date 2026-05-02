@@ -36,6 +36,7 @@ type FileEditorAction struct {
 	types.ToolMetadata `json:",inline"`
 	Command            FileEditorCommand `json:"command" jsonschema:"description=文件编辑命令,enum=view,enum=create,enum=str_replace,enum=insert,enum=undo_edit"`
 	Path               string            `json:"path" jsonschema:"description=目标文件路径,required"`
+	ResolvedPath       string            `json:"-"`
 	FileText           *string           `json:"file_text,omitempty" jsonschema:"description=创建文件或写入时使用的完整文本"`
 	OldStr             *string           `json:"old_str,omitempty" jsonschema:"description=待替换的旧字符串"`
 	NewStr             *string           `json:"new_str,omitempty" jsonschema:"description=替换后的新字符串或插入文本"`
@@ -59,6 +60,13 @@ func (a *FileEditorAction) ActionType() types.ActionType {
 	default:
 		return types.ActionEdit
 	}
+}
+
+func (a FileEditorAction) executionPath() string {
+	if trimmedPath := strings.TrimSpace(a.ResolvedPath); trimmedPath != "" {
+		return trimmedPath
+	}
+	return a.Path
 }
 
 // FileEditorObservation 表示文件编辑工具的输出结果。

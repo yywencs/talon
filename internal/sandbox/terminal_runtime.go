@@ -40,7 +40,17 @@ func NewSandboxTmuxBackend(workingDir string, sb Sandbox) terminalpkg.TerminalBa
 	if runtime == nil {
 		runtime = unavailableRuntime{err: fmt.Errorf("sandbox runtime is unavailable")}
 	}
-	return terminalpkg.NewTmuxBackendWithRunner(workingDir, runtime)
+	runtimeWorkingDir := DefaultContainerWorkDir
+	if sb != nil {
+		info := sb.Info()
+		if info.ContainerWorkDir != "" {
+			runtimeWorkingDir = info.ContainerWorkDir
+		}
+		if info.HostWorkingDir != "" {
+			workingDir = info.HostWorkingDir
+		}
+	}
+	return terminalpkg.NewTmuxBackendWithRuntimeLayout(workingDir, runtimeWorkingDir, runtime)
 }
 
 // NewHostTmuxBackend 创建绑定宿主机 runtime 的 tmux backend。

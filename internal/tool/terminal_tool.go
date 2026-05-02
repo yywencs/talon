@@ -95,6 +95,18 @@ func resolveEphemeralBashExecutor(
 	return newBashExecutorWithBackend(workingDir, bundle.backend, nil), nil
 }
 
+func bashWorkspacePathMapperForContext(ctx context.Context) (PathMapper, bool) {
+	if mapper, ok := bashSessionExecutors.pathMapperForSession(SessionIDFromContext(ctx)); ok {
+		return mapper, true
+	}
+
+	workingDir := resolveBashWorkingDir()
+	if strings.TrimSpace(workingDir) == "" {
+		return PathMapper{}, false
+	}
+	return NewPathMapper(workingDir, workingDir), true
+}
+
 func bashExecutor(
 	workingDir string,
 	resolveExecutor func(context.Context, string) (*terminalpkg.Executor, error),

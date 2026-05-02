@@ -198,6 +198,39 @@ func TestFileEditorBlackbox_CreateReplaceUndoLifecycle(t *testing.T) {
 	}
 }
 
+func TestFileEditorBlackbox_ResolvedPathUsesHostExecutionButKeepsOriginalDisplayPath(t *testing.T) {
+	editor := newEditor(t)
+	hostPath := filepath.Join(t.TempDir(), "qs.go")
+	runtimePath := "/workspace/qs.go"
+
+	createObs := editor.Execute(context.Background(), fileeditor.FileEditorAction{
+		Command:      fileeditor.FileEditorCommandCreate,
+		Path:         runtimePath,
+		ResolvedPath: hostPath,
+		FileText:     textPtr("package main\n"),
+	})
+	if createObs == nil || createObs.IsError() {
+		t.Fatalf("expected create success, got %q", observationText(createObs))
+	}
+	if createObs.Path == nil || *createObs.Path != runtimePath {
+		t.Fatalf("observation path = %v, want %q", createObs.Path, runtimePath)
+	}
+	if strings.Contains(observationText(createObs), hostPath) {
+		t.Fatalf("create text = %q, should not leak host path", observationText(createObs))
+	}
+	if !strings.Contains(observationText(createObs), runtimePath) {
+		t.Fatalf("create text = %q, want runtime path", observationText(createObs))
+	}
+
+	data, err := os.ReadFile(hostPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(data) != "package main\n" {
+		t.Fatalf("file content = %q, want %q", string(data), "package main\n")
+	}
+}
+
 func TestFileEditorBlackbox_InsertBoundariesAndPreview(t *testing.T) {
 	editor := newEditor(t)
 
