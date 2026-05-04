@@ -38,7 +38,7 @@ func main() {
 
 	fmt.Println("")
 	fmt.Println("╔══════════════════════════════════════╗")
-	fmt.Println("║      OpenTalon Agent Started        ║")
+	fmt.Println("║      OpenTalon Agent Started         ║")
 	fmt.Println("╚══════════════════════════════════════╝")
 	fmt.Printf("Provider : %s\n", cfg.LLM.Provider)
 	fmt.Printf("Endpoint : %s\n", cfg.LLM.Endpoint)

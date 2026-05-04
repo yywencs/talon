@@ -219,6 +219,16 @@ func (s *DockerSandbox) Info() Info {
 }
 
 func (s *DockerSandbox) dockerRunArgs(name string) []string {
+	workspaceStateDir := filepath.Join(s.config.ContainerWorkDir, ".opentalon")
+	goTmpDir := filepath.Join(workspaceStateDir, "tmp")
+	xdgCacheDir := filepath.Join(workspaceStateDir, "cache")
+	goCacheDir := filepath.Join(workspaceStateDir, "cache", "go-build")
+	bootstrapCommand := fmt.Sprintf(
+		"mkdir -p %s %s && while true; do sleep 3600; done",
+		goTmpDir,
+		goCacheDir,
+	)
+
 	args := []string{
 		"run", "-d", "--rm",
 		"--name", name,
@@ -230,8 +240,9 @@ func (s *DockerSandbox) dockerRunArgs(name string) []string {
 		"--tmpfs", defaultSandboxHome,
 		"-e", "HOME=" + defaultSandboxHome,
 		"-e", "TMPDIR=" + defaultSandboxTmp,
-		"-e", "XDG_CACHE_HOME=" + filepath.Join(defaultSandboxHome, ".cache"),
-		"-e", "GOCACHE=" + filepath.Join(defaultSandboxHome, ".cache", "go-build"),
+		"-e", "GOTMPDIR=" + goTmpDir,
+		"-e", "XDG_CACHE_HOME=" + xdgCacheDir,
+		"-e", "GOCACHE=" + goCacheDir,
 		"-e", "GOPATH=" + filepath.Join(defaultSandboxHome, "go"),
 		"-e", "GOMODCACHE=" + filepath.Join(defaultSandboxHome, "go", "pkg", "mod"),
 	}
@@ -244,7 +255,7 @@ func (s *DockerSandbox) dockerRunArgs(name string) []string {
 		}
 		args = append(args, "-v", mount.HostPath+":"+mount.ContainerPath+":ro")
 	}
-	args = append(args, s.config.Image, "sh", "-c", "while true; do sleep 3600; done")
+	args = append(args, s.config.Image, "sh", "-c", bootstrapCommand)
 	return args
 }
 

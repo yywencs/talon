@@ -134,6 +134,18 @@ func TestDockerSandboxStartExecAndClose(t *testing.T) {
 	if !strings.Contains(runArgs, "-v /tmp/project:/workspace") {
 		t.Fatalf("expected writable workspace mount, got %v", runner.calls[0])
 	}
+	if !strings.Contains(runArgs, "-e GOTMPDIR=/workspace/.opentalon/tmp") {
+		t.Fatalf("expected go tmp dir under workspace, got %v", runner.calls[0])
+	}
+	if !strings.Contains(runArgs, "-e GOCACHE=/workspace/.opentalon/cache/go-build") {
+		t.Fatalf("expected go build cache under workspace, got %v", runner.calls[0])
+	}
+	if !strings.Contains(runArgs, "-e XDG_CACHE_HOME=/workspace/.opentalon/cache") {
+		t.Fatalf("expected xdg cache home under workspace, got %v", runner.calls[0])
+	}
+	if !strings.Contains(runArgs, "sh -c mkdir -p /workspace/.opentalon/tmp /workspace/.opentalon/cache/go-build && while true; do sleep 3600; done") {
+		t.Fatalf("expected sandbox bootstrap command to create go directories, got %v", runner.calls[0])
+	}
 	if got := runner.calls[1]; len(got) < 6 || got[0] != "docker" || got[1] != "exec" || got[2] != "-w" || got[3] != "/workspace" || got[4] != "sandbox-test" || got[5] != "pwd" {
 		t.Fatalf("unexpected docker exec args: %v", got)
 	}

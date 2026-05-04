@@ -28,17 +28,17 @@ type LLMConfig struct {
 var Global *Config
 
 func Load() {
-	workspaceRoot, err := utils.FindWorkspaceRoot()
+	configRoot, err := utils.FindConfigRoot()
 	if err != nil {
 		panic(err)
 	}
 
-	envPath := filepath.Join(workspaceRoot, ".env")
+	envPath := filepath.Join(configRoot, ".env")
 	if err := godotenv.Load(envPath); err != nil {
 		fmt.Printf("Warning: failed to load .env file %s: %v", envPath, err)
 	}
 
-	logDir := getEnv("LOG_DIR", filepath.Join(workspaceRoot, "./logs"))
+	logDir := getEnv("LOG_DIR", filepath.Join(configRoot, "logs"))
 
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		fmt.Printf("Warning: failed to create log directory %s: %v", logDir, err)
