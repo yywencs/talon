@@ -50,6 +50,7 @@ temp/
 .trae/
 .opentalon/
 .opentalon/traces/
+test/
 
 *.db
 *.sqlite

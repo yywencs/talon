@@ -2,6 +2,7 @@ package types
 
 import (
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -26,11 +27,12 @@ type SessionState struct {
 	ID             string
 	PersistenceDir string
 
-	Status        ExecutionStatus
-	MaxIterations int
+	Status     ExecutionStatus
+	AgentState Agent
 
+	RunTimeout     time.Duration
+	MaxIterations  int
 	IterationCount int
-	AgentState     Agent
 
 	Events *EventLog
 }

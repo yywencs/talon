@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -94,6 +95,12 @@ func (s *Session) SubmitUserMessage(text string) error {
 }
 
 func (s *Session) Run(ctx context.Context) (runErr error) {
+	if s != nil && s.state != nil && s.state.RunTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.state.RunTimeout)
+		defer cancel()
+	}
+
 	tracer := observability.TracerFor("internal/core/session")
 	ctx, span := tracer.StartSpan(ctx, "session.run",
 		observability.WithSpanKind(observability.SpanKindInternal),
@@ -108,7 +115,7 @@ func (s *Session) Run(ctx context.Context) (runErr error) {
 		if s == nil || s.state == nil {
 			return
 		}
-		if runErr == nil && s.state.Status != types.StatusFinished {
+		if runErr == nil && !isTerminalStatus(s.state.Status) {
 			return
 		}
 		if err := tool.ReleaseBashSession(ctx, s.state.ID); err != nil {
@@ -120,16 +127,37 @@ func (s *Session) Run(ctx context.Context) (runErr error) {
 	}()
 
 	for {
+		if ctxErr := sessionContextError(ctx); ctxErr != nil {
+			s.state.Status = types.StatusStuck
+			span.RecordError(ctxErr, observability.StatusFromError(ctxErr))
+			runErr = ctxErr
+			return runErr
+		}
+
 		if s.state.Status == types.StatusPaused || s.state.Status == types.StatusStuck {
 			break
 		}
 
-		if s.state.Status == types.StatusFinished {
+		s.state.IterationCount++
+		if s.state.IterationCount >= s.state.MaxIterations {
+			s.state.Status = types.StatusStuck
+			logger.InfoWithCtx(ctx, "会话运行超最大迭代次数，已停止",
+				"session_id", s.state.ID,
+			)
+		}
+
+		if isTerminalStatus(s.state.Status) {
 			break
 		}
 
 		result, err := s.agent.StreamStep(ctx, s.state, s.handleAgentOutput)
 		if err != nil {
+			if ctxErr := sessionContextError(ctx); ctxErr != nil {
+				s.state.Status = types.StatusStuck
+				span.RecordError(ctxErr, observability.StatusFromError(ctxErr))
+				runErr = ctxErr
+				return runErr
+			}
 			span.RecordError(err, observability.StatusFromError(err))
 			runErr = err
 			return runErr
@@ -228,6 +256,24 @@ func hasFinishAction(actionEvents []*types.ActionEvent) []*types.ActionEvent {
 		}
 	}
 	return actionEvents
+}
+
+func isTerminalStatus(status types.ExecutionStatus) bool {
+	return status == types.StatusFinished || status == types.StatusStuck
+}
+
+func sessionContextError(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	err := ctx.Err()
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("session run timeout exceeded: %w", err)
+	}
+	return fmt.Errorf("session run canceled: %w", err)
 }
 
 func (s *Session) streamTextDelta(text string) {

@@ -24,5 +24,5 @@ func (m *EventLog) Append(event Event) {
 func (m *EventLog) GetEvents() []Event {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.events
+	return append([]Event{}, m.events...)
 }
