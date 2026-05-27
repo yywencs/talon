@@ -21,6 +21,7 @@ var (
 	traceOnce sync.Once
 )
 
+// TraceManager 管理单次运行期间的 HTTP 请求与响应追踪文件。
 type TraceManager struct {
 	traceDir string
 	runID    string
@@ -28,24 +29,40 @@ type TraceManager struct {
 	stepSeq  int
 }
 
+// TraceRequest 表示一次被记录的 HTTP 请求追踪数据。
 type TraceRequest struct {
-	Timestamp string            `json:"timestamp"`
-	RunID     string            `json:"run_id"`
-	Step      int               `json:"step"`
-	Endpoint  string            `json:"endpoint"`
-	Method    string            `json:"method"`
-	Headers   map[string]string `json:"headers,omitempty"`
-	Body      any               `json:"body"`
+	// Timestamp 是请求被记录时的时间戳，使用 RFC3339Nano 格式。
+	Timestamp string `json:"timestamp"`
+	// RunID 标识当前追踪所属的运行实例。
+	RunID string `json:"run_id"`
+	// Step 是当前运行内递增的追踪步骤号。
+	Step int `json:"step"`
+	// Endpoint 是请求访问的目标地址。
+	Endpoint string `json:"endpoint"`
+	// Method 是请求使用的 HTTP 方法。
+	Method string `json:"method"`
+	// Headers 保存脱敏后的请求头信息。
+	Headers map[string]string `json:"headers,omitempty"`
+	// Body 保存请求体的解码结果或原始字符串内容。
+	Body any `json:"body"`
 }
 
+// TraceResponse 表示一次被记录的 HTTP 响应追踪数据。
 type TraceResponse struct {
-	Timestamp  string            `json:"timestamp"`
-	RunID      string            `json:"run_id"`
-	Step       int               `json:"step"`
-	Endpoint   string            `json:"endpoint"`
-	StatusCode int               `json:"status_code"`
-	Headers    map[string]string `json:"headers,omitempty"`
-	Body       any               `json:"body"`
+	// Timestamp 是响应被记录时的时间戳，使用 RFC3339Nano 格式。
+	Timestamp string `json:"timestamp"`
+	// RunID 标识当前追踪所属的运行实例。
+	RunID string `json:"run_id"`
+	// Step 是与请求对应的追踪步骤号。
+	Step int `json:"step"`
+	// Endpoint 是发起请求时访问的目标地址。
+	Endpoint string `json:"endpoint"`
+	// StatusCode 是响应返回的 HTTP 状态码。
+	StatusCode int `json:"status_code"`
+	// Headers 保存响应头信息。
+	Headers map[string]string `json:"headers,omitempty"`
+	// Body 保存响应体的解码结果或原始字符串内容。
+	Body any `json:"body"`
 }
 
 func getTraceManager() *TraceManager {
@@ -90,6 +107,7 @@ func (tm *TraceManager) nextStep() int {
 	return tm.stepSeq
 }
 
+// TraceRequest 将请求信息写入当前运行步骤对应的追踪文件。
 func (tm *TraceManager) TraceRequest(step int, endpoint, method string, headers map[string]string, body any) error {
 	if tm.traceDir == "" {
 		return nil
@@ -109,6 +127,7 @@ func (tm *TraceManager) TraceRequest(step int, endpoint, method string, headers 
 	return tm.writeTrace(step, "req", trace)
 }
 
+// TraceResponse 将响应信息写入当前运行步骤对应的追踪文件。
 func (tm *TraceManager) TraceResponse(step int, endpoint string, statusCode int, headers map[string]string, body any) error {
 	if tm.traceDir == "" {
 		return nil
@@ -273,6 +292,7 @@ func decodeTraceBody(raw []byte) any {
 	return string(trimmed)
 }
 
+// GetRunID 返回当前追踪管理器使用的运行 ID。
 func GetRunID() string {
 	return getTraceManager().runID
 }

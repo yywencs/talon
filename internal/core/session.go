@@ -2,14 +2,12 @@ package core
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/wen/opentalon/internal/tool"
 	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/logger"
-	"github.com/wen/opentalon/pkg/observability"
 )
 
 type Session struct {
@@ -95,41 +93,11 @@ func (s *Session) SubmitUserMessage(text string) error {
 }
 
 func (s *Session) Run(ctx context.Context) (runErr error) {
-	if s != nil && s.state != nil && s.state.RunTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, s.state.RunTimeout)
-		defer cancel()
-	}
-
-	tracer := observability.TracerFor("internal/core/session")
-	ctx, span := tracer.StartSpan(ctx, "session.run",
-		observability.WithSpanKind(observability.SpanKindInternal),
-		observability.WithAttributes(
-			observability.String("session.id", s.state.ID),
-			observability.String("session.status.initial", string(s.state.Status)),
-			observability.String("agent.type", fmt.Sprintf("%T", s.agent)),
-		),
-	)
-	defer span.End()
-	defer func() {
-		if s == nil || s.state == nil {
-			return
-		}
-		if runErr == nil && !isTerminalStatus(s.state.Status) {
-			return
-		}
-		if err := tool.ReleaseBashSession(ctx, s.state.ID); err != nil {
-			logger.WarnWithCtx(ctx, "会话结束时释放 bash 会话级 executor 失败",
-				"session_id", s.state.ID,
-				"error", err.Error(),
-			)
-		}
-	}()
+	ctx, runTrace := startSessionRunTrace(ctx, s)
+	defer runTrace.Close(ctx, &runErr)
 
 	for {
-		if ctxErr := sessionContextError(ctx); ctxErr != nil {
-			s.state.Status = types.StatusStuck
-			span.RecordError(ctxErr, observability.StatusFromError(ctxErr))
+		if ctxErr := runTrace.FailContext(ctx, types.StatusStuck); ctxErr != nil {
 			runErr = ctxErr
 			return runErr
 		}
@@ -152,20 +120,16 @@ func (s *Session) Run(ctx context.Context) (runErr error) {
 
 		result, err := s.agent.StreamStep(ctx, s.state, s.handleAgentOutput)
 		if err != nil {
-			if ctxErr := sessionContextError(ctx); ctxErr != nil {
-				s.state.Status = types.StatusStuck
-				span.RecordError(ctxErr, observability.StatusFromError(ctxErr))
+			if ctxErr := runTrace.FailContext(ctx, types.StatusStuck); ctxErr != nil {
 				runErr = ctxErr
 				return runErr
 			}
-			span.RecordError(err, observability.StatusFromError(err))
-			runErr = err
+			runErr = runTrace.Fail(err)
 			return runErr
 		}
 		if result == nil {
 			nilResultErr := fmt.Errorf("session run: agent returned nil turn result")
-			span.RecordError(nilResultErr, observability.SpanStatusLLMInvalidResponse)
-			runErr = nilResultErr
+			runErr = runTrace.FailInvalidResponse(nilResultErr)
 			return runErr
 		}
 		if result.Message != nil {
@@ -175,8 +139,7 @@ func (s *Session) Run(ctx context.Context) (runErr error) {
 		actionEvents, err := s.eventFactory.BuildActionEvents(result.ToolCalls, types.SourceAgent, result.ActionReasoningContent)
 		if err != nil {
 			wrappedErr := fmt.Errorf("session run: build action events failed: %w", err)
-			span.RecordError(wrappedErr, observability.SpanStatusError)
-			runErr = wrappedErr
+			runErr = runTrace.Fail(wrappedErr)
 			return runErr
 		}
 		actionEvents = hasFinishAction(actionEvents)
@@ -186,8 +149,7 @@ func (s *Session) Run(ctx context.Context) (runErr error) {
 				continue
 			}
 			err := fmt.Errorf("session run: agent returned no actions and did not finish")
-			span.RecordError(err, observability.SpanStatusLLMInvalidResponse)
-			runErr = err
+			runErr = runTrace.FailInvalidResponse(err)
 			return runErr
 		}
 		for _, actionEvent := range actionEvents {
@@ -195,8 +157,6 @@ func (s *Session) Run(ctx context.Context) (runErr error) {
 		}
 		s.executeActionEvents(ctx, actionEvents)
 	}
-	span.SetAttributes(observability.String("session.status.final", string(s.state.Status)))
-	span.SetStatus(observability.SpanStatusOK, "session completed")
 	return nil
 }
 
@@ -260,20 +220,6 @@ func hasFinishAction(actionEvents []*types.ActionEvent) []*types.ActionEvent {
 
 func isTerminalStatus(status types.ExecutionStatus) bool {
 	return status == types.StatusFinished || status == types.StatusStuck
-}
-
-func sessionContextError(ctx context.Context) error {
-	if ctx == nil {
-		return nil
-	}
-	err := ctx.Err()
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return fmt.Errorf("session run timeout exceeded: %w", err)
-	}
-	return fmt.Errorf("session run canceled: %w", err)
 }
 
 func (s *Session) streamTextDelta(text string) {
