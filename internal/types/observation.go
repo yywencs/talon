@@ -16,6 +16,7 @@ type BaseObservation struct {
 	ErrorStatus bool      `json:"error_status,omitempty"`
 }
 
+// GetBase 返回嵌套的事件信封指针。
 func (o *BaseObservation) GetContent() []Content {
 	if o == nil {
 		return nil
@@ -41,9 +42,14 @@ type ObservationEvent struct {
 	ToolCallID      string `json:"tool_call_id,omitempty"`
 }
 
+// Kind 返回事件类型标签。
 func (e *ObservationEvent) Kind() EventKind { return KindObservation }
+// Name 返回固定的事件名称。
 func (e *ObservationEvent) Name() string    { return "observation_event" }
 
+// ToMessage 将 ObservationEvent 转换为 tool 角色的 LLM 对话消息，
+// 用于回传工具执行结果。当内容为空时填充默认成功文本，
+// 当存在 RejectionReason 时覆盖为拒绝原因。
 func (e *ObservationEvent) ToMessage() Message {
 	if e == nil {
 		return Message{}

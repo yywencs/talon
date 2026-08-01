@@ -11,12 +11,15 @@ import (
 	"github.com/wen/opentalon/pkg/observability"
 )
 
+// ToolRouter 负责按工具名解析实例并执行，将结果包装为 ObservationEvent。
+// 它是 Session 与具体工具实现之间的唯一交互入口。
 type ToolRouter struct {
 	mu           sync.RWMutex
 	registry     map[string]tool.ToolFactory
 	eventFactory *EventFactory
 }
 
+// NewToolRouter 创建工具路由器并初始化注册表。
 func NewToolRouter() *ToolRouter {
 	router := &ToolRouter{
 		registry:     make(map[string]tool.ToolFactory),
@@ -26,6 +29,7 @@ func NewToolRouter() *ToolRouter {
 	return router
 }
 
+// Register 注册工具工厂到路由表。
 func (r *ToolRouter) Register(name string, factory tool.ToolFactory) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -33,16 +37,19 @@ func (r *ToolRouter) Register(name string, factory tool.ToolFactory) {
 	logger.Info("工具路由器已注册工具工厂", "tool_name", name)
 }
 
+// ResolveAllTools 返回当前注册的所有工具实例。
 func (r *ToolRouter) ResolveAllTools(ctx context.Context) map[string]tool.Tool {
 	return tool.ResolveAll(ctx)
 }
 
+// ToolCall 是工具调用的通用表示，由 ToolRouter 在构建 ActionEvent 时使用。
 type ToolCall struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 }
 
+// BuildActionEvents 将 ToolCall 列表转换为 ActionEvent 列表。
 func (r *ToolRouter) BuildActionEvents(ctx context.Context, calls []ToolCall) ([]*types.ActionEvent, error) {
 	if len(calls) == 0 {
 		return nil, nil

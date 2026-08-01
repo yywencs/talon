@@ -7,6 +7,7 @@
 //   - PendingAction 机制要求每个 Action 的 ID 在整个会话内唯一，用于因果匹配。
 package types
 
+// SecurityRisk 标注动作的安全敏感等级，用于审批策略和终端着色展示。
 type SecurityRisk string
 
 const (
@@ -16,6 +17,7 @@ const (
 	SecurityRisk_HIGH    SecurityRisk = "HIGH"
 )
 
+// weight 将等级映射为可比较的整数权重，UNKNOWN 固定返回 0。
 func (s SecurityRisk) weight() int {
 	switch s {
 	case SecurityRisk_LOW:
@@ -29,6 +31,7 @@ func (s SecurityRisk) weight() int {
 	}
 }
 
+// IsRiskierOrEqual 判断当前等级是否不低于 other；任一方为 UNKNOWN 时返回 false。
 func (s SecurityRisk) IsRiskierOrEqual(other SecurityRisk) bool {
 	if s == SecurityRisk_UNKNOWN || other == SecurityRisk_UNKNOWN {
 		return false
@@ -36,6 +39,7 @@ func (s SecurityRisk) IsRiskierOrEqual(other SecurityRisk) bool {
 	return s.weight() >= other.weight()
 }
 
+// Color 返回该等级对应的终端 ANSI 颜色前缀，用于 CLI 展示。
 func (s SecurityRisk) Color() string {
 	switch s {
 	case SecurityRisk_LOW:
@@ -49,6 +53,7 @@ func (s SecurityRisk) Color() string {
 	}
 }
 
+// ToolMetadata 是每个动作附带的元信息，供展示和审批使用。
 type ToolMetadata struct {
 	Summary      string       `json:"summary" jsonschema:"description=动作摘要"`
 	SecurityRisk SecurityRisk `json:"security_risk" jsonschema:"description=风险等级"`
@@ -87,10 +92,15 @@ type ActionEvent struct {
 	ResponsesReasoningItem *ReasoningItemModel     `json:"responses_reasoning_item,omitempty"`
 }
 
+// GetBase 返回嵌套的事件信封指针。
 func (e *ActionEvent) GetBase() *BaseEvent { return &e.BaseEvent }
+// Kind 返回事件类型标签，供 Controller 的类型 switch 使用。
 func (e *ActionEvent) Kind() EventKind     { return KindAction }
+// Name 返回人类可读的动作名称（如 run / read / finish）。
 func (e *ActionEvent) Name() string        { return string(e.ActionType) }
 
+// ToMessage 将 ActionEvent 转换为 assistant 角色的 LLM 对话消息，
+// 携带工具调用和推理内容；若内容为空则返回零值 Message。
 func (e *ActionEvent) ToMessage() Message {
 	if e == nil {
 		return Message{}

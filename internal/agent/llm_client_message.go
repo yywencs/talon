@@ -15,6 +15,7 @@ func convertToolsToAny(tools []map[string]any) []any {
 	return result
 }
 
+// toOllamaMessages 将统一 Message 序列化为 Ollama /api/chat 格式。
 func toOllamaMessages(messages []types.Message) []any {
 	out := make([]any, 0, len(messages))
 	for _, msg := range messages {
@@ -31,6 +32,7 @@ func toOllamaMessages(messages []types.Message) []any {
 	return out
 }
 
+// serializeOpenAIChatMessages 将统一 Message 序列化为 OpenAI chat/completions 格式。
 func serializeOpenAIChatMessages(messages []types.Message) ([]any, error) {
 	messageSerializer := &serializer.OpenAIChatSerializer{
 		CacheEnabled:           true,
@@ -41,6 +43,7 @@ func serializeOpenAIChatMessages(messages []types.Message) ([]any, error) {
 	return serializer.SerializeMessages(messageSerializer, messages)
 }
 
+// buildAssistantMessage 构建指定角色的 Message，可携带工具调用和推理内容。
 func buildAssistantMessage(role string, content string, toolCalls []types.MessageToolCall, reasoningContent string) types.Message {
 	msg := types.Message{
 		Role:             types.MessageRole(role),
@@ -58,6 +61,7 @@ func buildAssistantMessage(role string, content string, toolCalls []types.Messag
 	return msg
 }
 
+// messageFromOpenAIChoice 将 OpenAI wire 协议的消息转换为统一 Message。
 func messageFromOpenAIChoice(wireMsg openAIWireMessage) (types.Message, error) {
 	toolCalls := make([]types.MessageToolCall, 0, len(wireMsg.ToolCalls))
 	for _, toolCall := range wireMsg.ToolCalls {
@@ -70,6 +74,7 @@ func messageFromOpenAIChoice(wireMsg openAIWireMessage) (types.Message, error) {
 	return buildAssistantMessage(wireMsg.Role, wireMsg.Content, toolCalls, wireMsg.ReasoningContent), nil
 }
 
+// flattenStreamToolCalls 合并流式响应中的增量工具调用，返回完整列表。
 func flattenStreamToolCalls(streamToolCalls map[int]*types.MessageToolCall) []types.MessageToolCall {
 	if len(streamToolCalls) == 0 {
 		return nil
@@ -91,6 +96,8 @@ func flattenStreamToolCalls(streamToolCalls map[int]*types.MessageToolCall) []ty
 	return toolCalls
 }
 
+// stripCacheControl 移除消息中所有 Content 块的 cache_prompt 标记。
+// 仅用于发送给不支持 prompt cache 的 provider（如 Ollama）时。
 func stripCacheControl(messages []types.Message) []types.Message {
 	if len(messages) == 0 {
 		return nil
@@ -106,6 +113,7 @@ func stripCacheControl(messages []types.Message) []types.Message {
 	return sanitized
 }
 
+// cloneContentWithoutCache 深拷贝 Content 列表并清除 cache_prompt 字段。
 func cloneContentWithoutCache(contents []types.Content) []types.Content {
 	cloned := make([]types.Content, 0, len(contents))
 	for _, content := range contents {

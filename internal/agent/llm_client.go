@@ -39,10 +39,12 @@ type LLMClient interface {
 	StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) (*ChatResponse, error)
 }
 
+// sharedLLMHTTPClient 是所有 LLM HTTP 请求共用的连接池客户端，复用 TCP 连接。
 var sharedLLMHTTPClient = &http.Client{
 	Transport: http.DefaultTransport,
 }
 
+// maxRetries/baseBackoff/maxBackoff 控制带重试的 HTTP 请求的退避策略。
 const (
 	maxRetries  = 3
 	baseBackoff = 500 * time.Millisecond
@@ -77,6 +79,7 @@ func normalizeProvider(provider string) string {
 	}
 }
 
+// startLLMRequestSpan 创建 LLM 请求的可观测性 span，携带 provider/model/endpoint/stream 属性。
 func startLLMRequestSpan(ctx context.Context, provider, model, endpoint string, stream bool) (context.Context, observability.Span) {
 	return observability.TracerFor("internal/agent/llm_client").StartSpan(ctx, "llm.request",
 		observability.WithSpanKind(observability.SpanKindClient),

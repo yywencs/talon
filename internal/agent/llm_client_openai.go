@@ -277,6 +277,9 @@ func (c *openAICompatibleClient) StreamChat(ctx context.Context, req ChatRequest
 	return finalResp, nil
 }
 
+
+// requestHeaders 返回 OpenAI-compatible API 请求所需的 HTTP header，
+// 包括 Authorization Bearer token 和 JSON content-type。
 func (c *openAICompatibleClient) requestHeaders() map[string]string {
 	headers := map[string]string{
 		"Content-Type": "application/json",
@@ -287,6 +290,7 @@ func (c *openAICompatibleClient) requestHeaders() map[string]string {
 	return headers
 }
 
+// mergeOpenAIStreamDelta 将流式 delta 增量合并到累积的 role/reasoning/toolCalls 状态中。
 func mergeOpenAIStreamDelta(role *string, reasoningContent *string, streamToolCalls map[int]*types.MessageToolCall, delta struct {
 	Role             string `json:"role"`
 	Content          string `json:"content"`

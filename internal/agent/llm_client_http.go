@@ -18,6 +18,8 @@ import (
 	"github.com/wen/opentalon/pkg/observability"
 )
 
+
+// retryableError 表示可在重试策略中处理的临时性 HTTP 错误。
 type retryableError struct {
 	StatusCode int
 	Message    string
@@ -32,6 +34,7 @@ func (e *retryableError) IsRetryable() bool {
 	return true
 }
 
+// nonRetryableError 表示不可重试的永久性错误（如 4xx）。
 type nonRetryableError struct {
 	StatusCode int
 	Message    string
@@ -45,6 +48,7 @@ func (e *nonRetryableError) IsRetryable() bool {
 	return false
 }
 
+// isRetryableStatus 判断 HTTP 状态码是否属于可重试范围（如 429/5xx）。
 func isRetryableStatus(statusCode int) bool {
 	return statusCode == http.StatusTooManyRequests ||
 		statusCode == http.StatusInternalServerError ||
@@ -53,6 +57,7 @@ func isRetryableStatus(statusCode int) bool {
 		statusCode == http.StatusGatewayTimeout
 }
 
+// isNonRetryableStatus 判断 HTTP 状态码是否属于不可重试范围（如 400/401/403）。
 func isNonRetryableStatus(statusCode int) bool {
 	return statusCode == http.StatusBadRequest ||
 		statusCode == http.StatusUnauthorized ||
@@ -67,6 +72,7 @@ func doJSONRequest(ctx context.Context, client *http.Client, endpoint string, re
 	return doRequestWithRetry(ctx, client, http.MethodPost, endpoint, reqBody, headers, respBody)
 }
 
+// doRequestWithRetry 执行 HTTP 请求并在遇到可重试错误时按指数退避重试，最多 maxRetries 次。
 func doRequestWithRetry(ctx context.Context, client *http.Client, method, endpoint string, reqBody any, headers map[string]string, respBody any) error {
 	span := observability.SpanFromContext(ctx)
 	body, err := json.Marshal(reqBody)
@@ -156,6 +162,7 @@ func doRequestWithRetry(ctx context.Context, client *http.Client, method, endpoi
 	return lastErr
 }
 
+// recordPayloadObservation 在 span 上记录请求/响应的 payload 摘要，用于追踪调试。
 func recordPayloadObservation(ctx context.Context, span observability.Span, prefix, kind string, payload any, extraAttrs ...observability.Attribute) {
 	if span == nil {
 		return
@@ -201,11 +208,13 @@ func recordPayloadObservation(ctx context.Context, span observability.Span, pref
 	span.SetAttributes(attrs...)
 }
 
+// recordCompletedStreamPayloads 在流式请求完成后统一记录请求和响应 payload。
 func recordCompletedStreamPayloads(ctx context.Context, span observability.Span, requestPayload any, responsePayload any, responseKind string, responseAttrs ...observability.Attribute) {
 	recordPayloadObservation(ctx, span, "llm.request", "request", requestPayload)
 	recordPayloadObservation(ctx, span, "llm.response", responseKind, responsePayload, responseAttrs...)
 }
 
+// buildStreamSuccessPayload 从流式响应构建成功 payload，用于追踪记录。
 func buildStreamSuccessPayload(resp *ChatResponse) map[string]any {
 	if resp == nil {
 		return map[string]any{
@@ -221,6 +230,7 @@ func buildStreamSuccessPayload(resp *ChatResponse) map[string]any {
 	}
 }
 
+// buildStreamHTTPErrorPayload 从 HTTP 错误响应构建错误 payload。
 func buildStreamHTTPErrorPayload(statusCode int, respBytes []byte) map[string]any {
 	return map[string]any{
 		"status_code": statusCode,
@@ -228,6 +238,7 @@ func buildStreamHTTPErrorPayload(statusCode int, respBytes []byte) map[string]an
 	}
 }
 
+// buildStreamReadErrorPayload 构建流式读取失败场景下的错误 payload。
 func buildStreamReadErrorPayload(content string, promptTokens, completionTokens int, err error) map[string]any {
 	return buildStreamReadErrorPayloadFromResponse(&ChatResponse{
 		Message:          buildAssistantMessage(string(types.RoleAssistant), content, nil, ""),
@@ -236,6 +247,7 @@ func buildStreamReadErrorPayload(content string, promptTokens, completionTokens 
 	}, err)
 }
 
+// buildStreamReadErrorPayloadFromResponse 从已有响应对象构建流式读取错误 payload。
 func buildStreamReadErrorPayloadFromResponse(resp *ChatResponse, err error) map[string]any {
 	payload := map[string]any{
 		"error": err.Error(),
@@ -246,6 +258,7 @@ func buildStreamReadErrorPayloadFromResponse(resp *ChatResponse, err error) map[
 	return payload
 }
 
+// calculateBackoff 根据重试次数和上次错误计算退避时长，使用指数增长加抖动。
 func calculateBackoff(attempt int, lastErr error) time.Duration {
 	if re, ok := lastErr.(*retryableError); ok && re.RetryAfter > 0 {
 		return re.RetryAfter
@@ -260,6 +273,7 @@ func calculateBackoff(attempt int, lastErr error) time.Duration {
 	return time.Duration(backoff) + jitter
 }
 
+// parseRetryAfter 解析 Retry-After 响应头，返回应等待的时长。
 func parseRetryAfter(header http.Header) time.Duration {
 	v := header.Get("Retry-After")
 	if v == "" {
@@ -279,9 +293,9 @@ func parseRetryAfter(header http.Header) time.Duration {
 	return 0
 }
 
-// resolveOllamaEndpoint 将基础 URL 补全为 /api/chat 端点。
+// resolveOllamaEndpoint 将配置的 endpoint 规范化为 Ollama API 的完整 URL。
 // 允许两种传参方式：基础地址 http://host:11434 或完整路径 http://host:11434/api/chat。
-// 前者更符合“配置一个地址”的直觉，后者给需要代理转发的场景留出口。
+// 前者更符合"配置一个地址"的直觉，后者给需要代理转发的场景留出口。
 func resolveOllamaEndpoint(endpoint string) string {
 	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
 	if endpoint == "" {
@@ -293,7 +307,7 @@ func resolveOllamaEndpoint(endpoint string) string {
 	return endpoint + "/api/chat"
 }
 
-// resolveOpenAIEndpoint 将基础 URL 补全为 /chat/completions 端点。
+// resolveOpenAIEndpoint 将配置的 endpoint 规范化为 OpenAI-compatible API 的完整 URL。
 // DashScope 与其他 OpenAI-compatible provider 都遵循相同路径约定。
 func resolveOpenAIEndpoint(endpoint string) string {
 	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")

@@ -13,6 +13,7 @@ import (
 // EventFactory 统一负责构造标准事件信封。
 type EventFactory struct{}
 
+// NewEventFactory 创建事件工厂实例。
 func NewEventFactory() *EventFactory {
 	return &EventFactory{}
 }
@@ -86,6 +87,7 @@ func (f *EventFactory) NewObservationEvent(actionEvent *types.ActionEvent, obser
 	}
 }
 
+// actionTypeForToolCall 将工具名映射为 ActionType；finish 工具映射为 ActionFinish，其余为 ActionRun。
 func actionTypeForToolCall(toolName string) types.ActionType {
 	if toolName == string(types.ActionFinish) {
 		return types.ActionFinish
@@ -93,6 +95,7 @@ func actionTypeForToolCall(toolName string) types.ActionType {
 	return types.ActionRun
 }
 
+// parseToolMetadata 从工具调用的 JSON 参数中提取 ToolMetadata（摘要和风险等级）。
 func parseToolMetadata(arguments string) (types.ToolMetadata, error) {
 	if strings.TrimSpace(arguments) == "" {
 		return types.ToolMetadata{}, nil
@@ -105,6 +108,7 @@ func parseToolMetadata(arguments string) (types.ToolMetadata, error) {
 	return metadata, nil
 }
 
+// hasMessagePayload 判断消息是否携带有效载荷，空消息不会被包装为事件。
 func hasMessagePayload(msg types.Message) bool {
 	return len(msg.Content) > 0 ||
 		msg.ReasoningContent != "" ||
@@ -113,6 +117,7 @@ func hasMessagePayload(msg types.Message) bool {
 		msg.ResponsesReasoningItem != nil
 }
 
+// newEventID 生成一个基于时间戳的 UUID v7 事件 ID。
 func newEventID() string {
 	return uuid.Must(uuid.NewV7()).String()
 }
