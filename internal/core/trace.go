@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/wen/opentalon/internal/tool"
-	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/logger"
 	"github.com/wen/opentalon/pkg/observability"
 )
@@ -59,7 +58,7 @@ func (t *sessionRunTrace) Close(ctx context.Context, runErr *error) {
 		if runErr != nil {
 			*runErr = panicErr
 		}
-		t.fail(panicErr, types.StatusStuck, observability.SpanStatusPanicRecovered)
+		t.fail(panicErr, StatusStuck, observability.SpanStatusPanicRecovered)
 	}
 
 	t.setFinalAttributes()
@@ -79,7 +78,7 @@ func (t *sessionRunTrace) Fail(err error) error {
 }
 
 // FailContext 将上下文取消或超时转换为 session 运行错误，并在需要时写回 session 状态。
-func (t *sessionRunTrace) FailContext(ctx context.Context, sessionStatus types.ExecutionStatus) error {
+func (t *sessionRunTrace) FailContext(ctx context.Context, sessionStatus ExecutionStatus) error {
 	err := sessionRunContextError(ctx)
 	if err == nil {
 		return nil
@@ -93,12 +92,12 @@ func (t *sessionRunTrace) FailInvalidResponse(err error) error {
 }
 
 // FailWithStatus 允许调用方显式指定 session 状态和 span 错误分类。
-func (t *sessionRunTrace) FailWithStatus(err error, sessionStatus types.ExecutionStatus, spanStatus observability.SpanStatus) error {
+func (t *sessionRunTrace) FailWithStatus(err error, sessionStatus ExecutionStatus, spanStatus observability.SpanStatus) error {
 	return t.fail(err, sessionStatus, spanStatus)
 }
 
 // fail 是统一失败模板：按需回写 session 状态，并在 span 上记录归类后的错误。
-func (t *sessionRunTrace) fail(err error, sessionStatus types.ExecutionStatus, spanStatus observability.SpanStatus) error {
+func (t *sessionRunTrace) fail(err error, sessionStatus ExecutionStatus, spanStatus observability.SpanStatus) error {
 	if err == nil {
 		return nil
 	}
@@ -161,11 +160,11 @@ func (t *sessionRunTrace) successDescription() string {
 		return "session completed"
 	}
 	switch t.session.state.Status {
-	case types.StatusFinished:
+	case StatusFinished:
 		return "session finished"
-	case types.StatusPaused:
+	case StatusPaused:
 		return "session paused"
-	case types.StatusStuck:
+	case StatusStuck:
 		return "session stopped"
 	default:
 		return "session completed"

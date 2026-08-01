@@ -1,12 +1,12 @@
 package types
 
-import "context"
-
 // AgentOutputKind 表示 Agent 流式输出的语义类型。
 type AgentOutputKind string
 
 const (
+	// AgentOutputMessage 表示单条完整消息的输出（预留，暂无生产者）。
 	AgentOutputMessage      AgentOutputKind = "message"
+	// AgentOutputMessageDelta 表示文本 token 的增量推送。
 	AgentOutputMessageDelta AgentOutputKind = "message_delta"
 )
 
@@ -21,14 +21,9 @@ type AgentOutput struct {
 // AgentTurnResult 表示 Agent 单轮推理的最终结果。
 // Message 用于展示最终助手消息，ToolCalls 用于后续生成 ActionEvent。
 type AgentTurnResult struct {
-	Message                *Message
-	ToolCalls              []MessageToolCall
-	ActionReasoningContent string
-	Finished               bool
-}
-
-// Agent 定义会话执行时的智能体行为接口。
-type Agent interface {
-	// StreamStep 执行一次推理流程，并通过回调输出增量语义结果。
-	StreamStep(ctx context.Context, state *SessionState, onOutput func(AgentOutput)) (*AgentTurnResult, error)
+	Message                *Message          // 最终助手消息（可能为 nil）
+	ToolCalls              []MessageToolCall // 待执行的函数调用列表
+	ActionReasoningContent string            // 关联到 ActionEvent 的推理内容
+	Finished               bool              // 是否触发了 finish 动作或无调用直接结束
+	TokenUsage             TokenUsage        // 本轮 token 用量（prompt + completion）
 }

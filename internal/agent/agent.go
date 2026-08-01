@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/wen/opentalon/internal/core"
 	toolpkg "github.com/wen/opentalon/internal/tool"
 	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/config"
@@ -12,6 +13,9 @@ import (
 	"github.com/wen/opentalon/pkg/utils"
 )
 
+
+// Agent 封装 LLM 客户端、提示词构建和工具 schema，
+// 实现 core.Agent 接口，是会话循环中"大脑"的具体实现。
 type Agent struct {
 	client    LLMClient
 	promptReg *prompts.Registry
@@ -41,6 +45,7 @@ func (b *toolCallBatch) truncateAtFinish() {
 	}
 }
 
+// NewAgent 根据配置创建 Agent 实例，初始化 LLM 客户端和工具 schema。
 func NewAgent(cfg config.LLMConfig) (*Agent, error) {
 	client, err := NewLLMClient(cfg)
 	if err != nil {
@@ -63,7 +68,7 @@ func NewAgent(cfg config.LLMConfig) (*Agent, error) {
 }
 
 // StreamStep 执行一次完整的 LLM 循环，并通过回调输出增量语义结果。
-func (a *Agent) StreamStep(ctx context.Context, state *types.SessionState, onOutput func(types.AgentOutput)) (*types.AgentTurnResult, error) {
+func (a *Agent) StreamStep(ctx context.Context, state *core.SessionState, onOutput func(types.AgentOutput)) (*types.AgentTurnResult, error) {
 	tracer := observability.TracerFor("internal/agent/agent")
 	ctx, span := tracer.StartSpan(ctx, "agent.stream_step",
 		observability.WithSpanKind(observability.SpanKindInternal),
@@ -158,9 +163,14 @@ func (a *Agent) responseToTurnResult(resp *ChatResponse) (*types.AgentTurnResult
 		ToolCalls:              batch.calls,
 		ActionReasoningContent: actionReasoningContent,
 		Finished:               batch.finished || (message != nil && len(batch.calls) == 0),
+		TokenUsage: types.TokenUsage{
+			PromptTokens:     resp.PromptTokens,
+			CompletionTokens: resp.CompletionTokens,
+		},
 	}, nil
 }
 
+// ParseLLMResponse 从模型响应中提取工具调用列表和纯文本内容。
 func (r *Agent) ParseLLMResponse(resp *ChatResponse) ([]types.MessageToolCall, string, error) {
 	if resp == nil {
 		return nil, "", fmt.Errorf("nil LLM response")
@@ -182,6 +192,7 @@ func (r *Agent) ParseLLMResponse(resp *ChatResponse) ([]types.MessageToolCall, s
 	return calls, plainText, nil
 }
 
+// buildAssistantOutputMessage 构建用于展示的助手消息，去除工具调用后保留纯文本。
 func buildAssistantOutputMessage(msg types.Message, plainText string) *types.Message {
 	if len(msg.ToolCalls) > 0 {
 		msg.ToolCalls = nil
@@ -198,6 +209,7 @@ func buildAssistantOutputMessage(msg types.Message, plainText string) *types.Mes
 	return &cloned
 }
 
+// stripActionReasoningMessage 从消息中移除推理内容，用于工具调用场景下分离思维链与动作。
 func stripActionReasoningMessage(msg *types.Message) *types.Message {
 	if msg == nil {
 		return nil
@@ -210,6 +222,7 @@ func stripActionReasoningMessage(msg *types.Message) *types.Message {
 	return &cloned
 }
 
+// hasAssistantMessagePayload 判断消息是否携带有效载荷（文本/推理/思维链）。
 func hasAssistantMessagePayload(msg types.Message) bool {
 	return len(msg.Content) > 0 ||
 		msg.ReasoningContent != "" ||

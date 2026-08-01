@@ -51,6 +51,7 @@ func main() {
 	}
 
 	session := core.NewSession(agentInstance, core.NewCallbacks(), filepath.Join(cfg.LogDir, "sessions"))
+	session.SetContextWindowLimit(cfg.LLM.ContextWindowTokens)
 	renderer := &cliRenderer{}
 	session.AddEventCallbacks(renderer.HandleEvent)
 	session.AddStreamTextDeltaCallbacks(renderer.HandleTextDelta)

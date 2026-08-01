@@ -13,20 +13,25 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/wen/opentalon/internal/core"
 	"github.com/wen/opentalon/internal/types"
 )
 
+// PromptBuilder 负责将 SessionState 中的事件历史转换为 LLM 可消费的对话消息序列。
 type PromptBuilder struct{}
 
+// NewPromptBuilder 创建空构建器。
 func NewPromptBuilder() *PromptBuilder {
 	return &PromptBuilder{}
 }
 
-func (b *PromptBuilder) BuildMessages(state *types.SessionState, systemPrompt string, userPromptExamples string) []types.Message {
+// BuildMessages 构建完整的 LLM 消息序列（系统提示 + 示例 + 历史事件）。
+func (b *PromptBuilder) BuildMessages(state *core.SessionState, systemPrompt string, userPromptExamples string) []types.Message {
 	return b.BuildPromptMessages(state, systemPrompt, userPromptExamples)
 }
 
-func (b *PromptBuilder) BuildPromptMessages(state *types.SessionState, systemPrompt string, userPromptExamples string) []types.Message {
+// BuildPromptMessages 是实际构建逻辑：注入系统提示、用户示例、历史事件序列，并打缓存标记。
+func (b *PromptBuilder) BuildPromptMessages(state *core.SessionState, systemPrompt string, userPromptExamples string) []types.Message {
 	messages := []types.Message{
 		{
 			Role: types.RoleSystem,
@@ -64,6 +69,8 @@ const (
 	cacheLookbackWindow     = 20
 )
 
+// applyEphemeralCacheControls 为稳定前缀和滚动上下文打缓存标记，
+// 兼顾更高命中率与 provider 单次最多 4 个标记、单标记最多回溯 20 个内容块的限制。
 // applyEphemeralCacheControls 为稳定前缀和滚动上下文打缓存标记，
 // 兼顾更高命中率与 provider 单次最多 4 个标记、单标记最多回溯 20 个内容块的限制。
 func applyEphemeralCacheControls(messages []types.Message, hasExamples bool) {
@@ -107,6 +114,7 @@ func applyEphemeralCacheControls(messages []types.Message, hasExamples bool) {
 	}
 }
 
+// hasCachePrompt 检查内容块中是否已存在 cache_prompt 标记。
 func hasCachePrompt(contents []types.Content) bool {
 	for _, content := range contents {
 		switch c := content.(type) {
@@ -131,6 +139,8 @@ func hasCachePrompt(contents []types.Content) bool {
 	return false
 }
 
+// eventToMessage 将单个事件映射为 LLM 对话消息（role + content）；
+// 无法映射或空载荷的事件返回 (zero, false)。
 func eventToMessage(evt types.Event) (types.Message, bool) {
 	filter := func(msg types.Message) (types.Message, bool) {
 		if msg.Role == "" {
@@ -164,6 +174,7 @@ func eventToMessage(evt types.Event) (types.Message, bool) {
 	return types.Message{}, false
 }
 
+// eventToJSON 将事件映射为消息后 JSON 序列化，用于调试/追踪。
 func eventToJSON(evt types.Event) (string, bool) {
 	msg, ok := eventToMessage(evt)
 	if !ok {

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wen/opentalon/internal/core"
 	terminalpkg "github.com/wen/opentalon/internal/tool/terminal"
 	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/utils"
@@ -39,7 +40,7 @@ func TestPromptBuilderBuildMessages(t *testing.T) {
 	})
 
 	builder := NewPromptBuilder()
-	messages := builder.BuildMessages(&types.SessionState{
+	messages := builder.BuildMessages(&core.SessionState{
 		Events: eventLog,
 	}, "system prompt", "user example prompt")
 
@@ -64,7 +65,7 @@ func TestPromptBuilderBuildMessages(t *testing.T) {
 
 func TestPromptBuilderBuildMessages_OnlySystemWhenNoExamplesOrEvents(t *testing.T) {
 	builder := NewPromptBuilder()
-	messages := builder.BuildMessages(&types.SessionState{}, "system prompt", "")
+	messages := builder.BuildMessages(&core.SessionState{}, "system prompt", "")
 
 	if len(messages) != 1 {
 		t.Fatalf("expected only system message, got %d", len(messages))
@@ -100,7 +101,7 @@ func TestPromptBuilderBuildMessages_FiltersEventsWithoutPayload(t *testing.T) {
 	})
 
 	builder := NewPromptBuilder()
-	messages := builder.BuildMessages(&types.SessionState{
+	messages := builder.BuildMessages(&core.SessionState{
 		Events: eventLog,
 	}, "system prompt", "")
 
@@ -124,7 +125,7 @@ func TestPromptBuilderBuildMessages_PreservesAssistantToolCallAndReasoning(t *te
 	})
 
 	builder := NewPromptBuilder()
-	messages := builder.BuildMessages(&types.SessionState{
+	messages := builder.BuildMessages(&core.SessionState{
 		Events: eventLog,
 	}, "system prompt", "")
 

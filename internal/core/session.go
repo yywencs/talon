@@ -10,25 +10,28 @@ import (
 	"github.com/wen/opentalon/pkg/logger"
 )
 
+// Session 是系统运行时的编排核心，驱动 Agent、ToolRouter 和事件回调链协同工作。
+// 它管理会话循环、迭代上限和取消，并对外暴露 SubmitUserMessage/Run 等入口。
 type Session struct {
-	state        *types.SessionState // 状态机（包含 Status）
-	agent        types.Agent         // 大脑
-	toolRouter   *ToolRouter         // 工具执行路由
-	eventFactory *EventFactory       // 事件工厂
-	on_event     *Callbacks          // on_event 回调链
-	onStream     *StreamCallbacks    // 流式展示
+	state        *SessionState    // 状态机（包含 Status）
+	agent        Agent            // 大脑
+	toolRouter   *ToolRouter      // 工具执行路由
+	eventFactory *EventFactory    // 事件工厂
+	on_event     *Callbacks       // on_event 回调链
+	onStream     *StreamCallbacks // 流式展示
 }
 
 const defaultActionParallelism = 10
 
-// NewSession 初始化
-// 需要存两份agent，seesion中的agent运行时实例，实际执行 step(), state中的agent持久化配置，用于恢复对话状态
-func NewSession(agent types.Agent, on_event *Callbacks, persistenceDir string) *Session {
+// NewSession 初始化会话运行时，创建状态机、工具路由器和事件工厂。
+// 需要存两份 agent：Session 中的运行时实例用于实际执行 step()，
+// State 中的持久化配置用于恢复对话状态。
+func NewSession(agent Agent, on_event *Callbacks, persistenceDir string) *Session {
 	if on_event == nil {
 		on_event = NewCallbacks()
 	}
 
-	sessionState := types.NewSessionState(agent, persistenceDir)
+	sessionState := NewSessionState(agent, persistenceDir)
 
 	s := &Session{
 		state:        sessionState,
@@ -70,7 +73,7 @@ func (s *Session) AddStreamTextDeltaCallbacks(callbacks ...func(string)) {
 	s.onStream.AddTextDelta(callbacks...)
 }
 
-// SubmitUserMessage 将用户输入写入事件历史，并将会话切回可运行状态。
+// SubmitUserMessage 将用户输入写入事件历史，并将会话状态切回 Running。
 func (s *Session) SubmitUserMessage(text string) error {
 	if s == nil || s.state == nil || s.eventFactory == nil {
 		return fmt.Errorf("session is not initialized")
@@ -81,7 +84,7 @@ func (s *Session) SubmitUserMessage(text string) error {
 		return fmt.Errorf("user message is empty")
 	}
 
-	s.state.Status = types.StatusRunning
+	s.state.Status = StatusRunning
 	event := s.eventFactory.NewMessageEvent(types.Message{
 		Role: types.RoleUser,
 		Content: []types.Content{
@@ -92,23 +95,24 @@ func (s *Session) SubmitUserMessage(text string) error {
 	return nil
 }
 
+// Run 是会话主循环：反复调用 Agent 推理、分发动作、接收观察，直到终态。
 func (s *Session) Run(ctx context.Context) (runErr error) {
 	ctx, runTrace := startSessionRunTrace(ctx, s)
 	defer runTrace.Close(ctx, &runErr)
 
 	for {
-		if ctxErr := runTrace.FailContext(ctx, types.StatusStuck); ctxErr != nil {
+		if ctxErr := runTrace.FailContext(ctx, StatusStuck); ctxErr != nil {
 			runErr = ctxErr
 			return runErr
 		}
 
-		if s.state.Status == types.StatusPaused || s.state.Status == types.StatusStuck {
+		if s.state.Status == StatusPaused || s.state.Status == StatusStuck {
 			break
 		}
 
 		s.state.IterationCount++
 		if s.state.IterationCount >= s.state.MaxIterations {
-			s.state.Status = types.StatusStuck
+			s.state.Status = StatusStuck
 			logger.InfoWithCtx(ctx, "会话运行超最大迭代次数，已停止",
 				"session_id", s.state.ID,
 			)
@@ -120,7 +124,11 @@ func (s *Session) Run(ctx context.Context) (runErr error) {
 
 		result, err := s.agent.StreamStep(ctx, s.state, s.handleAgentOutput)
 		if err != nil {
-			if ctxErr := runTrace.FailContext(ctx, types.StatusStuck); ctxErr != nil {
+			// Even on error, the model may have consumed tokens; record if available.
+			if result != nil {
+				s.state.TokenTracker.Record(result.TokenUsage)
+			}
+			if ctxErr := runTrace.FailContext(ctx, StatusStuck); ctxErr != nil {
 				runErr = ctxErr
 				return runErr
 			}
@@ -132,6 +140,7 @@ func (s *Session) Run(ctx context.Context) (runErr error) {
 			runErr = runTrace.FailInvalidResponse(nilResultErr)
 			return runErr
 		}
+		s.state.TokenTracker.Record(result.TokenUsage)
 		if result.Message != nil {
 			s.emit(s.eventFactory.NewMessageEvent(*result.Message, types.SourceAgent))
 		}
@@ -145,7 +154,7 @@ func (s *Session) Run(ctx context.Context) (runErr error) {
 		actionEvents = hasFinishAction(actionEvents)
 		if len(actionEvents) == 0 {
 			if result.Finished {
-				s.state.Status = types.StatusFinished
+				s.state.Status = StatusFinished
 				continue
 			}
 			err := fmt.Errorf("session run: agent returned no actions and did not finish")
@@ -174,6 +183,7 @@ func (s *Session) executeActionEvents(ctx context.Context, actionEvents []*types
 	}
 }
 
+// handleAgentOutput 是 Agent 流式回调的接收端，将增量逐 token 推送到 onStream。
 func (s *Session) handleAgentOutput(output types.AgentOutput) {
 	switch output.Kind {
 	case types.AgentOutputMessageDelta:
@@ -184,6 +194,7 @@ func (s *Session) handleAgentOutput(output types.AgentOutput) {
 	}
 }
 
+// emit 将事件写入历史、推进状态机、并通知外部回调链。
 func (s *Session) emit(event types.Event) {
 	if event == nil {
 		return
@@ -197,13 +208,14 @@ func (s *Session) emit(event types.Event) {
 	}
 }
 
+// applyEvent 根据事件更新会话状态机（如 finish 动作将状态切为 Finished）。
 func (s *Session) applyEvent(event types.Event) {
 	actionEvent, ok := event.(*types.ActionEvent)
 	if !ok || actionEvent == nil {
 		return
 	}
 	if actionEvent.ActionType == types.ActionFinish {
-		s.state.Status = types.StatusFinished
+		s.state.Status = StatusFinished
 	}
 }
 
@@ -218,10 +230,11 @@ func hasFinishAction(actionEvents []*types.ActionEvent) []*types.ActionEvent {
 	return actionEvents
 }
 
-func isTerminalStatus(status types.ExecutionStatus) bool {
-	return status == types.StatusFinished || status == types.StatusStuck
+func isTerminalStatus(status ExecutionStatus) bool {
+	return status == StatusFinished || status == StatusStuck
 }
 
+// streamTextDelta 将文本增量推送到流式回调链。
 func (s *Session) streamTextDelta(text string) {
 	if text == "" {
 		return
@@ -229,4 +242,16 @@ func (s *Session) streamTextDelta(text string) {
 	if s.onStream != nil {
 		s.onStream.HandleTextDelta(text)
 	}
+}
+
+// SetContextWindowLimit 设置模型上下文窗口的 token 上限，0 表示未知。
+func (s *Session) SetContextWindowLimit(limit int) {
+	if s == nil || s.state == nil || s.state.TokenTracker == nil {
+		return
+	}
+	s.state.TokenTracker.SetContextWindowLimit(limit)
+	logger.Info("上下文窗口限制已设置",
+		"session_id", s.state.ID,
+		"context_window_tokens", limit,
+	)
 }

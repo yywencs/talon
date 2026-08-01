@@ -22,6 +22,7 @@ type LLMConfig struct {
 	Endpoint   string
 	Model      string
 	PromptsDir string
+	ContextWindowTokens int
 }
 
 // GlobalConfig 作为一个全局单例，方便在 Engine 或 Worker 中引用
@@ -54,6 +55,7 @@ func Load() {
 			Endpoint:   getEnv("LLM_ENDPOINT", "http://222.195.7.108:11434"),
 			APIKey:     getEnv("LLM_API_KEY", ""),
 			PromptsDir: getEnv("LLM_PROMPTS_DIR", ""),
+			ContextWindowTokens: Int("LLM_CONTEXT_WINDOW_TOKENS", 0),
 		},
 	}
 }
