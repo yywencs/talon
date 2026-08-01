@@ -54,6 +54,12 @@ test/
 .codegraph/
 reference/
 
+# 数据集的原始文件、中间结果、API 缓存和本地仓库都可由工具重建。
+data/raw/
+data/cache/
+data/interim/
+data/repos/
+
 *.db
 *.sqlite
 *.sqlite3
