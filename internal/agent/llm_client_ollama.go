@@ -31,15 +31,26 @@ func newOllamaClient(endpoint string) *ollamaClient {
 type ollamaWireRequest struct {
 	Model    string         `json:"model"`
 	Messages []any          `json:"messages"`
+	Tools    []any          `json:"tools,omitempty"`
 	Stream   bool           `json:"stream"`
 	Options  map[string]any `json:"options,omitempty"`
+}
+
+type ollamaWireToolCall struct {
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Function struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	} `json:"function"`
 }
 
 // ollamaWireResponse 是 Ollama 返回的 wire 协议响应。
 type ollamaWireResponse struct {
 	Message struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
+		Role      string               `json:"role"`
+		Content   string               `json:"content"`
+		ToolCalls []ollamaWireToolCall `json:"tool_calls,omitempty"`
 	} `json:"message"`
 	PromptEvalCount int `json:"prompt_eval_count"`
 	EvalCount       int `json:"eval_count"`
@@ -47,8 +58,9 @@ type ollamaWireResponse struct {
 
 type ollamaStreamChunk struct {
 	Message struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
+		Role      string               `json:"role"`
+		Content   string               `json:"content"`
+		ToolCalls []ollamaWireToolCall `json:"tool_calls,omitempty"`
 	} `json:"message"`
 	Done            bool `json:"done"`
 	PromptEvalCount int  `json:"prompt_eval_count,omitempty"`
@@ -64,6 +76,7 @@ func (c *ollamaClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 	wireReq := ollamaWireRequest{
 		Model:    req.Model,
 		Messages: toOllamaMessages(stripCacheControl(req.Messages)),
+		Tools:    convertToolsToAny(req.Tools),
 		Stream:   req.Stream,
 		Options: map[string]any{
 			"temperature": req.Temperature,
@@ -81,11 +94,43 @@ func (c *ollamaClient) Chat(ctx context.Context, req ChatRequest) (*ChatResponse
 		observability.Int("llm.usage.output_tokens", wireResp.EvalCount),
 	)
 	span.SetStatus(observability.SpanStatusOK, "llm request completed")
+	toolCalls, err := messageToolCallsFromOllama(wireResp.Message.ToolCalls)
+	if err != nil {
+		span.RecordError(err, observability.SpanStatusLLMInvalidResponse)
+		return nil, err
+	}
 	return &ChatResponse{
-		Message:          buildAssistantMessage(wireResp.Message.Role, wireResp.Message.Content, nil, ""),
+		Message:          buildAssistantMessage(wireResp.Message.Role, wireResp.Message.Content, toolCalls, ""),
 		PromptTokens:     wireResp.PromptEvalCount,
 		CompletionTokens: wireResp.EvalCount,
 	}, nil
+}
+
+func messageToolCallsFromOllama(toolCalls []ollamaWireToolCall) ([]types.MessageToolCall, error) {
+	result := make([]types.MessageToolCall, 0, len(toolCalls))
+	for index, toolCall := range toolCalls {
+		if toolCall.Function.Name == "" {
+			return nil, fmt.Errorf("ollama tool call %d has no function name", index)
+		}
+		arguments := strings.TrimSpace(string(toolCall.Function.Arguments))
+		if arguments == "" || arguments == "null" {
+			arguments = "{}"
+		} else if strings.HasPrefix(arguments, `"`) {
+			var decoded string
+			if err := json.Unmarshal(toolCall.Function.Arguments, &decoded); err != nil {
+				return nil, fmt.Errorf("decode ollama tool call %d arguments: %w", index, err)
+			}
+			arguments = decoded
+		}
+		callID := toolCall.ID
+		if callID == "" {
+			callID = fmt.Sprintf("call_ollama_%d", index)
+		}
+		result = append(result, types.MessageToolCall{
+			ID: callID, Name: toolCall.Function.Name, Arguments: arguments, Origin: types.OriginCompletion,
+		})
+	}
+	return result, nil
 }
 
 func (c *ollamaClient) StreamChat(ctx context.Context, req ChatRequest, onToken func(string)) (*ChatResponse, error) {
@@ -100,6 +145,7 @@ func (c *ollamaClient) StreamChat(ctx context.Context, req ChatRequest, onToken 
 	wireReq := ollamaWireRequest{
 		Model:    req.Model,
 		Messages: toOllamaMessages(stripCacheControl(req.Messages)),
+		Tools:    convertToolsToAny(req.Tools),
 		Stream:   true,
 		Options: map[string]any{
 			"temperature": req.Temperature,
@@ -140,6 +186,7 @@ func (c *ollamaClient) StreamChat(ctx context.Context, req ChatRequest, onToken 
 	var contentBuilder strings.Builder
 	promptTokens := 0
 	completionTokens := 0
+	var toolCalls []types.MessageToolCall
 	firstTokenEventSent := false
 	for {
 		line, err := reader.ReadBytes('\n')
@@ -172,6 +219,14 @@ func (c *ollamaClient) StreamChat(ctx context.Context, req ChatRequest, onToken 
 			}
 			onToken(chunk.Message.Content)
 		}
+		if len(chunk.Message.ToolCalls) > 0 {
+			parsed, parseErr := messageToolCallsFromOllama(chunk.Message.ToolCalls)
+			if parseErr != nil {
+				span.RecordError(parseErr, observability.SpanStatusLLMInvalidResponse)
+				return nil, parseErr
+			}
+			toolCalls = parsed
+		}
 		if chunk.PromptEvalCount > 0 {
 			promptTokens = chunk.PromptEvalCount
 		}
@@ -194,7 +249,7 @@ func (c *ollamaClient) StreamChat(ctx context.Context, req ChatRequest, onToken 
 	)
 	streamSpan.SetStatus(observability.SpanStatusOK, "llm stream completed")
 	finalResp := &ChatResponse{
-		Message:          buildAssistantMessage(string(types.RoleAssistant), contentBuilder.String(), nil, ""),
+		Message:          buildAssistantMessage(string(types.RoleAssistant), contentBuilder.String(), toolCalls, ""),
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
 	}

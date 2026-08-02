@@ -53,3 +53,18 @@ func TestRunRejectsUnexpectedArguments(t *testing.T) {
 	err := run(context.Background(), []string{"unexpected"}, strings.NewReader(""), &stdout, &stderr)
 	require.ErrorContains(t, err, "unexpected positional arguments")
 }
+
+func TestRunRejectsUnknownReviewer(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"--reviewer", "unknown"}, strings.NewReader(`diff --git a/a.go b/a.go
+--- a/a.go
++++ b/a.go
+@@ -1 +1 @@
+-old
++new
+`), &stdout, &stderr)
+	require.EqualError(t, err, `unsupported reviewer "unknown"; available: rules, agent`)
+	require.Empty(t, stdout.String())
+}

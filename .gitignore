@@ -58,7 +58,8 @@ reference/
 data/raw/
 data/cache/
 data/interim/
-data/repos/
+data/repos/*
+!data/repos/go.mod
 
 *.db
 *.sqlite

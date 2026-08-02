@@ -230,6 +230,59 @@ func TestOllamaChat(t *testing.T) {
 	t.Logf("Prompt tokens: %d, Completion tokens: %d", resp.PromptTokens, resp.CompletionTokens)
 }
 
+func TestOllamaChatSendsAndReceivesToolCalls(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		tools, ok := request["tools"].([]any)
+		if !ok || len(tools) != 1 {
+			t.Fatalf("tools = %#v, want one tool", request["tools"])
+		}
+		messages, ok := request["messages"].([]any)
+		if !ok || len(messages) != 3 {
+			t.Fatalf("messages = %#v, want three messages", request["messages"])
+		}
+		assistant := messages[1].(map[string]any)
+		if len(assistant["tool_calls"].([]any)) != 1 {
+			t.Fatalf("assistant tool_calls = %#v", assistant["tool_calls"])
+		}
+		toolResult := messages[2].(map[string]any)
+		if toolResult["tool_name"] != "read_repository_file" {
+			t.Fatalf("tool_name = %#v", toolResult["tool_name"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"","tool_calls":[{"type":"function","function":{"name":"search_repository_symbol","arguments":{"revision":"head","symbol":"sanitize"}}}]},"prompt_eval_count":8,"eval_count":3}`))
+	}))
+	defer server.Close()
+
+	client := newOllamaClient(server.URL)
+	response, err := client.Chat(context.Background(), ChatRequest{
+		Model: "test-model",
+		Tools: []map[string]any{{
+			"type": "function", "function": map[string]any{"name": "read_repository_file"},
+		}},
+		Messages: []types.Message{
+			{Role: types.RoleUser, Content: []types.Content{types.TextContent{Text: "review"}}},
+			{Role: types.RoleAssistant, ToolCalls: []types.MessageToolCall{{
+				ID: "call_1", Name: "read_repository_file", Arguments: `{"revision":"head"}`,
+			}}},
+			{Role: types.RoleTool, Name: "read_repository_file", ToolCallID: "call_1", Content: []types.Content{types.TextContent{Text: `{"path":"safe.go"}`}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if len(response.Message.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %#v", response.Message.ToolCalls)
+	}
+	toolCall := response.Message.ToolCalls[0]
+	if toolCall.ID != "call_ollama_0" || toolCall.Name != "search_repository_symbol" || toolCall.Arguments != `{"revision":"head","symbol":"sanitize"}` {
+		t.Fatalf("unexpected tool call: %#v", toolCall)
+	}
+}
+
 func TestOllamaStreamChatCapturesPayloadAfterCompletion(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-ndjson")

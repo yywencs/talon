@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"encoding/json"
+
 	"github.com/wen/opentalon/internal/serializer"
 	"github.com/wen/opentalon/internal/types"
 	"github.com/wen/opentalon/pkg/utils"
@@ -26,6 +28,25 @@ func toOllamaMessages(messages []types.Message) []any {
 		m := map[string]any{
 			"role":    string(msg.Role),
 			"content": content,
+		}
+		if len(msg.ToolCalls) > 0 {
+			toolCalls := make([]map[string]any, 0, len(msg.ToolCalls))
+			for _, toolCall := range msg.ToolCalls {
+				var arguments any
+				if err := json.Unmarshal([]byte(toolCall.Arguments), &arguments); err != nil {
+					arguments = toolCall.Arguments
+				}
+				toolCalls = append(toolCalls, map[string]any{
+					"type": "function",
+					"function": map[string]any{
+						"name": toolCall.Name, "arguments": arguments,
+					},
+				})
+			}
+			m["tool_calls"] = toolCalls
+		}
+		if msg.Role == types.RoleTool && msg.Name != "" {
+			m["tool_name"] = msg.Name
 		}
 		out = append(out, m)
 	}

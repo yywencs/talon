@@ -10,12 +10,17 @@ import (
 	"os"
 
 	"github.com/wen/opentalon/internal/review"
+	"github.com/wen/opentalon/internal/review/agentreview"
+	"github.com/wen/opentalon/internal/tool/repository"
+	"github.com/wen/opentalon/pkg/config"
+	"github.com/wen/opentalon/pkg/observability"
 )
 
 const defaultMaxDiffBytes int64 = 2 << 20
 
 func main() {
-	// 该命令是独立旁路，不加载主 CLI 的配置、LLM、Session 或 Sandbox。
+	// 该命令是独立旁路：rules 模式不加载 LLM；agent 模式只加载 Eino Reviewer，
+	// 两种模式都不会启动主 CLI 的交互 Session 或 Sandbox。
 	if err := run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "review failed: %v\n", err)
 		os.Exit(1)
@@ -28,10 +33,12 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	flags.SetOutput(stderr)
 	diffPath := flags.String("diff", "-", "path to a unified diff, or - to read stdin")
 	repository := flags.String("repository", "", "repository name, for example owner/repo")
+	repositoryRoot := flags.String("repository-root", "", "local Git repository used by agent read-only tools")
 	pullRequest := flags.Int("pr", 0, "pull request number")
 	baseSHA := flags.String("base-sha", "", "base commit SHA")
 	headSHA := flags.String("head-sha", "", "head commit SHA")
 	language := flags.String("language", "", "primary language hint")
+	reviewerMode := flags.String("reviewer", "rules", "reviewer implementation: rules or agent")
 	pretty := flags.Bool("pretty", true, "indent JSON output")
 	maxBytes := flags.Int64("max-diff-bytes", defaultMaxDiffBytes, "maximum accepted diff size")
 	if err := flags.Parse(args); err != nil {
@@ -48,8 +55,18 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	if err != nil {
 		return err
 	}
-	// 入口只依赖 Reviewer 接口；后续接入 Eino 时可以替换实现而不改变 CLI 契约。
-	service := review.NewService(review.NewRuleReviewer())
+	reviewerImpl, err := buildReviewer(ctx, *reviewerMode, *repositoryRoot, *baseSHA, *headSHA)
+	if err != nil {
+		return err
+	}
+	if *reviewerMode == "agent" {
+		// buildReviewer 已加载 .env，此时初始化才能同时读取其中的 OBS_* 配置和脱敏规则。
+		if err := observability.Init(ctx, observability.LoadConfigFromEnv()); err != nil {
+			return fmt.Errorf("initialize agent reviewer observability: %w", err)
+		}
+		defer func() { _ = observability.Shutdown(context.Background()) }()
+	}
+	service := review.NewService(reviewerImpl)
 	report, err := service.Review(ctx, review.Request{
 		Repository: *repository, PullRequest: *pullRequest,
 		BaseSHA: *baseSHA, HeadSHA: *headSHA, Language: *language, Diff: diff,
@@ -67,6 +84,40 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return fmt.Errorf("encode report: %w", err)
 	}
 	return nil
+}
+
+func buildReviewer(ctx context.Context, mode, repositoryRoot, baseSHA, headSHA string) (review.Reviewer, error) {
+	switch mode {
+	case "rules":
+		return review.NewRuleReviewer(), nil
+	case "agent":
+		llmConfig, err := config.LoadLLMConfig()
+		if err != nil {
+			return nil, fmt.Errorf("load agent reviewer config: %w", err)
+		}
+		if repositoryRoot == "" {
+			reviewerImpl, err := agentreview.NewFromConfig(ctx, llmConfig)
+			if err != nil {
+				return nil, fmt.Errorf("initialize agent reviewer: %w", err)
+			}
+			return reviewerImpl, nil
+		}
+		reader, err := repository.NewGitReader(ctx, repository.GitConfig{
+			RepositoryRoot: repositoryRoot,
+			BaseSHA:        baseSHA,
+			HeadSHA:        headSHA,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("initialize read-only repository tools: %w", err)
+		}
+		reviewerImpl, err := agentreview.NewFromConfigWithRepository(ctx, llmConfig, reader)
+		if err != nil {
+			return nil, fmt.Errorf("initialize repository agent reviewer: %w", err)
+		}
+		return reviewerImpl, nil
+	default:
+		return nil, fmt.Errorf("unsupported reviewer %q; available: rules, agent", mode)
+	}
 }
 
 func readDiff(path string, stdin io.Reader, maxBytes int64) (string, error) {
