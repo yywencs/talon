@@ -60,6 +60,7 @@ data/cache/
 data/interim/
 data/repos/*
 !data/repos/go.mod
+data/results/
 
 *.db
 *.sqlite

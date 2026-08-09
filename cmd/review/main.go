@@ -10,9 +10,7 @@ import (
 	"os"
 
 	"github.com/wen/opentalon/internal/review"
-	"github.com/wen/opentalon/internal/review/agentreview"
-	"github.com/wen/opentalon/internal/tool/repository"
-	"github.com/wen/opentalon/pkg/config"
+	"github.com/wen/opentalon/internal/review/reviewerfactory"
 	"github.com/wen/opentalon/pkg/observability"
 )
 
@@ -87,37 +85,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 }
 
 func buildReviewer(ctx context.Context, mode, repositoryRoot, baseSHA, headSHA string) (review.Reviewer, error) {
-	switch mode {
-	case "rules":
-		return review.NewRuleReviewer(), nil
-	case "agent":
-		llmConfig, err := config.LoadLLMConfig()
-		if err != nil {
-			return nil, fmt.Errorf("load agent reviewer config: %w", err)
-		}
-		if repositoryRoot == "" {
-			reviewerImpl, err := agentreview.NewFromConfig(ctx, llmConfig)
-			if err != nil {
-				return nil, fmt.Errorf("initialize agent reviewer: %w", err)
-			}
-			return reviewerImpl, nil
-		}
-		reader, err := repository.NewGitReader(ctx, repository.GitConfig{
-			RepositoryRoot: repositoryRoot,
-			BaseSHA:        baseSHA,
-			HeadSHA:        headSHA,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("initialize read-only repository tools: %w", err)
-		}
-		reviewerImpl, err := agentreview.NewFromConfigWithRepository(ctx, llmConfig, reader)
-		if err != nil {
-			return nil, fmt.Errorf("initialize repository agent reviewer: %w", err)
-		}
-		return reviewerImpl, nil
-	default:
-		return nil, fmt.Errorf("unsupported reviewer %q; available: rules, agent", mode)
-	}
+	return reviewerfactory.Build(ctx, reviewerfactory.Options{
+		Mode: mode, RepositoryRoot: repositoryRoot, BaseSHA: baseSHA, HeadSHA: headSHA,
+	})
 }
 
 func readDiff(path string, stdin io.Reader, maxBytes int64) (string, error) {

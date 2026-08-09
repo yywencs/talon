@@ -40,6 +40,28 @@ go run ./tools/dataset/cmd/dataset govulndb-select \
 
 相同 enriched 输入、数量和 Seed 会生成字节级一致的 JSONL。
 
+## 批量运行 Review
+
+无需下载仓库即可用规则 Reviewer 做通路基线：
+
+```bash
+go run ./tools/benchmark/cmd/benchmark review \
+  --dataset ./data/processed/review-v1/pilot-15.jsonl \
+  --reviewer rules \
+  --output ./data/results/review-v1/rules.jsonl
+```
+
+命令会把每条记录的 GitHub 文件级 Patch 物化为 unified diff，逐条调用与
+`cmd/review` 相同的 Review 领域服务，并将单样本报告写入 JSONL；聚合摘要输出到
+stdout。使用 `--limit 1` 可以快速冒烟，使用 `--sample-timeout` 可以设置单样本超时。
+
+配置 Talon 的 LLM 环境后，将 `--reviewer` 改为 `agent` 即可运行无仓库工具的
+模型审查。若还传入 `--repositories-root ./data/repos/review-v1`，则会启用绑定到
+每条样本 base/head commit 的只读仓库工具。
+
+当前数据保存的是从父提交到 Fix Commit 的修复方向，适合验证通路可靠性，不直接
+代表漏洞发现召回率。召回率和误报率评测还需要反向漏洞样本及人工确认的负样本。
+
 ## 下载首批仓库
 
 ```bash
