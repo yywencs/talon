@@ -38,6 +38,7 @@ type Snapshot struct {
 	State          State        `json:"state"`
 	SuspendedState State        `json:"suspended_state,omitempty"`
 	Version        uint64       `json:"version"`
+	Plan           *Plan        `json:"plan,omitempty"`
 	History        []Transition `json:"history"`
 }
 
@@ -50,6 +51,7 @@ type IncidentWorkflow struct {
 	state          State
 	suspendedState State
 	version        uint64
+	plan           *Plan
 	history        []Transition
 	now            func() time.Time
 }
@@ -140,7 +142,10 @@ func (w *IncidentWorkflow) Apply(event Event) (Transition, error) {
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	return w.applyLocked(event)
+}
 
+func (w *IncidentWorkflow) applyLocked(event Event) (Transition, error) {
 	from := w.state
 	rule, exists := transitionRules[from][event.Type]
 	if event.Type == EventEscalated && from != StateResolved && from != StateEscalated {
@@ -187,7 +192,7 @@ func (w *IncidentWorkflow) Snapshot() Snapshot {
 	}
 	return Snapshot{
 		IncidentID: w.incidentID, State: w.state, SuspendedState: w.suspendedState,
-		Version: w.version, History: history,
+		Version: w.version, Plan: clonePlanPointer(w.plan), History: history,
 	}
 }
 

@@ -142,6 +142,45 @@ func TestIncidentWorkflowAllowedAgentActionsAreStable(t *testing.T) {
 	}, workflow.AllowedAgentActions())
 }
 
+func TestIncidentWorkflowSubmitPlanFreezesDraft(t *testing.T) {
+	fixedNow := time.Date(2026, 8, 10, 9, 5, 0, 0, time.UTC)
+	workflow := newTestWorkflow(t, func() time.Time { return fixedNow })
+	applyEvents(t, workflow, Event{Type: EventStartInvestigation, Actor: ActorController})
+	draft := PlanDraft{
+		Summary: "回滚错误的 Mapping 配置", RootCause: "mapping schema regression",
+		EvidenceRefs: []string{"log:invalid_parameter_type", "change:mapping-v2"},
+		Remediation: PlannedAction{
+			ToolName:  "rollback_mapping",
+			Arguments: map[string]any{"target_version": "mapping-v1"},
+		},
+		ProbeRouteID: "route-a", RecoveryPolicyID: "default-safe-recovery",
+	}
+
+	submission, err := workflow.SubmitPlan(draft)
+	require.NoError(t, err)
+	assert.Equal(t, StatePlanned, workflow.Snapshot().State)
+	assert.Equal(t, "incident-001-plan-2", submission.Plan.ID)
+	assert.Equal(t, fixedNow, submission.Plan.SubmittedAt)
+	assert.Equal(t, submission.Plan.ID, submission.Transition.Metadata["plan_id"])
+
+	draft.Remediation.Arguments["target_version"] = "mutated"
+	snapshot := workflow.Snapshot()
+	require.NotNil(t, snapshot.Plan)
+	assert.Equal(t, "mapping-v1", snapshot.Plan.Remediation.Arguments["target_version"])
+	_, err = workflow.SubmitPlan(draft)
+	assert.ErrorIs(t, err, ErrAgentActionDenied)
+}
+
+func TestIncidentWorkflowSubmitPlanValidatesRequiredFields(t *testing.T) {
+	workflow := newTestWorkflow(t, nil)
+	applyEvents(t, workflow, Event{Type: EventStartInvestigation, Actor: ActorController})
+
+	_, err := workflow.SubmitPlan(PlanDraft{})
+	require.Error(t, err)
+	assert.Equal(t, StateInvestigating, workflow.Snapshot().State)
+	assert.Zero(t, workflow.Snapshot().Plan)
+}
+
 func TestIncidentWorkflowSnapshotDoesNotShareMetadata(t *testing.T) {
 	workflow := newTestWorkflow(t, nil)
 	metadata := map[string]string{"trigger": "error_rate"}

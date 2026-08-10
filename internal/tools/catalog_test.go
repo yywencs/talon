@@ -9,10 +9,12 @@ import (
 	"testing"
 	"time"
 
+	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/stretchr/testify/require"
 	"github.com/wen/opentalon/internal/platform"
 	"github.com/wen/opentalon/internal/scenario"
 	"github.com/wen/opentalon/internal/simulator"
+	"github.com/wen/opentalon/internal/workflow"
 )
 
 func TestSetBuildsIncidentScopedEinoTools(t *testing.T) {
@@ -130,10 +132,83 @@ func TestNewRejectsWrongIncident(t *testing.T) {
 	require.False(t, visible)
 }
 
+func TestWorkflowToolsExposeOnlyAllowedAgentActions(t *testing.T) {
+	instance, item := newTestSimulator(t, "mapping-regression-rollback-001")
+	ctx := context.Background()
+	flow, err := workflow.NewIncidentWorkflow(workflow.Config{IncidentID: item.Scenario.Metadata.ID})
+	require.NoError(t, err)
+	_, err = flow.Apply(workflow.Event{Type: workflow.EventStartInvestigation, Actor: workflow.ActorController})
+	require.NoError(t, err)
+
+	set, err := New(ctx, instance, item.Scenario.Metadata.ID, WithWorkflow(flow))
+	require.NoError(t, err)
+	visible := namesOfTools(t, set.ToolsForActions(flow.AllowedAgentActions()))
+	require.Contains(t, visible, "query_metrics")
+	require.Contains(t, visible, "get_services")
+	require.Contains(t, visible, "get_remediation_capabilities")
+	require.Contains(t, visible, "submit_plan")
+	require.Contains(t, visible, "escalate_incident")
+	require.NotContains(t, visible, "rollback_mapping")
+	require.NotContains(t, visible, "request_probe")
+	require.NotContains(t, visible, "request_recovery")
+
+	_, err = flow.SubmitPlan(workflow.PlanDraft{
+		Summary: "回滚 Mapping", RootCause: "mapping regression", EvidenceRefs: []string{"change:mapping-v2"},
+		Remediation:  workflow.PlannedAction{ToolName: "rollback_mapping"},
+		ProbeRouteID: "route-a", RecoveryPolicyID: "default-safe-recovery",
+	})
+	require.NoError(t, err)
+	plannedVisible := namesOfTools(t, set.ToolsForActions(flow.AllowedAgentActions()))
+	require.NotContains(t, plannedVisible, "submit_plan")
+	require.Contains(t, plannedVisible, "query_metrics")
+	require.Contains(t, plannedVisible, "escalate_incident")
+}
+
+func TestSubmitPlanToolAdvancesWorkflow(t *testing.T) {
+	instance, item := newTestSimulator(t, "mapping-regression-rollback-001")
+	ctx := context.Background()
+	flow, err := workflow.NewIncidentWorkflow(workflow.Config{IncidentID: item.Scenario.Metadata.ID})
+	require.NoError(t, err)
+	_, err = flow.Apply(workflow.Event{Type: workflow.EventStartInvestigation, Actor: workflow.ActorController})
+	require.NoError(t, err)
+	set, err := New(ctx, instance, item.Scenario.Metadata.ID, WithWorkflow(flow))
+	require.NoError(t, err)
+
+	submit, ok := set.Resolve("submit_plan")
+	require.True(t, ok)
+	encoded, err := submit.InvokableRun(ctx, `{
+		"summary":"回滚 Mapping 配置",
+		"root_cause":"mapping schema regression",
+		"evidence_refs":["log:invalid_parameter_type","change:mapping-v2"],
+		"remediation_tool":"rollback_mapping",
+		"remediation_arguments":{
+			"tool_id":"generate_image",
+			"target_version":"mapping-v1",
+			"expected_version":"mapping-v2",
+			"idempotency_key":"plan-rollback-001"
+		},
+		"probe_route_id":"route-a",
+		"recovery_policy_id":"default-safe-recovery"
+	}`)
+	require.NoError(t, err)
+	var result response[workflow.PlanSubmission]
+	require.NoError(t, json.Unmarshal([]byte(encoded), &result))
+	require.Empty(t, result.Error)
+	assertSnapshot := flow.Snapshot()
+	require.Equal(t, workflow.StatePlanned, assertSnapshot.State)
+	require.NotNil(t, assertSnapshot.Plan)
+	require.Equal(t, "rollback_mapping", assertSnapshot.Plan.Remediation.ToolName)
+}
+
 func toolNames(t *testing.T, set *Set) []string {
 	t.Helper()
-	result := make([]string, 0, len(set.Tools()))
-	for _, item := range set.Tools() {
+	return namesOfTools(t, set.Tools())
+}
+
+func namesOfTools(t *testing.T, tools []einotool.BaseTool) []string {
+	t.Helper()
+	result := make([]string, 0, len(tools))
+	for _, item := range tools {
 		info, err := item.Info(context.Background())
 		require.NoError(t, err)
 		result = append(result, info.Name)

@@ -138,6 +138,12 @@ func buildStaticTools(service platform.ToolOpsPlatform, incidentID string) ([]ei
 				return platformResponse(result, callErr), nil
 			})
 		},
+		func() (einotool.InvokableTool, error) {
+			return toolutils.InferTool("get_remediation_capabilities", "获取当前 Incident 可用于制定Plan的修复能力、参数、风险和前置条件。此工具只返回目录，不执行修复。", func(ctx context.Context, input stateInput) (response[[]platform.RemediationCapability], error) {
+				result, callErr := service.GetRemediationCapabilities(ctx, platform.StateQuery{Scope: input.scope(incidentID)})
+				return platformResponse(result, callErr), nil
+			})
+		},
 	}
 
 	result := make([]einotool.InvokableTool, 0, len(builders)+4)

@@ -89,7 +89,10 @@ func (w *IncidentWorkflow) AuthorizeAgentAction(action AgentAction) error {
 	w.mu.RLock()
 	state := w.state
 	w.mu.RUnlock()
+	return authorizeAgentAction(state, action)
+}
 
+func authorizeAgentAction(state State, action AgentAction) error {
 	if _, allowed := stateAgentActions[state][action]; !allowed {
 		return fmt.Errorf("%w: action %q is not allowed in state %q", ErrAgentActionDenied, action, state)
 	}

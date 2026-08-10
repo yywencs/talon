@@ -12,17 +12,20 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/wen/opentalon/internal/scenario"
 	"github.com/wen/opentalon/internal/simulator"
+	"github.com/wen/opentalon/internal/workflow"
 )
 
 func TestToolOpsAgentRunsReActWithIncidentTools(t *testing.T) {
 	ctx := context.Background()
 	service, incidentID := testSimulator(t)
 	chatModel := &scriptedModel{}
+	flow := investigatingWorkflow(t, incidentID)
 
 	toolOpsAgent, err := NewToolOpsAgent(ctx, Config{
 		Model:      chatModel,
 		Platform:   service,
 		IncidentID: incidentID,
+		Workflow:   flow,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, incidentID, toolOpsAgent.IncidentID())
@@ -35,17 +38,18 @@ func TestToolOpsAgentRunsReActWithIncidentTools(t *testing.T) {
 	toolNames, inputs := chatModel.snapshot()
 	assert.Contains(t, toolNames, "get_services")
 	assert.Contains(t, toolNames, "query_metrics")
-	assert.Contains(t, toolNames, "request_probe")
-	assert.Contains(t, toolNames, "request_recovery")
 	assert.Contains(t, toolNames, "escalate_incident")
-	assert.Contains(t, toolNames, "rollback_mapping")
+	assert.Contains(t, toolNames, "submit_plan")
+	assert.NotContains(t, toolNames, "request_probe")
+	assert.NotContains(t, toolNames, "request_recovery")
+	assert.NotContains(t, toolNames, "rollback_mapping")
 	require.Len(t, inputs, 2)
 
 	for _, input := range inputs {
 		require.NotEmpty(t, input)
 		assert.Equal(t, schema.System, input[0].Role)
 		assert.Contains(t, input[0].Content, incidentID)
-		assert.Contains(t, input[0].Content, "accepted、pending 或 running 不代表操作成功")
+		assert.Contains(t, input[0].Content, "accepted、pending 或 running 不代表成功")
 	}
 	assert.Contains(t, inputs[0][1].Content, "接管当前 Incident")
 	assert.True(t, containsToolResult(inputs[1], "get_services", "image-service"))
@@ -59,16 +63,18 @@ func TestNewToolOpsAgentValidatesConfig(t *testing.T) {
 	ctx := context.Background()
 	service, incidentID := testSimulator(t)
 	chatModel := &scriptedModel{}
+	flow := investigatingWorkflow(t, incidentID)
 
 	tests := []struct {
 		name      string
 		config    Config
 		wantError string
 	}{
-		{name: "missing model", config: Config{Platform: service, IncidentID: incidentID}, wantError: "tool calling model is required"},
-		{name: "missing platform", config: Config{Model: chatModel, IncidentID: incidentID}, wantError: "toolops platform is required"},
-		{name: "missing incident", config: Config{Model: chatModel, Platform: service}, wantError: "incident ID is required"},
-		{name: "negative max steps", config: Config{Model: chatModel, Platform: service, IncidentID: incidentID, MaxSteps: -1}, wantError: "max steps must not be negative"},
+		{name: "missing model", config: Config{Platform: service, IncidentID: incidentID, Workflow: flow}, wantError: "tool calling model is required"},
+		{name: "missing platform", config: Config{Model: chatModel, IncidentID: incidentID, Workflow: flow}, wantError: "toolops platform is required"},
+		{name: "missing workflow", config: Config{Model: chatModel, Platform: service, IncidentID: incidentID}, wantError: "incident workflow is required"},
+		{name: "missing incident", config: Config{Model: chatModel, Platform: service, Workflow: flow}, wantError: "incident ID is required"},
+		{name: "negative max steps", config: Config{Model: chatModel, Platform: service, IncidentID: incidentID, MaxSteps: -1, Workflow: flow}, wantError: "max steps must not be negative"},
 	}
 
 	for _, test := range tests {
@@ -78,6 +84,80 @@ func TestNewToolOpsAgentValidatesConfig(t *testing.T) {
 			require.EqualError(t, err, test.wantError)
 		})
 	}
+}
+
+func TestToolOpsAgentSubmitsPlanAndGuardsChangedState(t *testing.T) {
+	ctx := context.Background()
+	service, incidentID := testSimulator(t)
+	flow := investigatingWorkflow(t, incidentID)
+	chatModel := &scriptedModel{response: func(call int) *schema.Message {
+		if call <= 2 {
+			return schema.AssistantMessage("", []schema.ToolCall{{
+				ID: "submit-plan-" + string(rune('0'+call)),
+				Function: schema.FunctionCall{Name: "submit_plan", Arguments: `{
+					"summary":"回滚 Mapping 配置",
+					"root_cause":"mapping schema regression",
+					"evidence_refs":["log:invalid_parameter_type","change:mapping-v2"],
+					"remediation_tool":"rollback_mapping",
+					"remediation_arguments":{
+						"tool_id":"generate_image",
+						"target_version":"mapping-v1",
+						"expected_version":"mapping-v2",
+						"idempotency_key":"plan-rollback-001"
+					},
+					"probe_route_id":"route-a",
+					"recovery_policy_id":"default-safe-recovery"
+				}`},
+			}})
+		}
+		return schema.AssistantMessage("Plan 已提交，等待 Workflow 校验。", nil)
+	}}
+
+	toolOpsAgent, err := NewToolOpsAgent(ctx, Config{
+		Model: chatModel, Platform: service, IncidentID: incidentID, Workflow: flow,
+	})
+	require.NoError(t, err)
+	result, err := toolOpsAgent.Run(ctx, "调查并提交修复计划")
+	require.NoError(t, err)
+	assert.Equal(t, "Plan 已提交，等待 Workflow 校验。", result.Content)
+
+	snapshot := flow.Snapshot()
+	assert.Equal(t, workflow.StatePlanned, snapshot.State)
+	require.NotNil(t, snapshot.Plan)
+	assert.Equal(t, "rollback_mapping", snapshot.Plan.Remediation.ToolName)
+	toolNames, inputs := chatModel.snapshot()
+	assert.Contains(t, toolNames, "submit_plan")
+	assert.NotContains(t, toolNames, "rollback_mapping")
+	require.Len(t, inputs, 3)
+	assert.True(t, containsToolResult(inputs[2], "submit_plan", "not allowed in state"))
+}
+
+func TestToolOpsAgentEscalationUpdatesWorkflow(t *testing.T) {
+	ctx := context.Background()
+	service, incidentID := testSimulator(t)
+	flow := investigatingWorkflow(t, incidentID)
+	chatModel := &scriptedModel{response: func(call int) *schema.Message {
+		if call == 1 {
+			return schema.AssistantMessage("", []schema.ToolCall{{
+				ID: "escalate-1",
+				Function: schema.FunctionCall{Name: "escalate_incident", Arguments: `{
+					"reason":"no_safe_remediation_available",
+					"evidence_refs":["credential:revoked"],
+					"idempotency_key":"escalate-001"
+				}`},
+			}})
+		}
+		return schema.AssistantMessage("事件已升级人工。", nil)
+	}}
+
+	toolOpsAgent, err := NewToolOpsAgent(ctx, Config{
+		Model: chatModel, Platform: service, IncidentID: incidentID, Workflow: flow,
+	})
+	require.NoError(t, err)
+	_, err = toolOpsAgent.Run(ctx, "没有安全修复方案，升级人工")
+	require.NoError(t, err)
+	assert.Equal(t, workflow.StateEscalated, flow.Snapshot().State)
+	assert.Equal(t, workflow.StateInvestigating, flow.Snapshot().SuspendedState)
 }
 
 func TestToolOpsAgentAddsSystemMessageOnlyOnce(t *testing.T) {
@@ -109,10 +189,19 @@ func testSimulator(t *testing.T) (*simulator.Simulator, string) {
 	return service, item.Scenario.Metadata.ID
 }
 
+func investigatingWorkflow(t *testing.T, incidentID string) *workflow.IncidentWorkflow {
+	t.Helper()
+	flow, err := workflow.NewIncidentWorkflow(workflow.Config{IncidentID: incidentID})
+	require.NoError(t, err)
+	_, err = flow.Apply(workflow.Event{Type: workflow.EventStartInvestigation, Actor: workflow.ActorController})
+	require.NoError(t, err)
+	return flow
+}
+
 func containsToolResult(messages []*schema.Message, toolName, content string) bool {
 	for _, message := range messages {
-		if message.Role == schema.Tool && message.ToolName == toolName && message.ToolCallID == "call-get-services" {
-			return strings.Contains(message.Content, content)
+		if message.Role == schema.Tool && message.ToolName == toolName && strings.Contains(message.Content, content) {
+			return true
 		}
 	}
 	return false
@@ -133,6 +222,7 @@ type scriptedModel struct {
 	toolNames []string
 	inputs    [][]*schema.Message
 	calls     int
+	response  func(call int) *schema.Message
 }
 
 func (m *scriptedModel) WithTools(infos []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
@@ -150,6 +240,9 @@ func (m *scriptedModel) Generate(_ context.Context, input []*schema.Message, _ .
 	defer m.mu.Unlock()
 	m.inputs = append(m.inputs, append([]*schema.Message(nil), input...))
 	m.calls++
+	if m.response != nil {
+		return m.response(m.calls), nil
+	}
 	if m.calls == 1 {
 		return schema.AssistantMessage("", []schema.ToolCall{{
 			ID: "call-get-services",
