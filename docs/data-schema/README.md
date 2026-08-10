@@ -130,6 +130,7 @@ observation:
 
 remediation_tools:
   - name: rollback_mapping
+    description: 将工具映射配置回滚到一个已知健康版本
     risk: medium
     requires_approval: true
     arguments: [tool_id, target_version, expected_version, idempotency_key]
@@ -141,11 +142,13 @@ remediation_tools:
 
 probe_tool:
   name: request_probe
+  description: 请求控制器对指定路由执行小流量健康探测
   arguments: [incident_id, route_id, policy_id, idempotency_key]
   note: 控制器决定实际探测比例，Agent 不能传入任意权重
 
 escalation_tool:
   name: escalate_incident
+  description: 提交结构化证据并升级人工处理
   arguments: [incident_id, reason, evidence_refs, attempted_actions]
 
 action_behavior:

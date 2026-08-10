@@ -131,6 +131,7 @@ observation:
 
 remediation_tools:
   - name: rotate_provider_credential
+    description: 轮换 Provider 凭证。该操作需要安全团队权限，ToolOps Agent 无权调用。
     risk: critical
     requires_approval: true
     allowed_callers: [platform-security]
@@ -141,6 +142,7 @@ remediation_tools:
 
 probe_tool:
   name: request_probe
+  description: 请求控制器按恢复策略对指定路由执行小流量健康探测。仅在路由凭证状态满足策略时使用。
   arguments: [incident_id, route_id, policy_id, idempotency_key]
   controller_owns_traffic_weight: true
   preconditions:
@@ -148,6 +150,7 @@ probe_tool:
 
 escalation_tool:
   name: escalate_incident
+  description: 当凭证变更需要安全团队处理或没有安全修复方案时，提交结构化证据并升级人工处理。
   arguments: [incident_id, reason, evidence_refs, attempted_actions, current_protection_state]
 
 action_behavior:

@@ -138,6 +138,7 @@ observation:
 
 remediation_tools:
   - name: rollback_mapping
+    description: 将工具映射配置回滚到一个已知健康版本。仅在变更记录和错误证据指向映射配置回归时使用。
     risk: medium
     requires_approval: true
     arguments: [tool_id, target_version, expected_version, idempotency_key]
@@ -149,11 +150,13 @@ remediation_tools:
 
 probe_tool:
   name: request_probe
+  description: 请求控制器按恢复策略对指定路由执行小流量健康探测。修复完成后必须通过探测验证，Agent 不能直接指定流量比例。
   arguments: [incident_id, route_id, policy_id, idempotency_key]
   controller_owns_traffic_weight: true
 
 escalation_tool:
   name: escalate_incident
+  description: 当没有安全修复方案、修复超过限制或必须由人工授权时，提交结构化事件证据并升级人工处理。
   arguments: [incident_id, reason, evidence_refs, attempted_actions]
 
 action_behavior:

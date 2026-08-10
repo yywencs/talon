@@ -5,8 +5,6 @@ go 1.25.5
 require (
 	github.com/cloudwego/eino v0.9.13
 	github.com/goccy/go-yaml v1.19.2
-	github.com/google/uuid v1.6.0
-	github.com/invopop/jsonschema v0.13.0
 	github.com/joho/godotenv v1.5.1
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/otel v1.43.0
@@ -14,7 +12,6 @@ require (
 	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.43.0
 	go.opentelemetry.io/otel/sdk v1.43.0
 	go.opentelemetry.io/otel/trace v1.43.0
-	golang.org/x/text v0.35.0
 )
 
 require (
@@ -31,6 +28,7 @@ require (
 	github.com/eino-contrib/jsonschema v1.0.3 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/goph/emperror v0.17.2 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -57,6 +55,7 @@ require (
 	golang.org/x/exp v0.0.0-20230713183714-613f0c0eb8a1 // indirect
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/text v0.35.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260401024825-9d38bb4040a9 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260401024825-9d38bb4040a9 // indirect
 	google.golang.org/grpc v1.80.0 // indirect

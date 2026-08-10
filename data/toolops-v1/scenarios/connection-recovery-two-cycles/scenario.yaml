@@ -138,6 +138,7 @@ observation:
 
 remediation_tools:
   - name: refresh_provider_connection
+    description: 重新打开 Provider 的现有连接池，不清理进程内 DNS 缓存。适合作为连接失败时的低风险首次修复。
     risk: low
     requires_approval: false
     arguments: [provider_id, expected_pool_generation, idempotency_key]
@@ -146,6 +147,7 @@ remediation_tools:
       clear_process_dns_cache: false
     compensating_action: restore_previous_pool
   - name: recreate_provider_connection_pool
+    description: 重建 Provider 连接池并清理进程内 DNS 缓存。仅在刷新连接后的探测仍失败且出现新证据时使用。
     risk: medium
     requires_approval: true
     arguments: [provider_id, expected_pool_generation, idempotency_key]
@@ -158,11 +160,13 @@ remediation_tools:
 
 probe_tool:
   name: request_probe
+  description: 请求控制器按恢复策略对指定路由执行小流量健康探测。修复完成后必须通过探测验证，Agent 不能直接指定流量比例。
   arguments: [incident_id, route_id, policy_id, idempotency_key]
   controller_owns_traffic_weight: true
 
 escalation_tool:
   name: escalate_incident
+  description: 当没有安全修复方案、修复超过限制或必须由人工授权时，提交结构化事件证据并升级人工处理。
   arguments: [incident_id, reason, evidence_refs, attempted_actions, current_protection_state]
 
 action_behavior:
