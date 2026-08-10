@@ -38,7 +38,7 @@ type Scenario struct {
 	SchemaVersion    string                    `yaml:"schema_version"`
 	Metadata         Metadata                  `yaml:"metadata"`
 	Clock            Clock                     `yaml:"clock"`
-	InitialState     map[string]any            `yaml:"initial_state"`
+	InitialState     InitialState              `yaml:"initial_state"`
 	Controller       Controller                `yaml:"controller"`
 	AgentPolicy      AgentPolicy               `yaml:"agent_policy"`
 	Timeline         []TimelineEvent           `yaml:"timeline"`
@@ -61,6 +61,70 @@ type Clock struct {
 	StartAt  string `yaml:"start_at"`
 	Tick     string `yaml:"tick"`
 	EndAfter string `yaml:"end_after"`
+}
+
+// InitialState 描述故障发生前用于初始化 Simulator World 的状态。
+type InitialState struct {
+	Service            InitialService               `yaml:"service"`
+	Providers          []InitialProvider            `yaml:"providers"`
+	Traffic            InitialTraffic               `yaml:"traffic"`
+	Config             *InitialConfig               `yaml:"config"`
+	CredentialMetadata *InitialCredentialMetadata   `yaml:"credential_metadata"`
+	Connection         map[string]InitialConnection `yaml:"connection"`
+}
+
+type InitialService struct {
+	ID     string         `yaml:"id"`
+	Tool   string         `yaml:"tool"`
+	SLO    InitialSLO     `yaml:"slo"`
+	Routes []InitialRoute `yaml:"routes"`
+}
+
+type InitialSLO struct {
+	SuccessRateMin    float64  `yaml:"success_rate_min"`
+	LatencyP95MSMax   int64    `yaml:"latency_p95_ms_max"`
+	CostPerSuccessMax *float64 `yaml:"cost_per_success_max"`
+}
+
+type InitialRoute struct {
+	ID                string `yaml:"id"`
+	Provider          string `yaml:"provider"`
+	Weight            int    `yaml:"weight"`
+	Enabled           bool   `yaml:"enabled"`
+	UnavailableReason string `yaml:"unavailable_reason"`
+}
+
+type InitialProvider struct {
+	ID               string `yaml:"id"`
+	Health           string `yaml:"health"`
+	Endpoint         string `yaml:"endpoint"`
+	SchemaCompatible *bool  `yaml:"schema_compatible"`
+}
+
+type InitialTraffic struct {
+	RequestsPerMinute int      `yaml:"requests_per_minute"`
+	SuccessRate       float64  `yaml:"success_rate"`
+	LatencyP95MS      int64    `yaml:"latency_p95_ms"`
+	CostPerSuccess    *float64 `yaml:"cost_per_success"`
+}
+
+type InitialConfig struct {
+	CurrentVersion       string   `yaml:"current_version"`
+	KnownHealthyVersions []string `yaml:"known_healthy_versions"`
+}
+
+type InitialCredentialMetadata struct {
+	Provider      string `yaml:"provider"`
+	CredentialID  string `yaml:"credential_id"`
+	Status        string `yaml:"status"`
+	SecretVisible bool   `yaml:"secret_visible"`
+	ManagedBy     string `yaml:"managed_by"`
+}
+
+type InitialConnection struct {
+	PoolGeneration          int    `yaml:"pool_generation"`
+	ResolverCacheGeneration int    `yaml:"resolver_cache_generation"`
+	ResolvedIP              string `yaml:"resolved_ip"`
 }
 
 type Controller struct {

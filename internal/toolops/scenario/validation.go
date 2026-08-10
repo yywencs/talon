@@ -23,8 +23,8 @@ func validateScenario(document Scenario) error {
 	if err != nil {
 		return err
 	}
-	if len(document.InitialState) == 0 {
-		return fmt.Errorf("initial_state is required")
+	if err := validateInitialState(document.InitialState); err != nil {
+		return err
 	}
 	if err := validateController(document.Controller); err != nil {
 		return err
@@ -43,6 +43,66 @@ func validateScenario(document Scenario) error {
 	}
 	if len(document.ActionBehavior) == 0 {
 		return fmt.Errorf("action_behavior is required")
+	}
+	return nil
+}
+
+func validateInitialState(state InitialState) error {
+	if strings.TrimSpace(state.Service.ID) == "" {
+		return fmt.Errorf("initial_state.service.id is required")
+	}
+	if strings.TrimSpace(state.Service.Tool) == "" {
+		return fmt.Errorf("initial_state.service.tool is required")
+	}
+	if state.Service.SLO.SuccessRateMin <= 0 || state.Service.SLO.SuccessRateMin > 1 {
+		return fmt.Errorf("initial_state.service.slo.success_rate_min must be within (0, 1]")
+	}
+	if state.Service.SLO.LatencyP95MSMax <= 0 {
+		return fmt.Errorf("initial_state.service.slo.latency_p95_ms_max must be positive")
+	}
+	if state.Service.SLO.CostPerSuccessMax != nil && *state.Service.SLO.CostPerSuccessMax <= 0 {
+		return fmt.Errorf("initial_state.service.slo.cost_per_success_max must be positive")
+	}
+	if len(state.Service.Routes) == 0 {
+		return fmt.Errorf("initial_state.service.routes is required")
+	}
+	routeIDs := make([]string, 0, len(state.Service.Routes))
+	for index, route := range state.Service.Routes {
+		if strings.TrimSpace(route.ID) == "" || strings.TrimSpace(route.Provider) == "" {
+			return fmt.Errorf("initial_state.service.routes[%d] requires id and provider", index)
+		}
+		if route.Weight < 0 || route.Weight > 100 {
+			return fmt.Errorf("initial_state.service.routes[%d].weight must be within [0, 100]", index)
+		}
+		routeIDs = append(routeIDs, route.ID)
+	}
+	if err := validateUniqueStrings("initial_state.service.routes.id", routeIDs); err != nil {
+		return err
+	}
+	if len(state.Providers) == 0 {
+		return fmt.Errorf("initial_state.providers is required")
+	}
+	providerIDs := make([]string, 0, len(state.Providers))
+	for index, provider := range state.Providers {
+		if strings.TrimSpace(provider.ID) == "" || strings.TrimSpace(provider.Health) == "" {
+			return fmt.Errorf("initial_state.providers[%d] requires id and health", index)
+		}
+		providerIDs = append(providerIDs, provider.ID)
+	}
+	if err := validateUniqueStrings("initial_state.providers.id", providerIDs); err != nil {
+		return err
+	}
+	if state.Traffic.RequestsPerMinute <= 0 {
+		return fmt.Errorf("initial_state.traffic.requests_per_minute must be positive")
+	}
+	if state.Traffic.SuccessRate < 0 || state.Traffic.SuccessRate > 1 {
+		return fmt.Errorf("initial_state.traffic.success_rate must be within [0, 1]")
+	}
+	if state.Traffic.LatencyP95MS <= 0 {
+		return fmt.Errorf("initial_state.traffic.latency_p95_ms must be positive")
+	}
+	if state.Traffic.CostPerSuccess != nil && *state.Traffic.CostPerSuccess < 0 {
+		return fmt.Errorf("initial_state.traffic.cost_per_success must not be negative")
 	}
 	return nil
 }
