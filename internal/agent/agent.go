@@ -12,6 +12,7 @@ import (
 	flowagent "github.com/cloudwego/eino/flow/agent"
 	"github.com/cloudwego/eino/flow/agent/react"
 	"github.com/cloudwego/eino/schema"
+	"github.com/wen/opentalon/internal/observability"
 	"github.com/wen/opentalon/internal/platform"
 	toolset "github.com/wen/opentalon/internal/tools"
 	"github.com/wen/opentalon/internal/workflow"
@@ -71,7 +72,8 @@ func NewToolOpsAgent(ctx context.Context, config Config) (*ToolOpsAgent, error) 
 		maxSteps = DefaultMaxSteps
 	}
 
-	tools, err := toolset.New(ctx, config.Platform, incidentID, toolset.WithWorkflow(config.Workflow))
+	observedPlatform := observability.ObservePlatform(config.Platform)
+	tools, err := toolset.New(ctx, observedPlatform, incidentID, toolset.WithWorkflow(config.Workflow))
 	if err != nil {
 		return nil, fmt.Errorf("build incident tools: %w", err)
 	}
@@ -172,8 +174,10 @@ func (a *ToolOpsAgent) withWorkflowTools(ctx context.Context, options []flowagen
 	if err != nil {
 		return nil, fmt.Errorf("build workflow tool options: %w", err)
 	}
-	result := make([]flowagent.AgentOption, 0, len(options)+len(policyOptions))
+	tracingOption := flowagent.WithComposeOptions(compose.WithCallbacks(observability.NewEinoTracingHandler()))
+	result := make([]flowagent.AgentOption, 0, len(options)+len(policyOptions)+1)
 	result = append(result, options...)
+	result = append(result, tracingOption)
 	return append(result, policyOptions...), nil
 }
 

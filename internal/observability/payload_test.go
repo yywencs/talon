@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"go.opentelemetry.io/otel"
 )
 
 func TestWritePayloadArtifactSharesTraceDirectoryWithTimeline(t *testing.T) {
@@ -22,7 +24,7 @@ func TestWritePayloadArtifactSharesTraceDirectoryWithTimeline(t *testing.T) {
 		_ = Shutdown(context.Background())
 	})
 
-	ctx, span := StartSpan(context.Background(), "payload.test")
+	ctx, span := otel.Tracer("github.com/wen/opentalon/internal/observability/payload-test").Start(context.Background(), "payload.test")
 	traceID := TraceIDFromContext(ctx)
 	spanID := SpanIDFromContext(ctx)
 
@@ -103,7 +105,7 @@ func TestWritePayloadArtifactAcceptsRawJSONString(t *testing.T) {
 		_ = Shutdown(context.Background())
 	})
 
-	ctx, span := StartSpan(context.Background(), "payload.raw")
+	ctx, span := otel.Tracer("github.com/wen/opentalon/internal/observability/payload-test").Start(context.Background(), "payload.raw")
 	payloadPath, err := WritePayloadArtifact(ctx, "response", `{"message":"ok","authorization":"Bearer secret-token"}`)
 	if err != nil {
 		t.Fatalf("WritePayloadArtifact() error = %v", err)

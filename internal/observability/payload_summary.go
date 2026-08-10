@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const payloadPreviewTruncatedSuffix = "...[TRUNCATED]"
@@ -124,19 +126,19 @@ func payloadSHA256(raw []byte) string {
 }
 
 // PayloadSummaryAttributes 将 payload 摘要转换为一组稳定的 Span attributes。
-func PayloadSummaryAttributes(prefix string, summary PayloadSummary, artifactPath string) []Attribute {
+func PayloadSummaryAttributes(prefix string, summary PayloadSummary, artifactPath string) []attribute.KeyValue {
 	prefix = strings.TrimSpace(prefix)
 	if prefix == "" {
 		return nil
 	}
-	attrs := []Attribute{
-		Int(prefix+".body_size", summary.RawSizeBytes),
-		String(prefix+".preview", summary.Preview),
-		String(prefix+".sha256", summary.SHA256),
-		Bool(prefix+".truncated", summary.Truncated),
+	attrs := []attribute.KeyValue{
+		attribute.Int(prefix+".body_size", summary.RawSizeBytes),
+		attribute.String(prefix+".preview", summary.Preview),
+		attribute.String(prefix+".sha256", summary.SHA256),
+		attribute.Bool(prefix+".truncated", summary.Truncated),
 	}
 	if strings.TrimSpace(artifactPath) != "" {
-		attrs = append(attrs, String(prefix+".artifact_path", artifactPath))
+		attrs = append(attrs, attribute.String(prefix+".artifact_path", artifactPath))
 	}
 	return attrs
 }

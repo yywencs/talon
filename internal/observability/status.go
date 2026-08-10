@@ -3,6 +3,11 @@ package observability
 import (
 	"context"
 	"errors"
+	"fmt"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -57,4 +62,33 @@ func StatusFromError(err error) SpanStatus {
 		return SpanStatusCancelled
 	}
 	return SpanStatusError
+}
+
+// markSpanOK 使用原生 OpenTelemetry API 标记 Span 成功，
+// 同时保留本地 exporter 使用的稳定状态属性。
+func markSpanOK(span oteltrace.Span) {
+	if span == nil {
+		return
+	}
+	span.SetAttributes(
+		attribute.String(AttrSpanStatus, string(SpanStatusOK)),
+		attribute.String(AttrErrorCategory, string(SpanStatusOK)),
+	)
+	span.SetStatus(codes.Ok, "")
+}
+
+// recordSpanError 使用原生 OpenTelemetry API 记录错误及归一化错误分类。
+func recordSpanError(span oteltrace.Span, err error) {
+	if span == nil || err == nil {
+		return
+	}
+	status := StatusFromError(err)
+	span.RecordError(err)
+	span.SetAttributes(
+		attribute.String(AttrSpanStatus, string(status)),
+		attribute.String(AttrErrorType, fmt.Sprintf("%T", err)),
+		attribute.String(AttrErrorMessage, err.Error()),
+		attribute.String(AttrErrorCategory, string(status)),
+	)
+	span.SetStatus(codes.Error, err.Error())
 }

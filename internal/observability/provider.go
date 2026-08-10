@@ -1,6 +1,6 @@
 // Package observability 提供了基于 OpenTelemetry 的链路追踪能力。
 // 支持多种导出方式（stdout/jsonl/file/OTLP），可配置采样率和敏感信息脱敏。
-// 通过 TracerFor 获取 Tracer 实例，使用 StartSpan 创建追踪区间。
+// 业务边界通过 OpenTelemetry 全局 API 获取 Tracer 并创建追踪区间。
 
 package observability
 
@@ -120,12 +120,6 @@ func Shutdown(ctx context.Context) error {
 	globalProvider.cfg = Config{}
 	globalProvider.dirMgr = nil
 	return err
-}
-
-func currentTracerProvider() *sdktrace.TracerProvider {
-	globalProvider.mu.RLock()
-	defer globalProvider.mu.RUnlock()
-	return globalProvider.tp
 }
 
 func currentConfig() Config {
