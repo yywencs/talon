@@ -92,6 +92,52 @@ func validateInitialState(state InitialState) error {
 	if err := validateUniqueStrings("initial_state.providers.id", providerIDs); err != nil {
 		return err
 	}
+	providers := make(map[string]struct{}, len(providerIDs))
+	for _, id := range providerIDs {
+		providers[id] = struct{}{}
+	}
+	for index, route := range state.Service.Routes {
+		if _, ok := providers[route.Provider]; !ok {
+			return fmt.Errorf("initial_state.service.routes[%d] references unknown provider %q", index, route.Provider)
+		}
+	}
+	if state.CredentialMetadata != nil {
+		if _, ok := providers[state.CredentialMetadata.Provider]; !ok {
+			return fmt.Errorf("initial_state.credential_metadata references unknown provider %q", state.CredentialMetadata.Provider)
+		}
+		if state.CredentialMetadata.SecretVisible {
+			return fmt.Errorf("initial_state.credential_metadata must not expose secret material")
+		}
+	}
+	for providerID := range state.Connection {
+		if _, ok := providers[providerID]; !ok {
+			return fmt.Errorf("initial_state.connection references unknown provider %q", providerID)
+		}
+	}
+	allowedTaskStatuses := map[string]struct{}{
+		"created": {}, "processing": {}, "finished": {}, "failed": {}, "canceled": {},
+	}
+	taskIDs := make([]string, 0, len(state.Tasks))
+	for index, task := range state.Tasks {
+		if strings.TrimSpace(task.ID) == "" || strings.TrimSpace(task.Type) == "" || strings.TrimSpace(task.Name) == "" {
+			return fmt.Errorf("initial_state.tasks[%d] requires id, type and name", index)
+		}
+		if _, ok := allowedTaskStatuses[task.Status]; !ok {
+			return fmt.Errorf("initial_state.tasks[%d].status %q is invalid", index, task.Status)
+		}
+		if task.Attempts < 0 {
+			return fmt.Errorf("initial_state.tasks[%d].attempts must not be negative", index)
+		}
+		if task.ProviderID != "" {
+			if _, ok := providers[task.ProviderID]; !ok {
+				return fmt.Errorf("initial_state.tasks[%d] references unknown provider %q", index, task.ProviderID)
+			}
+		}
+		taskIDs = append(taskIDs, task.ID)
+	}
+	if err := validateUniqueStrings("initial_state.tasks.id", taskIDs); err != nil {
+		return err
+	}
 	if state.Traffic.RequestsPerMinute <= 0 {
 		return fmt.Errorf("initial_state.traffic.requests_per_minute must be positive")
 	}

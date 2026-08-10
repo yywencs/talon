@@ -71,6 +71,7 @@ type InitialState struct {
 	Config             *InitialConfig               `yaml:"config"`
 	CredentialMetadata *InitialCredentialMetadata   `yaml:"credential_metadata"`
 	Connection         map[string]InitialConnection `yaml:"connection"`
+	Tasks              []InitialTask                `yaml:"tasks"`
 }
 
 type InitialService struct {
@@ -125,6 +126,18 @@ type InitialConnection struct {
 	PoolGeneration          int    `yaml:"pool_generation"`
 	ResolverCacheGeneration int    `yaml:"resolver_cache_generation"`
 	ResolvedIP              string `yaml:"resolved_ip"`
+}
+
+type InitialTask struct {
+	ID         string         `yaml:"id"`
+	Type       string         `yaml:"type"`
+	Name       string         `yaml:"name"`
+	Status     string         `yaml:"status"`
+	ProviderID string         `yaml:"provider_id"`
+	Attempts   int            `yaml:"attempts"`
+	Idempotent bool           `yaml:"idempotent"`
+	LastError  string         `yaml:"last_error"`
+	Attributes map[string]any `yaml:"attributes"`
 }
 
 type Controller struct {

@@ -159,7 +159,7 @@ action_behavior:
 |---|---|
 | `metadata` | 场景标识和分类；不能向 Agent 泄露根因 |
 | `clock` | 使用虚拟时间快速运行观察窗口 |
-| `initial_state` | 故障前的服务、Provider、流量、路由和配置状态 |
+| `initial_state` | 故障前的服务、Provider、流量、路由、配置、连接池和可选异步任务状态 |
 | `controller` | 确定性检测、保护、触发、探测和恢复规则 |
 | `agent_policy` | Agent 的尝试预算和必须立即升级的边界 |
 | `timeline` | 故障、发布、遥测异常和人工操作等世界变化 |

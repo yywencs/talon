@@ -17,22 +17,31 @@ type World struct {
 	mu sync.RWMutex
 
 	scenarioID string
+	startAt    time.Time
 	now        time.Time
 	tick       time.Duration
 	endAt      time.Time
 
-	services    map[string]platform.Service
-	providers   map[string]platform.Provider
-	routes      map[string]platform.Route
-	configs     map[string]platform.ConfigVersion
-	credentials map[string]platform.CredentialMetadata
-	connections map[string]platform.ConnectionMetadata
-	traffic     platform.TrafficProfile
-	metrics     []platform.MetricPoint
-	logs        []platform.LogEntry
-	traces      []platform.TraceRecord
-	changes     []platform.ChangeRecord
-	operations  map[string]platform.Operation
+	services          map[string]platform.Service
+	providers         map[string]platform.Provider
+	routes            map[string]platform.Route
+	configs           map[string]platform.ConfigVersion
+	credentials       map[string]platform.CredentialMetadata
+	connections       map[string]platform.ConnectionMetadata
+	tasks             map[string]platform.ManagedTask
+	traffic           platform.TrafficProfile
+	metrics           []platform.MetricPoint
+	logs              []platform.LogEntry
+	traces            []platform.TraceRecord
+	changes           []platform.ChangeRecord
+	operations        map[string]platform.Operation
+	idempotency       map[string]string
+	pending           map[string]scheduledOperation
+	operationSequence int
+	probeAttempt      int
+	lastProbeOutcome  string
+	affectedRouteID   string
+	lastErrorType     string
 
 	controller        scenario.Controller
 	agentPolicy       scenario.AgentPolicy
@@ -56,6 +65,7 @@ type Snapshot struct {
 	Configs     map[string]platform.ConfigVersion
 	Credentials map[string]platform.CredentialMetadata
 	Connections map[string]platform.ConnectionMetadata
+	Tasks       map[string]platform.ManagedTask
 	Traffic     platform.TrafficProfile
 	Metrics     []platform.MetricPoint
 	Logs        []platform.LogEntry
@@ -81,6 +91,7 @@ func NewWorld(document scenario.Scenario) (*World, error) {
 
 	world := &World{
 		scenarioID:       document.Metadata.ID,
+		startAt:          startAt,
 		now:              startAt,
 		tick:             tick,
 		endAt:            startAt.Add(endAfter),
@@ -90,7 +101,10 @@ func NewWorld(document scenario.Scenario) (*World, error) {
 		configs:          make(map[string]platform.ConfigVersion),
 		credentials:      make(map[string]platform.CredentialMetadata),
 		connections:      make(map[string]platform.ConnectionMetadata),
+		tasks:            make(map[string]platform.ManagedTask),
 		operations:       make(map[string]platform.Operation),
+		idempotency:      make(map[string]string),
+		pending:          make(map[string]scheduledOperation),
 		controller:       document.Controller,
 		agentPolicy:      document.AgentPolicy,
 		timeline:         append([]scenario.TimelineEvent(nil), document.Timeline...),
@@ -219,6 +233,28 @@ func (w *World) initializeOptionalState(initial scenario.InitialState) error {
 			ResolvedIP:              item.ResolvedIP,
 		}
 	}
+	for _, item := range initial.Tasks {
+		if _, exists := w.tasks[item.ID]; exists {
+			return fmt.Errorf("duplicate task %q", item.ID)
+		}
+		if item.ProviderID != "" {
+			if _, exists := w.providers[item.ProviderID]; !exists {
+				return fmt.Errorf("task %q references unknown provider %q", item.ID, item.ProviderID)
+			}
+		}
+		status := platform.TaskStatus(item.Status)
+		switch status {
+		case platform.TaskCreated, platform.TaskProcessing, platform.TaskFinished, platform.TaskFailed, platform.TaskCanceled:
+		default:
+			return fmt.Errorf("task %q has invalid status %q", item.ID, item.Status)
+		}
+		w.tasks[item.ID] = platform.ManagedTask{
+			ID: item.ID, Type: item.Type, Name: item.Name, Status: status,
+			ProviderID: item.ProviderID, Attempts: item.Attempts, Idempotent: item.Idempotent,
+			CreatedAt: w.now, UpdatedAt: w.now, LastError: item.LastError,
+			Attributes: cloneAnyMap(item.Attributes),
+		}
+	}
 	return nil
 }
 
@@ -230,7 +266,7 @@ func (w *World) initializeTraffic(initial scenario.InitialTraffic) {
 		CostPerSuccess:    cloneFloatPointer(initial.CostPerSuccess),
 	}
 	serviceID, toolName := w.initialServiceAndTool()
-	dimensions := map[string]string{"service_id": serviceID, "tool_name": toolName}
+	dimensions := map[string]string{"incident_id": w.scenarioID, "service_id": serviceID, "tool_name": toolName}
 	w.metrics = []platform.MetricPoint{
 		{At: w.now, Name: platform.MetricSuccessRate, Value: initial.SuccessRate, Unit: "ratio", Dimensions: cloneStringMap(dimensions)},
 		{At: w.now, Name: platform.MetricErrorRate, Value: 1 - initial.SuccessRate, Unit: "ratio", Dimensions: cloneStringMap(dimensions)},
@@ -271,6 +307,7 @@ func (w *World) Snapshot() Snapshot {
 		Configs:     cloneConfigs(w.configs),
 		Credentials: cloneMap(w.credentials),
 		Connections: cloneConnections(w.connections),
+		Tasks:       cloneTasks(w.tasks),
 		Traffic:     cloneTraffic(w.traffic),
 		Metrics:     cloneMetrics(w.metrics),
 		Logs:        cloneLogs(w.logs),
@@ -316,8 +353,18 @@ func cloneConfigs(source map[string]platform.ConfigVersion) map[string]platform.
 func cloneConnections(source map[string]platform.ConnectionMetadata) map[string]platform.ConnectionMetadata {
 	result := make(map[string]platform.ConnectionMetadata, len(source))
 	for id, connection := range source {
+		connection.LastPingAt = cloneTimePointer(connection.LastPingAt)
 		connection.Attributes = cloneAnyMap(connection.Attributes)
 		result[id] = connection
+	}
+	return result
+}
+
+func cloneTasks(source map[string]platform.ManagedTask) map[string]platform.ManagedTask {
+	result := make(map[string]platform.ManagedTask, len(source))
+	for id, task := range source {
+		task.Attributes = cloneAnyMap(task.Attributes)
+		result[id] = task
 	}
 	return result
 }
@@ -424,6 +471,14 @@ func cloneBoolPointer(value *bool) *bool {
 }
 
 func cloneFloatPointer(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneTimePointer(value *time.Time) *time.Time {
 	if value == nil {
 		return nil
 	}

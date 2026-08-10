@@ -177,7 +177,43 @@ type ConnectionMetadata struct {
 	PoolGeneration          int            `json:"pool_generation"`
 	ResolverCacheGeneration int            `json:"resolver_cache_generation"`
 	ResolvedIP              string         `json:"resolved_ip,omitempty"`
+	ActiveConnections       int            `json:"active_connections"`
+	TargetConnections       int            `json:"target_connections"`
+	ConfigFingerprint       string         `json:"config_fingerprint,omitempty"`
+	LastPingAt              *time.Time     `json:"last_ping_at,omitempty"`
 	Attributes              map[string]any `json:"attributes,omitempty"`
+}
+
+// TaskStatus 与 AgentPlatform 异步任务引擎的状态机保持相同语义。
+type TaskStatus string
+
+const (
+	TaskCreated    TaskStatus = "created"
+	TaskProcessing TaskStatus = "processing"
+	TaskFinished   TaskStatus = "finished"
+	TaskFailed     TaskStatus = "failed"
+	TaskCanceled   TaskStatus = "canceled"
+)
+
+// ManagedTask 表示可被 Agent 查询和受控补偿的异步任务。
+type ManagedTask struct {
+	ID         string         `json:"id"`
+	Type       string         `json:"type"`
+	Name       string         `json:"name"`
+	Status     TaskStatus     `json:"status"`
+	ProviderID string         `json:"provider_id,omitempty"`
+	Attempts   int            `json:"attempts"`
+	Idempotent bool           `json:"idempotent"`
+	CreatedAt  time.Time      `json:"created_at"`
+	UpdatedAt  time.Time      `json:"updated_at"`
+	LastError  string         `json:"last_error,omitempty"`
+	Attributes map[string]any `json:"attributes,omitempty"`
+}
+
+// TaskQuery 描述异步任务状态查询。
+type TaskQuery struct {
+	Scope    Scope        `json:"scope"`
+	Statuses []TaskStatus `json:"statuses,omitempty"`
 }
 
 // ChangeRecord 表示发布、配置或人工操作产生的审计记录。
