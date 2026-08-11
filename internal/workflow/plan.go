@@ -71,6 +71,8 @@ func (w *IncidentWorkflow) SubmitPlan(draft PlanDraft) (PlanSubmission, error) {
 	}
 	w.plan = &plan
 	w.planDryRun = nil
+	w.planPolicy = nil
+	w.planApproval = nil
 	return PlanSubmission{Plan: *clonePlanPointer(&plan), Transition: transition}, nil
 }
 

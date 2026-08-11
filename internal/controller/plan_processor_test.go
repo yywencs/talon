@@ -18,14 +18,22 @@ import (
 
 type recordingPlatform struct {
 	platform.ToolOpsPlatform
-	requests  []platform.RemediationRequest
-	operation platform.Operation
-	err       error
+	requests          []platform.RemediationRequest
+	operation         platform.Operation
+	err               error
+	capabilities      []platform.RemediationCapability
+	capabilitiesErr   error
+	capabilitiesCalls int
 }
 
 func (p *recordingPlatform) ExecuteRemediation(_ context.Context, request platform.RemediationRequest) (platform.Operation, error) {
 	p.requests = append(p.requests, request)
 	return p.operation, p.err
+}
+
+func (p *recordingPlatform) GetRemediationCapabilities(_ context.Context, _ platform.StateQuery) ([]platform.RemediationCapability, error) {
+	p.capabilitiesCalls++
+	return append([]platform.RemediationCapability(nil), p.capabilities...), p.capabilitiesErr
 }
 
 func TestPlanProcessorDryRunRecordsSuccessAndIsIdempotent(t *testing.T) {
