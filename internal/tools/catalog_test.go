@@ -25,6 +25,7 @@ func TestSetBuildsIncidentScopedEinoTools(t *testing.T) {
 	names := toolNames(t, set)
 	require.Contains(t, names, "query_metrics")
 	require.Contains(t, names, "query_logs")
+	require.Contains(t, names, "get_recovery_policies")
 	require.Contains(t, names, "rollback_mapping")
 	require.Contains(t, names, "request_probe")
 	require.Contains(t, names, "request_recovery")
@@ -90,6 +91,18 @@ func TestToolsQueryAndExecuteSimulator(t *testing.T) {
 	set, err := New(ctx, instance, item.Scenario.Metadata.ID)
 	require.NoError(t, err)
 
+	getPolicies, ok := set.Resolve("get_recovery_policies")
+	require.True(t, ok)
+	encodedPolicies, err := getPolicies.InvokableRun(ctx, `{}`)
+	require.NoError(t, err)
+	var policiesResponse response[[]platform.RecoveryPolicy]
+	require.NoError(t, json.Unmarshal([]byte(encodedPolicies), &policiesResponse))
+	require.Empty(t, policiesResponse.Error)
+	require.Len(t, policiesResponse.Data, 1)
+	require.Equal(t, "default-safe-recovery", policiesResponse.Data[0].ID)
+	require.Equal(t, []float64{0.01, 0.05}, policiesResponse.Data[0].ProbeSteps)
+	require.Equal(t, 3, policiesResponse.Data[0].HealthyWindowsRequired)
+
 	queryLogs, ok := set.Resolve("query_logs")
 	require.True(t, ok)
 	encodedLogs, err := queryLogs.InvokableRun(ctx, `{}`)
@@ -146,6 +159,7 @@ func TestWorkflowToolsExposeOnlyAllowedAgentActions(t *testing.T) {
 	require.Contains(t, visible, "query_metrics")
 	require.Contains(t, visible, "get_services")
 	require.Contains(t, visible, "get_remediation_capabilities")
+	require.Contains(t, visible, "get_recovery_policies")
 	require.Contains(t, visible, "submit_plan")
 	require.Contains(t, visible, "escalate_incident")
 	require.NotContains(t, visible, "rollback_mapping")
@@ -176,6 +190,26 @@ func TestSubmitPlanToolAdvancesWorkflow(t *testing.T) {
 
 	submit, ok := set.Resolve("submit_plan")
 	require.True(t, ok)
+	invalid, err := submit.InvokableRun(ctx, `{
+		"summary":"回滚 Mapping 配置",
+		"root_cause":"mapping schema regression",
+		"evidence_refs":["log:invalid_parameter_type","change:mapping-v2"],
+		"remediation_tool":"rollback_mapping",
+		"remediation_arguments":{
+			"tool_id":"generate_image",
+			"target_version":"mapping-v1",
+			"expected_version":"mapping-v2",
+			"idempotency_key":"plan-invalid-policy-001"
+		},
+		"probe_route_id":"route-a",
+		"recovery_policy_id":"invented-policy"
+	}`)
+	require.NoError(t, err)
+	var invalidResult response[workflow.PlanSubmission]
+	require.NoError(t, json.Unmarshal([]byte(invalid), &invalidResult))
+	require.Contains(t, invalidResult.Error, "not available for this incident")
+	require.Equal(t, workflow.StateInvestigating, flow.Snapshot().State)
+
 	encoded, err := submit.InvokableRun(ctx, `{
 		"summary":"回滚 Mapping 配置",
 		"root_cause":"mapping schema regression",

@@ -70,6 +70,7 @@ func (w *IncidentWorkflow) SubmitPlan(draft PlanDraft) (PlanSubmission, error) {
 		SubmittedAt: transition.At,
 	}
 	w.plan = &plan
+	w.planDryRun = nil
 	return PlanSubmission{Plan: *clonePlanPointer(&plan), Transition: transition}, nil
 }
 

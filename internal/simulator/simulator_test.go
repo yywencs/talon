@@ -26,6 +26,16 @@ func TestSimulatorCompletesMappingRollbackFlow(t *testing.T) {
 	require.Len(t, snapshot.Traces, 1)
 	require.Len(t, snapshot.Changes, 1)
 
+	policies, err := simulator.GetRecoveryPolicies(ctx, platform.StateQuery{
+		Scope: platform.Scope{IncidentID: item.Scenario.Metadata.ID},
+	})
+	require.NoError(t, err)
+	require.Len(t, policies, 1)
+	require.Equal(t, "default-safe-recovery", policies[0].ID)
+	require.Equal(t, []float64{0.01, 0.05}, policies[0].ProbeSteps)
+	require.Equal(t, []float64{0.10, 0.25, 0.50, 1.00}, policies[0].RecoverySteps)
+	require.Equal(t, true, policies[0].HardStopWhen["new_error_type"])
+
 	operation, err := simulator.ExecuteRemediation(ctx, platform.RemediationRequest{
 		IncidentID: item.Scenario.Metadata.ID,
 		ToolName:   "rollback_mapping",

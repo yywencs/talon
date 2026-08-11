@@ -18,6 +18,7 @@ type ToolOpsPlatform interface {
 	GetConnectionMetadata(ctx context.Context, query StateQuery) ([]ConnectionMetadata, error)
 	GetTasks(ctx context.Context, query TaskQuery) ([]ManagedTask, error)
 	GetRemediationCapabilities(ctx context.Context, query StateQuery) ([]RemediationCapability, error)
+	GetRecoveryPolicies(ctx context.Context, query StateQuery) ([]RecoveryPolicy, error)
 
 	ExecuteRemediation(ctx context.Context, request RemediationRequest) (Operation, error)
 	RequestProbe(ctx context.Context, request ProbeRequest) (Operation, error)

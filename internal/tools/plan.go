@@ -21,17 +21,17 @@ type submitPlanInput struct {
 	RemediationTool      string         `json:"remediation_tool" jsonschema:"required,description=准备执行的已注册修复工具名称"`
 	RemediationArguments map[string]any `json:"remediation_arguments" jsonschema:"required,description=修复工具参数，不包含额外工具调用"`
 	ProbeRouteID         string         `json:"probe_route_id" jsonschema:"required,description=修复成功后需要探测的路由ID"`
-	RecoveryPolicyID     string         `json:"recovery_policy_id" jsonschema:"required,description=探测和恢复使用的确定性策略ID"`
+	RecoveryPolicyID     string         `json:"recovery_policy_id" jsonschema:"required,description=必须原样引用get_recovery_policies返回的确定性策略ID，不得自行生成"`
 }
 
 // newSubmitPlanTool 创建提交修复计划的 Eino 工具。
 // remediations 是当前 Incident 允许使用的修复能力快照；工具只负责校验并冻结计划，
 // 不会在提交过程中执行修复。计划提交成功后，Workflow 会从 investigating 转为 planned。
-func newSubmitPlanTool(instance *workflow.IncidentWorkflow, remediations map[string]platform.RemediationCapability) (einotool.InvokableTool, error) {
+func newSubmitPlanTool(instance *workflow.IncidentWorkflow, service platform.ToolOpsPlatform, incidentID string, remediations map[string]platform.RemediationCapability) (einotool.InvokableTool, error) {
 	tool, err := toolutils.InferTool(
 		"submit_plan",
-		"证据足够后提交一份冻结的结构化修复计划。该工具只保存计划并推进到planned，不会直接执行修复；无安全修复方案时应升级人工。",
-		func(_ context.Context, input submitPlanInput) (response[workflow.PlanSubmission], error) {
+		"证据足够后提交一份冻结的结构化修复计划。提交前必须调用get_recovery_policies并引用其返回的策略ID。该工具只保存计划并推进到planned，不会直接执行修复；无安全修复方案时应升级人工。",
+		func(ctx context.Context, input submitPlanInput) (response[workflow.PlanSubmission], error) {
 			// 修复工具必须来自平台为当前 Incident 提供的能力目录，不能由模型任意指定。
 			capability, allowed := remediations[input.RemediationTool]
 			if !allowed {
@@ -50,6 +50,24 @@ func newSubmitPlanTool(instance *workflow.IncidentWorkflow, remediations map[str
 			// 每个修复计划必须携带幂等键，避免重试或恢复运行时重复执行同一项修复。
 			if key, ok := input.RemediationArguments["idempotency_key"].(string); !ok || strings.TrimSpace(key) == "" {
 				return response[workflow.PlanSubmission]{}, fmt.Errorf("planned remediation idempotency_key must be a non-empty string")
+			}
+			// 恢复策略必须来自 Platform 的只读策略目录，不能让模型凭空构造一个 ID。
+			policies, policyErr := service.GetRecoveryPolicies(ctx, platform.StateQuery{
+				Scope: platform.Scope{IncidentID: incidentID},
+			})
+			if policyErr != nil {
+				return platformResponse(workflow.PlanSubmission{}, fmt.Errorf("get recovery policies: %w", policyErr)), nil
+			}
+			policyID := strings.TrimSpace(input.RecoveryPolicyID)
+			policyAllowed := false
+			for _, policy := range policies {
+				if policy.ID == policyID {
+					policyAllowed = true
+					break
+				}
+			}
+			if !policyAllowed {
+				return platformResponse(workflow.PlanSubmission{}, fmt.Errorf("recovery policy %q is not available for this incident; call get_recovery_policies and use an exact returned ID", policyID)), nil
 			}
 			// SubmitPlan 会再次校验 Workflow 权限，并原子地冻结计划和推进状态。
 			result, submitErr := instance.SubmitPlan(workflow.PlanDraft{

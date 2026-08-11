@@ -117,6 +117,7 @@ observation:
     - get_provider_capabilities
     - get_credential_metadata
     - get_change_records
+    - get_recovery_policies
   metrics:
     window: 3m
     delay: 0m

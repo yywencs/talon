@@ -287,6 +287,35 @@ func (s *Simulator) GetRemediationCapabilities(ctx context.Context, query platfo
 	return result, nil
 }
 
+// GetRecoveryPolicies 返回 Controller 允许当前 Incident 引用的恢复策略。
+// 策略只读；实际探测比例和恢复权重始终由 Controller 执行。
+func (s *Simulator) GetRecoveryPolicies(ctx context.Context, query platform.StateQuery) ([]platform.RecoveryPolicy, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
+	snapshot := s.Snapshot()
+	if !snapshotMatchesIncident(snapshot, query.Scope) {
+		return nil, nil
+	}
+	w, err := s.mutableWorld()
+	if err != nil {
+		return nil, err
+	}
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	policy := w.controller.RecoveryPolicy
+	return []platform.RecoveryPolicy{{
+		ID:                     policy.ID,
+		ProbeSteps:             append([]float64(nil), policy.ProbeSteps...),
+		RecoverySteps:          append([]float64(nil), policy.RecoverySteps...),
+		StepMode:               policy.StepMode,
+		MinRequestsPerStep:     policy.MinRequestsPerStep,
+		HealthyWindowsRequired: policy.HealthyWindowsRequired,
+		Require:                cloneAnyMap(policy.Require),
+		HardStopWhen:           cloneAnyMap(policy.HardStopWhen),
+	}}, nil
+}
+
 func validateTimeRange(value platform.TimeRange) error {
 	if value.From.IsZero() || value.To.IsZero() {
 		return nil

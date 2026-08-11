@@ -124,6 +124,7 @@ observation:
     - get_provider_health
     - get_connection_metadata
     - get_change_records
+    - get_recovery_policies
   metrics:
     window: 4m
     delay: 0m

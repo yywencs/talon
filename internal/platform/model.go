@@ -227,6 +227,19 @@ type RemediationCapability struct {
 	Preconditions    map[string]any `json:"preconditions,omitempty"`
 }
 
+// RecoveryPolicy 是 Controller 向 Agent 公开的确定性探测和逐级恢复规则。
+// Agent 只能在 Plan 中引用策略 ID，不能修改步长、健康门槛或硬停止条件。
+type RecoveryPolicy struct {
+	ID                     string         `json:"id"`
+	ProbeSteps             []float64      `json:"probe_steps"`
+	RecoverySteps          []float64      `json:"recovery_steps"`
+	StepMode               string         `json:"step_mode"`
+	MinRequestsPerStep     int            `json:"min_requests_per_step"`
+	HealthyWindowsRequired int            `json:"healthy_windows_required"`
+	Require                map[string]any `json:"require"`
+	HardStopWhen           map[string]any `json:"hard_stop_when"`
+}
+
 // ChangeRecord 表示发布、配置或人工操作产生的审计记录。
 type ChangeRecord struct {
 	ID         string         `json:"id"`

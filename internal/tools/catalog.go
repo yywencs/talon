@@ -82,7 +82,7 @@ func New(ctx context.Context, service platform.ToolOpsPlatform, incidentID strin
 		for _, capability := range capabilities {
 			remediationCapabilities[capability.Name] = capability
 		}
-		planTool, planErr := newSubmitPlanTool(config.workflow, remediationCapabilities)
+		planTool, planErr := newSubmitPlanTool(config.workflow, service, incidentID, remediationCapabilities)
 		if planErr != nil {
 			return nil, planErr
 		}
@@ -179,7 +179,7 @@ func agentActionForTool(name string) (workflow.AgentAction, bool) {
 	switch name {
 	case "query_metrics", "query_logs", "query_traces", "get_services", "get_routes", "get_providers",
 		"get_config_versions", "get_change_records", "get_credential_metadata", "get_connection_metadata",
-		"get_tasks", "get_remediation_capabilities":
+		"get_tasks", "get_remediation_capabilities", "get_recovery_policies":
 		return workflow.AgentActionRead, true
 	case "get_operation":
 		return workflow.AgentActionQueryOperation, true

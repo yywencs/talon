@@ -144,6 +144,12 @@ func buildStaticTools(service platform.ToolOpsPlatform, incidentID string) ([]ei
 				return platformResponse(result, callErr), nil
 			})
 		},
+		func() (einotool.InvokableTool, error) {
+			return toolutils.InferTool("get_recovery_policies", "获取 Controller 允许当前 Incident 引用的探测与逐级恢复策略。提交Plan前必须读取，并原样使用返回的策略ID；Agent不能自行生成策略ID或修改流量步长。", func(ctx context.Context, input stateInput) (response[[]platform.RecoveryPolicy], error) {
+				result, callErr := service.GetRecoveryPolicies(ctx, platform.StateQuery{Scope: input.scope(incidentID)})
+				return platformResponse(result, callErr), nil
+			})
+		},
 	}
 
 	result := make([]einotool.InvokableTool, 0, len(builders)+4)
