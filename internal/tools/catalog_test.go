@@ -168,7 +168,7 @@ func TestWorkflowToolsExposeOnlyAllowedAgentActions(t *testing.T) {
 
 	_, err = flow.SubmitPlan(workflow.PlanDraft{
 		Summary: "回滚 Mapping", RootCause: "mapping regression", EvidenceRefs: []string{"change:mapping-v2"},
-		Remediation:  workflow.PlannedAction{ToolName: "rollback_mapping"},
+		Actions:      []workflow.PlannedAction{{ToolName: "rollback_mapping"}},
 		ProbeRouteID: "route-a", RecoveryPolicyID: "default-safe-recovery",
 	})
 	require.NoError(t, err)
@@ -194,13 +194,12 @@ func TestSubmitPlanToolAdvancesWorkflow(t *testing.T) {
 		"summary":"回滚 Mapping 配置",
 		"root_cause":"mapping schema regression",
 		"evidence_refs":["log:invalid_parameter_type","change:mapping-v2"],
-		"remediation_tool":"rollback_mapping",
-		"remediation_arguments":{
+		"actions":[{"tool_name":"rollback_mapping","arguments":{
 			"tool_id":"generate_image",
 			"target_version":"mapping-v1",
 			"expected_version":"mapping-v2",
 			"idempotency_key":"plan-invalid-policy-001"
-		},
+		}}],
 		"probe_route_id":"route-a",
 		"recovery_policy_id":"invented-policy"
 	}`)
@@ -214,13 +213,12 @@ func TestSubmitPlanToolAdvancesWorkflow(t *testing.T) {
 		"summary":"回滚 Mapping 配置",
 		"root_cause":"mapping schema regression",
 		"evidence_refs":["log:invalid_parameter_type","change:mapping-v2"],
-		"remediation_tool":"rollback_mapping",
-		"remediation_arguments":{
+		"actions":[{"tool_name":"rollback_mapping","arguments":{
 			"tool_id":"generate_image",
 			"target_version":"mapping-v1",
 			"expected_version":"mapping-v2",
 			"idempotency_key":"plan-rollback-001"
-		},
+		}}],
 		"probe_route_id":"route-a",
 		"recovery_policy_id":"default-safe-recovery"
 	}`)
@@ -231,7 +229,8 @@ func TestSubmitPlanToolAdvancesWorkflow(t *testing.T) {
 	assertSnapshot := flow.Snapshot()
 	require.Equal(t, workflow.StatePlanned, assertSnapshot.State)
 	require.NotNil(t, assertSnapshot.Plan)
-	require.Equal(t, "rollback_mapping", assertSnapshot.Plan.Remediation.ToolName)
+	require.Len(t, assertSnapshot.Plan.Actions, 1)
+	require.Equal(t, "rollback_mapping", assertSnapshot.Plan.Actions[0].ToolName)
 }
 
 func toolNames(t *testing.T, set *Set) []string {

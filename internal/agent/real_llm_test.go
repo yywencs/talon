@@ -71,8 +71,9 @@ func TestToolOpsAgentWithRealLLM(t *testing.T) {
 	require.NotNil(t, snapshot.Plan)
 	assert.NotEmpty(t, snapshot.Plan.RootCause)
 	assert.NotEmpty(t, snapshot.Plan.EvidenceRefs)
-	assert.Equal(t, "rollback_mapping", snapshot.Plan.Remediation.ToolName)
-	assert.Equal(t, "mapping-v1", snapshot.Plan.Remediation.Arguments["target_version"])
-	assert.Equal(t, "mapping-v2", snapshot.Plan.Remediation.Arguments["expected_version"])
+	require.NotEmpty(t, snapshot.Plan.Actions)
+	assert.Equal(t, "rollback_mapping", snapshot.Plan.Actions[0].ToolName)
+	assert.Equal(t, "mapping-v1", snapshot.Plan.Actions[0].Arguments["target_version"])
+	assert.Equal(t, "mapping-v2", snapshot.Plan.Actions[0].Arguments["expected_version"])
 	assert.Equal(t, "default-safe-recovery", snapshot.Plan.RecoveryPolicyID)
 }

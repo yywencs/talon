@@ -34,15 +34,15 @@ type Transition struct {
 
 // Snapshot 是可用于审计和后续 checkpoint 的 Workflow 只读副本。
 type Snapshot struct {
-	IncidentID     string              `json:"incident_id"`
-	State          State               `json:"state"`
-	SuspendedState State               `json:"suspended_state,omitempty"`
-	Version        uint64              `json:"version"`
-	Plan           *Plan               `json:"plan,omitempty"`
-	PlanDryRun     *PlanDryRun         `json:"plan_dry_run,omitempty"`
-	PlanPolicy     *PlanPolicyDecision `json:"plan_policy,omitempty"`
-	PlanApproval   *PlanApproval       `json:"plan_approval,omitempty"`
-	History        []Transition        `json:"history"`
+	IncidentID     string               `json:"incident_id"`
+	State          State                `json:"state"`
+	SuspendedState State                `json:"suspended_state,omitempty"`
+	Version        uint64               `json:"version"`
+	Plan           *Plan                `json:"plan,omitempty"`
+	PlanDryRuns    []PlanDryRun         `json:"plan_dry_runs,omitempty"`
+	PlanPolicies   []PlanPolicyDecision `json:"plan_policies,omitempty"`
+	PlanApprovals  []PlanApproval       `json:"plan_approvals,omitempty"`
+	History        []Transition         `json:"history"`
 }
 
 // IncidentWorkflow 保存单个 Incident 的确定性生命周期状态。
@@ -55,9 +55,9 @@ type IncidentWorkflow struct {
 	suspendedState State
 	version        uint64
 	plan           *Plan
-	planDryRun     *PlanDryRun
-	planPolicy     *PlanPolicyDecision
-	planApproval   *PlanApproval
+	planDryRuns    []PlanDryRun
+	planPolicies   []PlanPolicyDecision
+	planApprovals  []PlanApproval
 	history        []Transition
 	now            func() time.Time
 }
@@ -198,8 +198,8 @@ func (w *IncidentWorkflow) Snapshot() Snapshot {
 	}
 	return Snapshot{
 		IncidentID: w.incidentID, State: w.state, SuspendedState: w.suspendedState,
-		Version: w.version, Plan: clonePlanPointer(w.plan), PlanDryRun: clonePlanDryRunPointer(w.planDryRun),
-		PlanPolicy: clonePlanPolicyDecisionPointer(w.planPolicy), PlanApproval: clonePlanApprovalPointer(w.planApproval), History: history,
+		Version: w.version, Plan: clonePlanPointer(w.plan), PlanDryRuns: clonePlanDryRuns(w.planDryRuns),
+		PlanPolicies: clonePlanPolicyDecisions(w.planPolicies), PlanApprovals: clonePlanApprovals(w.planApprovals), History: history,
 	}
 }
 

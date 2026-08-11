@@ -150,10 +150,10 @@ func TestIncidentWorkflowSubmitPlanFreezesDraft(t *testing.T) {
 	draft := PlanDraft{
 		Summary: "回滚错误的 Mapping 配置", RootCause: "mapping schema regression",
 		EvidenceRefs: []string{"log:invalid_parameter_type", "change:mapping-v2"},
-		Remediation: PlannedAction{
+		Actions: []PlannedAction{{
 			ToolName:  "rollback_mapping",
 			Arguments: map[string]any{"target_version": "mapping-v1"},
-		},
+		}},
 		ProbeRouteID: "route-a", RecoveryPolicyID: "default-safe-recovery",
 	}
 
@@ -164,10 +164,13 @@ func TestIncidentWorkflowSubmitPlanFreezesDraft(t *testing.T) {
 	assert.Equal(t, fixedNow, submission.Plan.SubmittedAt)
 	assert.Equal(t, submission.Plan.ID, submission.Transition.Metadata["plan_id"])
 
-	draft.Remediation.Arguments["target_version"] = "mutated"
+	draft.Actions[0].Arguments["target_version"] = "mutated"
 	snapshot := workflow.Snapshot()
 	require.NotNil(t, snapshot.Plan)
-	assert.Equal(t, "mapping-v1", snapshot.Plan.Remediation.Arguments["target_version"])
+	require.Len(t, snapshot.Plan.Actions, 1)
+	assert.Equal(t, "incident-001-plan-2-action-1", snapshot.Plan.Actions[0].ID)
+	assert.NotEmpty(t, snapshot.Plan.Actions[0].Digest)
+	assert.Equal(t, "mapping-v1", snapshot.Plan.Actions[0].Arguments["target_version"])
 	_, err = workflow.SubmitPlan(draft)
 	assert.ErrorIs(t, err, ErrAgentActionDenied)
 }

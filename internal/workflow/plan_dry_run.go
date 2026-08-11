@@ -55,6 +55,8 @@ type PlanDryRunFailure struct {
 // OperationStatus 保留平台原始状态，Status 则供 Workflow 做确定性判断。
 type PlanDryRun struct {
 	PlanID          string             `json:"plan_id"`
+	ActionID        string             `json:"action_id"`
+	ActionDigest    string             `json:"action_digest"`
 	OperationID     string             `json:"operation_id,omitempty"`
 	IdempotencyKey  string             `json:"idempotency_key"`
 	Status          PlanDryRunStatus   `json:"status"`
@@ -72,6 +74,8 @@ func (w *IncidentWorkflow) RecordPlanDryRun(result PlanDryRun) (PlanDryRun, erro
 		return PlanDryRun{}, fmt.Errorf("workflow is not initialized")
 	}
 	result.PlanID = strings.TrimSpace(result.PlanID)
+	result.ActionID = strings.TrimSpace(result.ActionID)
+	result.ActionDigest = strings.TrimSpace(result.ActionDigest)
 	result.OperationID = strings.TrimSpace(result.OperationID)
 	result.IdempotencyKey = strings.TrimSpace(result.IdempotencyKey)
 	result.OperationStatus = strings.TrimSpace(result.OperationStatus)
@@ -85,6 +89,12 @@ func (w *IncidentWorkflow) RecordPlanDryRun(result PlanDryRun) (PlanDryRun, erro
 	if result.PlanID == "" {
 		return PlanDryRun{}, fmt.Errorf("plan dry run plan_id is required")
 	}
+	if result.ActionID == "" {
+		return PlanDryRun{}, fmt.Errorf("plan dry run action_id is required")
+	}
+	if result.ActionDigest == "" {
+		return PlanDryRun{}, fmt.Errorf("plan dry run action_digest is required")
+	}
 	if result.IdempotencyKey == "" {
 		return PlanDryRun{}, fmt.Errorf("plan dry run idempotency_key is required")
 	}
@@ -97,9 +107,9 @@ func (w *IncidentWorkflow) RecordPlanDryRun(result PlanDryRun) (PlanDryRun, erro
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.planDryRun != nil && w.planDryRun.PlanID == result.PlanID &&
-		w.planDryRun.IdempotencyKey == result.IdempotencyKey && w.planDryRun.Status.terminal() {
-		return *clonePlanDryRunPointer(w.planDryRun), nil
+	if existing := findPlanDryRun(w.planDryRuns, result.ActionID); existing != nil &&
+		existing.PlanID == result.PlanID && existing.IdempotencyKey == result.IdempotencyKey && existing.Status.terminal() {
+		return *clonePlanDryRunPointer(existing), nil
 	}
 	if w.state != StatePlanned {
 		return PlanDryRun{}, fmt.Errorf("%w: plan dry run is not allowed in state %q", ErrInvalidTransition, w.state)
@@ -107,9 +117,13 @@ func (w *IncidentWorkflow) RecordPlanDryRun(result PlanDryRun) (PlanDryRun, erro
 	if w.plan == nil || w.plan.ID != result.PlanID {
 		return PlanDryRun{}, fmt.Errorf("plan dry run does not match the current frozen plan")
 	}
+	action := findPlannedAction(w.plan.Actions, result.ActionID)
+	if action == nil || action.Digest != result.ActionDigest {
+		return PlanDryRun{}, fmt.Errorf("plan dry run does not match a frozen action")
+	}
 
 	result.RecordedAt = w.now()
-	w.planDryRun = clonePlanDryRunPointer(&result)
+	w.planDryRuns = upsertPlanDryRun(w.planDryRuns, result)
 	if result.Failure != nil {
 		reason := result.Failure.Message
 		if reason == "" {
@@ -120,6 +134,8 @@ func (w *IncidentWorkflow) RecordPlanDryRun(result PlanDryRun) (PlanDryRun, erro
 		}
 		metadata := map[string]string{
 			"plan_id":             result.PlanID,
+			"action_id":           result.ActionID,
+			"action_digest":       result.ActionDigest,
 			"dry_run_status":      string(result.Status),
 			"failure_category":    string(result.Failure.Category),
 			"failure_code":        result.Failure.Code,
@@ -149,7 +165,7 @@ func (w *IncidentWorkflow) RecordPlanDryRun(result PlanDryRun) (PlanDryRun, erro
 			// 暂时性失败保持 planned，由 Controller 使用相同幂等键安全重试。
 		}
 	}
-	return *clonePlanDryRunPointer(w.planDryRun), nil
+	return *clonePlanDryRunPointer(findPlanDryRun(w.planDryRuns, result.ActionID)), nil
 }
 
 func (s PlanDryRunStatus) valid() bool {
@@ -237,4 +253,40 @@ func clonePlanDryRunPointer(value *PlanDryRun) *PlanDryRun {
 		result.Failure = &failure
 	}
 	return &result
+}
+
+func clonePlanDryRuns(values []PlanDryRun) []PlanDryRun {
+	result := make([]PlanDryRun, len(values))
+	for index := range values {
+		result[index] = *clonePlanDryRunPointer(&values[index])
+	}
+	return result
+}
+
+func findPlanDryRun(values []PlanDryRun, actionID string) *PlanDryRun {
+	for index := range values {
+		if values[index].ActionID == actionID {
+			return &values[index]
+		}
+	}
+	return nil
+}
+
+func upsertPlanDryRun(values []PlanDryRun, value PlanDryRun) []PlanDryRun {
+	for index := range values {
+		if values[index].ActionID == value.ActionID {
+			values[index] = *clonePlanDryRunPointer(&value)
+			return values
+		}
+	}
+	return append(values, *clonePlanDryRunPointer(&value))
+}
+
+func findPlannedAction(values []PlannedAction, actionID string) *PlannedAction {
+	for index := range values {
+		if values[index].ID == actionID {
+			return &values[index]
+		}
+	}
+	return nil
 }

@@ -98,13 +98,12 @@ func TestToolOpsAgentSubmitsPlanAndGuardsChangedState(t *testing.T) {
 					"summary":"回滚 Mapping 配置",
 					"root_cause":"mapping schema regression",
 					"evidence_refs":["log:invalid_parameter_type","change:mapping-v2"],
-					"remediation_tool":"rollback_mapping",
-					"remediation_arguments":{
+					"actions":[{"tool_name":"rollback_mapping","arguments":{
 						"tool_id":"generate_image",
 						"target_version":"mapping-v1",
 						"expected_version":"mapping-v2",
 						"idempotency_key":"plan-rollback-001"
-					},
+					}}],
 					"probe_route_id":"route-a",
 					"recovery_policy_id":"default-safe-recovery"
 				}`},
@@ -124,7 +123,8 @@ func TestToolOpsAgentSubmitsPlanAndGuardsChangedState(t *testing.T) {
 	snapshot := flow.Snapshot()
 	assert.Equal(t, workflow.StatePlanned, snapshot.State)
 	require.NotNil(t, snapshot.Plan)
-	assert.Equal(t, "rollback_mapping", snapshot.Plan.Remediation.ToolName)
+	require.Len(t, snapshot.Plan.Actions, 1)
+	assert.Equal(t, "rollback_mapping", snapshot.Plan.Actions[0].ToolName)
 	toolNames, inputs := chatModel.snapshot()
 	assert.Contains(t, toolNames, "submit_plan")
 	assert.NotContains(t, toolNames, "rollback_mapping")
@@ -186,14 +186,15 @@ func TestToolOpsAgentAddsStructuredDryRunFailureWithoutRawMessage(t *testing.T) 
 	submission, err := flow.SubmitPlan(workflow.PlanDraft{
 		Summary: "rollback mapping", RootCause: "mapping regression",
 		EvidenceRefs: []string{"change:mapping-v2"},
-		Remediation: workflow.PlannedAction{ToolName: "rollback_mapping", Arguments: map[string]any{
+		Actions: []workflow.PlannedAction{{ToolName: "rollback_mapping", Arguments: map[string]any{
 			"target_version": "mapping-v1",
-		}},
+		}}},
 		ProbeRouteID: "route-a", RecoveryPolicyID: "default-safe-recovery",
 	})
 	require.NoError(t, err)
 	_, err = flow.RecordPlanDryRun(workflow.PlanDryRun{
-		PlanID: submission.Plan.ID, OperationID: "operation-dry-run-001", IdempotencyKey: submission.Plan.ID + ":dry-run",
+		PlanID: submission.Plan.ID, ActionID: submission.Plan.Actions[0].ID, ActionDigest: submission.Plan.Actions[0].Digest,
+		OperationID: "operation-dry-run-001", IdempotencyKey: submission.Plan.Actions[0].ID + ":dry-run",
 		Status: workflow.PlanDryRunFailed,
 		Failure: &workflow.PlanDryRunFailure{
 			Category: workflow.PlanDryRunFailurePreconditionChanged, Code: "state_conflict",

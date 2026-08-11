@@ -30,61 +30,75 @@ func NewPlanProcessor(service platform.ToolOpsPlatform, instance *workflow.Incid
 	return &PlanProcessor{platform: service, workflow: instance}, nil
 }
 
-// DryRun 对当前 planned 状态下的冻结 Plan 做一次无副作用的预执行。
-// 已经完成的结果会直接返回；平台失败也会先写回 Workflow，再作为错误返回。
-func (p *PlanProcessor) DryRun(ctx context.Context) (workflow.PlanDryRun, error) {
+// DryRun 按顺序对当前冻结 Plan 的每个 Action 做无副作用预执行。
+// 每个结果分别绑定 Action ID 和摘要；已完成的 Action 不会被重复调用。
+func (p *PlanProcessor) DryRun(ctx context.Context) ([]workflow.PlanDryRun, error) {
 	if p == nil || p.platform == nil || p.workflow == nil {
-		return workflow.PlanDryRun{}, fmt.Errorf("plan processor is not initialized")
+		return nil, fmt.Errorf("plan processor is not initialized")
 	}
 	snapshot := p.workflow.Snapshot()
-	if snapshot.PlanDryRun != nil && (snapshot.PlanDryRun.Status == workflow.PlanDryRunSucceeded || snapshot.PlanDryRun.Status == workflow.PlanDryRunFailed) {
-		if snapshot.PlanDryRun.Status == workflow.PlanDryRunFailed {
-			return *snapshot.PlanDryRun, ErrPlanDryRunFailed
+	for _, result := range snapshot.PlanDryRuns {
+		if result.Status == workflow.PlanDryRunFailed {
+			return snapshot.PlanDryRuns, ErrPlanDryRunFailed
 		}
-		return *snapshot.PlanDryRun, nil
 	}
 	if snapshot.State != workflow.StatePlanned {
-		return workflow.PlanDryRun{}, fmt.Errorf("%w: plan dry run is not allowed in state %q", workflow.ErrInvalidTransition, snapshot.State)
+		return nil, fmt.Errorf("%w: plan dry run is not allowed in state %q", workflow.ErrInvalidTransition, snapshot.State)
 	}
 	if snapshot.Plan == nil {
-		return workflow.PlanDryRun{}, fmt.Errorf("planned workflow has no frozen plan")
+		return nil, fmt.Errorf("planned workflow has no frozen plan")
 	}
 
-	request := remediationDryRunRequest(snapshot.IncidentID, *snapshot.Plan)
-	operation, callErr := p.platform.ExecuteRemediation(ctx, request)
-	status, failure := analyzeDryRunResult(operation, callErr)
-	result := workflow.PlanDryRun{
-		PlanID: snapshot.Plan.ID, OperationID: operation.ID, IdempotencyKey: request.IdempotencyKey,
-		Status: status, OperationStatus: string(operation.Status), Message: operation.Message,
-		Failure: failure, Result: cloneMap(operation.Result),
-	}
-	recorded, recordErr := p.workflow.RecordPlanDryRun(result)
-	if recordErr != nil {
-		return workflow.PlanDryRun{}, fmt.Errorf("record plan dry run: %w", recordErr)
-	}
-	if callErr != nil {
-		if recorded.Status == workflow.PlanDryRunFailed {
-			return recorded, errors.Join(ErrPlanDryRunFailed, callErr)
+	for _, action := range snapshot.Plan.Actions {
+		if terminalActionDryRun(snapshot.PlanDryRuns, action.ID) {
+			continue
 		}
-		return recorded, fmt.Errorf("execute plan dry run: %w", callErr)
+		request := remediationDryRunRequest(snapshot.IncidentID, action)
+		operation, callErr := p.platform.ExecuteRemediation(ctx, request)
+		status, failure := analyzeDryRunResult(operation, callErr)
+		result := workflow.PlanDryRun{
+			PlanID: snapshot.Plan.ID, ActionID: action.ID, ActionDigest: action.Digest,
+			OperationID: operation.ID, IdempotencyKey: request.IdempotencyKey,
+			Status: status, OperationStatus: string(operation.Status), Message: operation.Message,
+			Failure: failure, Result: cloneMap(operation.Result),
+		}
+		recorded, recordErr := p.workflow.RecordPlanDryRun(result)
+		if recordErr != nil {
+			return p.workflow.Snapshot().PlanDryRuns, fmt.Errorf("record action %q dry run: %w", action.ID, recordErr)
+		}
+		if callErr != nil {
+			if recorded.Status == workflow.PlanDryRunFailed {
+				return p.workflow.Snapshot().PlanDryRuns, errors.Join(ErrPlanDryRunFailed, callErr)
+			}
+			return p.workflow.Snapshot().PlanDryRuns, fmt.Errorf("execute action %q dry run: %w", action.ID, callErr)
+		}
+		if recorded.Status == workflow.PlanDryRunFailed {
+			return p.workflow.Snapshot().PlanDryRuns, fmt.Errorf("%w: action %q operation status %q", ErrPlanDryRunFailed, action.ID, recorded.OperationStatus)
+		}
 	}
-	if recorded.Status == workflow.PlanDryRunFailed {
-		return recorded, fmt.Errorf("%w: operation status %q", ErrPlanDryRunFailed, recorded.OperationStatus)
-	}
-	return recorded, nil
+	return p.workflow.Snapshot().PlanDryRuns, nil
 }
 
-func remediationDryRunRequest(incidentID string, plan workflow.Plan) platform.RemediationRequest {
-	arguments := cloneMap(plan.Remediation.Arguments)
+func remediationDryRunRequest(incidentID string, action workflow.PlannedAction) platform.RemediationRequest {
+	arguments := cloneMap(action.Arguments)
 	expectedVersion, _ := arguments["expected_version"].(string)
 	delete(arguments, "idempotency_key")
 	delete(arguments, "expected_version")
 	delete(arguments, "dry_run")
 	return platform.RemediationRequest{
-		IncidentID: strings.TrimSpace(incidentID), ToolName: plan.Remediation.ToolName,
+		IncidentID: strings.TrimSpace(incidentID), ToolName: action.ToolName,
 		Arguments: arguments, ExpectedVersion: strings.TrimSpace(expectedVersion), DryRun: true,
-		IdempotencyKey: plan.ID + ":dry-run",
+		IdempotencyKey: action.ID + ":dry-run",
 	}
+}
+
+func terminalActionDryRun(values []workflow.PlanDryRun, actionID string) bool {
+	for _, value := range values {
+		if value.ActionID == actionID {
+			return value.Status == workflow.PlanDryRunSucceeded || value.Status == workflow.PlanDryRunFailed
+		}
+	}
+	return false
 }
 
 func analyzeDryRunResult(operation platform.Operation, err error) (workflow.PlanDryRunStatus, *workflow.PlanDryRunFailure) {
