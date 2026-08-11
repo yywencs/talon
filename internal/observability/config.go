@@ -2,104 +2,94 @@ package observability
 
 import (
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
 
 const (
-	envEnabled        = "OBS_ENABLED"
-	envExporters      = "OBS_EXPORTERS"
-	envSampleRate     = "OBS_SAMPLE_RATE"
-	envServiceName    = "OBS_SERVICE_NAME"
-	envServiceVersion = "OBS_SERVICE_VERSION"
-	envEnvironment    = "OBS_ENVIRONMENT"
-	envTraceDir       = "OBS_TRACE_DIR"
-	envOTLPEndpoint   = "OBS_OTLP_ENDPOINT"
-	envOTLPInsecure   = "OBS_OTLP_INSECURE"
-	envStdoutPretty   = "OBS_STDOUT_PRETTY"
-	envPayloadSize    = "OBS_PAYLOAD_SIZE_LIMIT"
-	envPayloadPreview = "OBS_PAYLOAD_PREVIEW_LIMIT"
+	envEnabled             = "COZELOOP_ENABLED"
+	envAPIBaseURL          = "COZELOOP_API_BASE_URL"
+	envWorkspaceID         = "COZELOOP_WORKSPACE_ID"
+	envAPIToken            = "COZELOOP_API_TOKEN"
+	envJWTClientID         = "COZELOOP_JWT_OAUTH_CLIENT_ID"
+	envJWTPrivateKey       = "COZELOOP_JWT_OAUTH_PRIVATE_KEY"
+	envJWTPublicKeyID      = "COZELOOP_JWT_OAUTH_PUBLIC_KEY_ID"
+	envServiceName         = "COZELOOP_SERVICE_NAME"
+	envDeploymentEnv       = "COZELOOP_DEPLOYMENT_ENV"
+	envInputOutputMaxBytes = "COZELOOP_INPUT_OUTPUT_MAX_BYTES"
+	envNormalMaxBytes      = "COZELOOP_NORMAL_MAX_BYTES"
+	envAggregateOutput     = "COZELOOP_AGGREGATE_OUTPUT"
 )
 
-// Config 定义 observability 初始化所需配置。
+// Config 定义 CozeLoop Agent 观测所需配置。
 type Config struct {
 	Enabled             bool
-	Exporters           []ExporterKind
-	SampleRate          float64
+	APIBaseURL          string
+	WorkspaceID         string
+	APIToken            string
+	JWTClientID         string
+	JWTPrivateKey       string
+	JWTPublicKeyID      string
 	ServiceName         string
-	ServiceVersion      string
-	Environment         string
-	TraceDir            string
-	OTLPEndpoint        string
-	OTLPInsecure        bool
-	StdoutPretty        bool
-	PayloadSizeLimit    int
-	PayloadPreviewLimit int
+	DeploymentEnv       string
+	InputOutputMaxBytes int
+	NormalMaxBytes      int
+	AggregateOutput     bool
 	RedactionRules      []RedactionRule
 }
 
-// DefaultConfig 返回默认配置。
+// DefaultConfig 返回默认关闭的 CozeLoop 配置，避免测试意外向外部平台发送数据。
 func DefaultConfig() Config {
 	return Config{
 		Enabled:             false,
-		Exporters:           []ExporterKind{ExporterStdout},
-		SampleRate:          1.0,
-		ServiceName:         "opentalon-cli",
-		ServiceVersion:      "",
-		Environment:         "dev",
-		TraceDir:            defaultTraceDir(),
-		OTLPInsecure:        false,
-		StdoutPretty:        true,
-		PayloadSizeLimit:    4096,
-		PayloadPreviewLimit: 512,
+		ServiceName:         "talon-toolops",
+		DeploymentEnv:       "dev",
+		InputOutputMaxBytes: 4096,
+		NormalMaxBytes:      2048,
+		AggregateOutput:     true,
 		RedactionRules:      DefaultRedactionRules(),
 	}
 }
 
-// LoadConfigFromEnv 从环境变量加载配置。
+// LoadConfigFromEnv 从 CozeLoop 官方环境变量和 Talon 扩展配置加载观测配置。
 func LoadConfigFromEnv() Config {
 	cfg := DefaultConfig()
 	cfg.Enabled = getEnvBool(envEnabled, cfg.Enabled)
-	cfg.Exporters = parseExporterKinds(getEnv(envExporters, joinExporterKinds(cfg.Exporters)))
-	cfg.SampleRate = getEnvFloat64(envSampleRate, cfg.SampleRate)
+	cfg.APIBaseURL = getEnv(envAPIBaseURL, cfg.APIBaseURL)
+	cfg.WorkspaceID = getEnv(envWorkspaceID, cfg.WorkspaceID)
+	cfg.APIToken = getEnv(envAPIToken, cfg.APIToken)
+	cfg.JWTClientID = getEnv(envJWTClientID, cfg.JWTClientID)
+	cfg.JWTPrivateKey = strings.TrimSpace(os.Getenv(envJWTPrivateKey))
+	cfg.JWTPublicKeyID = getEnv(envJWTPublicKeyID, cfg.JWTPublicKeyID)
 	cfg.ServiceName = getEnv(envServiceName, cfg.ServiceName)
-	cfg.ServiceVersion = getEnv(envServiceVersion, cfg.ServiceVersion)
-	cfg.Environment = getEnv(envEnvironment, cfg.Environment)
-	cfg.TraceDir = getEnv(envTraceDir, cfg.TraceDir)
-	cfg.OTLPEndpoint = getEnv(envOTLPEndpoint, cfg.OTLPEndpoint)
-	cfg.OTLPInsecure = getEnvBool(envOTLPInsecure, cfg.OTLPInsecure)
-	cfg.StdoutPretty = getEnvBool(envStdoutPretty, cfg.StdoutPretty)
-	cfg.PayloadSizeLimit = getEnvInt(envPayloadSize, cfg.PayloadSizeLimit)
-	cfg.PayloadPreviewLimit = getEnvInt(envPayloadPreview, cfg.PayloadPreviewLimit)
+	cfg.DeploymentEnv = getEnv(envDeploymentEnv, cfg.DeploymentEnv)
+	cfg.InputOutputMaxBytes = getEnvInt(envInputOutputMaxBytes, cfg.InputOutputMaxBytes)
+	cfg.NormalMaxBytes = getEnvInt(envNormalMaxBytes, cfg.NormalMaxBytes)
+	cfg.AggregateOutput = getEnvBool(envAggregateOutput, cfg.AggregateOutput)
 	return cfg.Normalize()
 }
 
-// Normalize 归一化配置并补齐默认值。
+// Normalize 归一化配置并补齐安全默认值。
 func (c Config) Normalize() Config {
-	if c.SampleRate < 0 {
-		c.SampleRate = 0
+	c.APIBaseURL = strings.TrimRight(strings.TrimSpace(c.APIBaseURL), "/")
+	c.WorkspaceID = strings.TrimSpace(c.WorkspaceID)
+	c.APIToken = strings.TrimSpace(c.APIToken)
+	c.JWTClientID = strings.TrimSpace(c.JWTClientID)
+	c.JWTPrivateKey = strings.TrimSpace(c.JWTPrivateKey)
+	c.JWTPublicKeyID = strings.TrimSpace(c.JWTPublicKeyID)
+	c.ServiceName = strings.TrimSpace(c.ServiceName)
+	if c.ServiceName == "" {
+		c.ServiceName = "talon-toolops"
 	}
-	if c.SampleRate > 1 {
-		c.SampleRate = 1
+	c.DeploymentEnv = strings.TrimSpace(c.DeploymentEnv)
+	if c.DeploymentEnv == "" {
+		c.DeploymentEnv = "dev"
 	}
-	if len(c.Exporters) == 0 {
-		c.Exporters = []ExporterKind{ExporterStdout}
+	if c.InputOutputMaxBytes <= 0 {
+		c.InputOutputMaxBytes = 4096
 	}
-	if strings.TrimSpace(c.ServiceName) == "" {
-		c.ServiceName = "opentalon-cli"
-	}
-	if strings.TrimSpace(c.Environment) == "" {
-		c.Environment = "dev"
-	}
-	if strings.TrimSpace(c.TraceDir) == "" {
-		c.TraceDir = defaultTraceDir()
-	}
-	if c.PayloadSizeLimit <= 0 {
-		c.PayloadSizeLimit = 4096
-	}
-	if c.PayloadPreviewLimit <= 0 {
-		c.PayloadPreviewLimit = 512
+	if c.NormalMaxBytes <= 0 {
+		c.NormalMaxBytes = 2048
 	}
 	if c.RedactionRules == nil {
 		c.RedactionRules = DefaultRedactionRules()
@@ -107,12 +97,11 @@ func (c Config) Normalize() Config {
 	return c
 }
 
-func defaultTraceDir() string {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return filepath.Join(".", ".opentalon", "traces")
+func (c Config) hasAuthentication() bool {
+	if c.APIToken != "" {
+		return true
 	}
-	return filepath.Join(cwd, ".opentalon", "traces")
+	return c.JWTClientID != "" && c.JWTPrivateKey != "" && c.JWTPublicKeyID != ""
 }
 
 func getEnv(key, fallback string) string {
@@ -129,18 +118,6 @@ func getEnvBool(key string, fallback bool) bool {
 		return fallback
 	}
 	parsed, err := strconv.ParseBool(value)
-	if err != nil {
-		return fallback
-	}
-	return parsed
-}
-
-func getEnvFloat64(key string, fallback float64) float64 {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback
-	}
-	parsed, err := strconv.ParseFloat(value, 64)
 	if err != nil {
 		return fallback
 	}

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/wen/opentalon/internal/config"
 	"github.com/wen/opentalon/internal/llm"
+	"github.com/wen/opentalon/internal/observability"
 	"github.com/wen/opentalon/internal/workflow"
 )
 
@@ -24,9 +25,17 @@ func TestToolOpsAgentWithRealLLM(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-
+	// 先加载项目 .env，使其中的 COZELOOP_* 配置也能被观测初始化读取。
 	llmConfig, err := config.LoadLLMConfig()
 	require.NoError(t, err)
+	observabilityConfig := observability.LoadConfigFromEnv()
+	require.NoError(t, observability.Init(ctx, observabilityConfig))
+	t.Cleanup(func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		require.NoError(t, observability.Shutdown(shutdownCtx))
+	})
+
 	chatModel, err := llm.NewChatModel(ctx, llmConfig)
 	require.NoError(t, err)
 

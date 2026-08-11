@@ -1,98 +1,136 @@
 package observability
 
 import (
+	"bytes"
 	"context"
-	"strings"
+	"encoding/json"
+	"errors"
 
+	loopcallback "github.com/cloudwego/eino-ext/callbacks/cozeloop"
 	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/schema"
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-const einoTracerName = "github.com/wen/opentalon/internal/observability/eino"
-
-// NewEinoTracingHandler 返回统一的 Eino 链路追踪回调处理器，
-// 在框架边界观测组件、Graph、模型和工具的执行过程。
-//
-// 可以在进程启动时通过 callbacks.AppendGlobalHandlers 注册一次，
-// 也可以通过 compose.WithCallbacks 只注入单次调用。
-// 业务节点不需要自行创建或结束 Span。
-func NewEinoTracingHandler() callbacks.Handler {
-	return callbacks.NewHandlerBuilder().
-		OnStartFn(func(ctx context.Context, info *callbacks.RunInfo, _ callbacks.CallbackInput) context.Context {
-			return startEinoSpan(ctx, info, false)
-		}).
-		OnEndFn(func(ctx context.Context, _ *callbacks.RunInfo, _ callbacks.CallbackOutput) context.Context {
-			finishEinoSpan(ctx, nil)
-			return ctx
-		}).
-		OnErrorFn(func(ctx context.Context, _ *callbacks.RunInfo, err error) context.Context {
-			finishEinoSpan(ctx, err)
-			return ctx
-		}).
-		OnStartWithStreamInputFn(func(ctx context.Context, info *callbacks.RunInfo, input *schema.StreamReader[callbacks.CallbackInput]) context.Context {
-			if input != nil {
-				input.Close()
-			}
-			return startEinoSpan(ctx, info, true)
-		}).
-		OnEndWithStreamOutputFn(func(ctx context.Context, _ *callbacks.RunInfo, output *schema.StreamReader[callbacks.CallbackOutput]) context.Context {
-			if output != nil {
-				output.Close()
-			}
-			finishEinoSpan(ctx, nil)
-			return ctx
-		}).
-		Build()
+type safeDataParser struct {
+	next     loopcallback.CallbackDataParser
+	redactor *Redactor
 }
 
-func startEinoSpan(ctx context.Context, info *callbacks.RunInfo, streaming bool) context.Context {
-	component, implementation, name := einoRunInfo(info)
-	attributes := []attribute.KeyValue{
-		attribute.String("eino.component", component),
-		attribute.Bool("eino.streaming", streaming),
-	}
-	if implementation != "" {
-		attributes = append(attributes, attribute.String("eino.type", implementation))
-	}
-	if name != "" {
-		attributes = append(attributes, attribute.String("eino.name", name))
-	}
-	ctx, _ = otel.Tracer(einoTracerName).Start(ctx, einoSpanName(component, name, implementation),
-		oteltrace.WithAttributes(attributes...))
-	return ctx
+func newSafeDataParser(next loopcallback.CallbackDataParser, redactor *Redactor) loopcallback.CallbackDataParser {
+	return &safeDataParser{next: next, redactor: redactor}
 }
 
-func finishEinoSpan(ctx context.Context, err error) {
-	span := oteltrace.SpanFromContext(ctx)
-	defer span.End()
+func (p *safeDataParser) ParseInput(ctx context.Context, info *callbacks.RunInfo, input callbacks.CallbackInput) map[string]any {
+	return p.sanitize(p.next.ParseInput(ctx, info, input))
+}
+
+func (p *safeDataParser) ParseOutput(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput) map[string]any {
+	return p.sanitize(p.next.ParseOutput(ctx, info, output))
+}
+
+func (p *safeDataParser) ParseStreamInput(ctx context.Context, info *callbacks.RunInfo, input *schema.StreamReader[callbacks.CallbackInput]) map[string]any {
+	return p.sanitize(p.next.ParseStreamInput(ctx, info, input))
+}
+
+func (p *safeDataParser) ParseStreamOutput(ctx context.Context, info *callbacks.RunInfo, output *schema.StreamReader[callbacks.CallbackOutput]) map[string]any {
+	return p.sanitize(p.next.ParseStreamOutput(ctx, info, output))
+}
+
+func (p *safeDataParser) sanitize(tags map[string]any) map[string]any {
+	if len(tags) == 0 {
+		return tags
+	}
+	safe := make(map[string]any, len(tags))
+	for key, value := range tags {
+		safe[key] = safeTraceValue(p.redactor, key, value)
+	}
+	return safe
+}
+
+// safeTraceValue 先把 Eino 的结构体转换为普通 JSON 数据，再递归脱敏。
+// 无法安全序列化或未初始化脱敏器时采用关闭式策略。
+func safeTraceValue(redactor *Redactor, path string, value any) any {
+	if redactor == nil {
+		return defaultRedactionReplacement
+	}
+	raw, err := json.Marshal(value)
 	if err != nil {
-		recordSpanError(span, err)
-		return
+		return defaultRedactionReplacement
 	}
-	markSpanOK(span)
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var normalized any
+	if err := decoder.Decode(&normalized); err != nil {
+		return defaultRedactionReplacement
+	}
+	normalized = normalizeTraceNumbers(normalized)
+	return redactor.RedactValue(path, normalized)
 }
 
-func einoRunInfo(info *callbacks.RunInfo) (component, implementation, name string) {
-	if info == nil {
-		return "component", "", ""
+// normalizeTraceNumbers 将 JSON 解码产生的 json.Number 还原为 CozeLoop
+// 能识别的原生数字类型。整数优先使用 int64，小数使用 float64。
+func normalizeTraceNumbers(value any) any {
+	switch v := value.(type) {
+	case json.Number:
+		if integer, err := v.Int64(); err == nil {
+			return integer
+		}
+		if decimal, err := v.Float64(); err == nil {
+			return decimal
+		}
+		return defaultRedactionReplacement
+	case map[string]any:
+		for key, item := range v {
+			v[key] = normalizeTraceNumbers(item)
+		}
+		return v
+	case []any:
+		for index, item := range v {
+			v[index] = normalizeTraceNumbers(item)
+		}
+		return v
+	default:
+		return value
 	}
-	component = strings.TrimSpace(string(info.Component))
-	if component == "" {
-		component = "component"
-	}
-	return component, strings.TrimSpace(info.Type), strings.TrimSpace(info.Name)
 }
 
-func einoSpanName(component, name, implementation string) string {
-	detail := name
-	if detail == "" {
-		detail = implementation
+type safeEinoHandler struct {
+	next     callbacks.Handler
+	redactor *Redactor
+}
+
+func newSafeEinoHandler(next callbacks.Handler, redactor *Redactor) callbacks.Handler {
+	return &safeEinoHandler{next: next, redactor: redactor}
+}
+
+func (h *safeEinoHandler) OnStart(ctx context.Context, info *callbacks.RunInfo, input callbacks.CallbackInput) context.Context {
+	return h.next.OnStart(ctx, info, input)
+}
+
+func (h *safeEinoHandler) OnEnd(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput) context.Context {
+	return h.next.OnEnd(ctx, info, output)
+}
+
+func (h *safeEinoHandler) OnError(ctx context.Context, info *callbacks.RunInfo, err error) context.Context {
+	return h.next.OnError(ctx, info, safeTraceError(h.redactor, err))
+}
+
+func (h *safeEinoHandler) OnStartWithStreamInput(ctx context.Context, info *callbacks.RunInfo, input *schema.StreamReader[callbacks.CallbackInput]) context.Context {
+	return h.next.OnStartWithStreamInput(ctx, info, input)
+}
+
+func (h *safeEinoHandler) OnEndWithStreamOutput(ctx context.Context, info *callbacks.RunInfo, output *schema.StreamReader[callbacks.CallbackOutput]) context.Context {
+	return h.next.OnEndWithStreamOutput(ctx, info, output)
+}
+
+func safeTraceError(redactor *Redactor, err error) error {
+	if err == nil {
+		return nil
 	}
-	if detail == "" {
-		return "eino." + component
+	value := safeTraceValue(redactor, "error", err.Error())
+	message, ok := value.(string)
+	if !ok || message == "" {
+		message = defaultRedactionReplacement
 	}
-	return "eino." + component + "." + detail
+	return errors.New(message)
 }

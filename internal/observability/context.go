@@ -1,31 +1,27 @@
 package observability
 
-import (
-	"context"
+import "context"
 
-	oteltrace "go.opentelemetry.io/otel/trace"
-)
-
-// TraceIDFromContext 返回当前上下文中的 trace_id。
+// TraceIDFromContext 返回当前 CozeLoop Span 的 trace_id。
 func TraceIDFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""
 	}
-	spanContext := oteltrace.SpanContextFromContext(ctx)
-	if !spanContext.IsValid() {
+	client, _, _ := providerSnapshot()
+	if client == nil {
 		return ""
 	}
-	return spanContext.TraceID().String()
+	return client.GetSpanFromContext(ctx).GetTraceID()
 }
 
-// SpanIDFromContext 返回当前上下文中的 span_id。
+// SpanIDFromContext 返回当前 CozeLoop Span 的 span_id。
 func SpanIDFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""
 	}
-	spanContext := oteltrace.SpanContextFromContext(ctx)
-	if !spanContext.IsValid() {
+	client, _, _ := providerSnapshot()
+	if client == nil {
 		return ""
 	}
-	return spanContext.SpanID().String()
+	return client.GetSpanFromContext(ctx).GetSpanID()
 }

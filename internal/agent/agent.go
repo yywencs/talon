@@ -4,7 +4,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/cloudwego/eino/components/model"
@@ -72,8 +74,7 @@ func NewToolOpsAgent(ctx context.Context, config Config) (*ToolOpsAgent, error) 
 		maxSteps = DefaultMaxSteps
 	}
 
-	observedPlatform := observability.ObservePlatform(config.Platform)
-	tools, err := toolset.New(ctx, observedPlatform, incidentID, toolset.WithWorkflow(config.Workflow))
+	tools, err := toolset.New(ctx, config.Platform, incidentID, toolset.WithWorkflow(config.Workflow))
 	if err != nil {
 		return nil, fmt.Errorf("build incident tools: %w", err)
 	}
@@ -131,11 +132,7 @@ func (a *ToolOpsAgent) Run(ctx context.Context, instruction string, opts ...flow
 		schema.SystemMessage(a.currentSystemText()),
 		schema.UserMessage(instruction),
 	}
-	options, err := a.withWorkflowTools(ctx, opts)
-	if err != nil {
-		return nil, err
-	}
-	return a.runner.Generate(ctx, messages, options...)
+	return a.generate(ctx, "run", messages, opts...)
 }
 
 // Generate 使用已有消息继续一次 Agent 调用，供后续工作流恢复上下文时使用。
@@ -146,11 +143,36 @@ func (a *ToolOpsAgent) Generate(ctx context.Context, messages []*schema.Message,
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("agent messages are required")
 	}
+	return a.generate(ctx, "generate", a.withSystemMessage(messages), opts...)
+}
+
+func (a *ToolOpsAgent) generate(ctx context.Context, operation string, messages []*schema.Message, opts ...flowagent.AgentOption) (result *schema.Message, err error) {
+	initial := a.workflow.Snapshot()
+	ctx, run := observability.StartAgentRun(ctx, a.incidentID, operation, string(initial.State), messages)
+	defer func() {
+		final := a.workflow.Snapshot()
+		observability.FinishAgentRun(run, err, string(final.State), workflowTransitionsAfter(final.History, initial.Version), result)
+	}()
+
 	options, err := a.withWorkflowTools(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
-	return a.runner.Generate(ctx, a.withSystemMessage(messages), options...)
+	return a.runner.Generate(ctx, messages, options...)
+}
+
+func workflowTransitionsAfter(history []workflow.Transition, version uint64) []observability.WorkflowTransition {
+	result := make([]observability.WorkflowTransition, 0)
+	for _, transition := range history {
+		if transition.Version <= version {
+			continue
+		}
+		result = append(result, observability.WorkflowTransition{
+			From: string(transition.From), To: string(transition.To), Event: string(transition.Event),
+			Actor: string(transition.Actor), Version: transition.Version, At: transition.At,
+		})
+	}
+	return result
 }
 
 // Stream 以流式方式运行 Agent，主要用于命令行或管理界面展示。
@@ -161,11 +183,51 @@ func (a *ToolOpsAgent) Stream(ctx context.Context, messages []*schema.Message, o
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("agent messages are required")
 	}
+	messages = a.withSystemMessage(messages)
+	initial := a.workflow.Snapshot()
+	ctx, run := observability.StartAgentRun(ctx, a.incidentID, "stream", string(initial.State), messages)
 	options, err := a.withWorkflowTools(ctx, opts)
 	if err != nil {
+		observability.FinishAgentRun(run, err, string(initial.State), nil, nil)
 		return nil, err
 	}
-	return a.runner.Stream(ctx, a.withSystemMessage(messages), options...)
+	source, err := a.runner.Stream(ctx, messages, options...)
+	if err != nil {
+		final := a.workflow.Snapshot()
+		observability.FinishAgentRun(run, err, string(final.State), workflowTransitionsAfter(final.History, initial.Version), nil)
+		return nil, err
+	}
+	if run == nil {
+		return source, nil
+	}
+
+	// 用一个透传 Stream 把根 Span 的结束时间绑定到实际消费完成，而不是 Stream 方法返回时。
+	result, writer := schema.Pipe[*schema.Message](1)
+	go func() {
+		defer writer.Close()
+		defer source.Close()
+		var chunks []*schema.Message
+		var streamErr error
+		defer func() {
+			final := a.workflow.Snapshot()
+			observability.FinishAgentRun(run, streamErr, string(final.State), workflowTransitionsAfter(final.History, initial.Version), chunks)
+		}()
+		for {
+			chunk, recvErr := source.Recv()
+			if recvErr != nil {
+				if !errors.Is(recvErr, io.EOF) {
+					streamErr = recvErr
+					writer.Send(nil, recvErr)
+				}
+				return
+			}
+			chunks = append(chunks, chunk)
+			if writer.Send(chunk, nil) {
+				return
+			}
+		}
+	}()
+	return result, nil
 }
 
 func (a *ToolOpsAgent) withWorkflowTools(ctx context.Context, options []flowagent.AgentOption) ([]flowagent.AgentOption, error) {
@@ -174,10 +236,11 @@ func (a *ToolOpsAgent) withWorkflowTools(ctx context.Context, options []flowagen
 	if err != nil {
 		return nil, fmt.Errorf("build workflow tool options: %w", err)
 	}
-	tracingOption := flowagent.WithComposeOptions(compose.WithCallbacks(observability.NewEinoTracingHandler()))
 	result := make([]flowagent.AgentOption, 0, len(options)+len(policyOptions)+1)
 	result = append(result, options...)
-	result = append(result, tracingOption)
+	if handler := observability.EinoHandler(); handler != nil {
+		result = append(result, flowagent.WithComposeOptions(compose.WithCallbacks(handler)))
+	}
 	return append(result, policyOptions...), nil
 }
 

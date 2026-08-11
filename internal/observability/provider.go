@@ -1,141 +1,112 @@
-// Package observability 提供了基于 OpenTelemetry 的链路追踪能力。
-// 支持多种导出方式（stdout/jsonl/file/OTLP），可配置采样率和敏感信息脱敏。
-// 业务边界通过 OpenTelemetry 全局 API 获取 Tracer 并创建追踪区间。
-
+// Package observability 使用 CozeLoop 记录 ToolOps Agent、Eino Graph、模型和工具调用。
 package observability
 
 import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
-	"go.opentelemetry.io/otel"
-	otelattribute "go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/sdk/resource"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	loopcallback "github.com/cloudwego/eino-ext/callbacks/cozeloop"
+	"github.com/cloudwego/eino/callbacks"
+	cozeloop "github.com/coze-dev/cozeloop-go"
 )
 
 type providerState struct {
 	mu       sync.RWMutex
 	cfg      Config
-	tp       *sdktrace.TracerProvider
+	client   cozeloop.Client
+	handler  callbacks.Handler
 	redactor *Redactor
-	dirMgr   *traceDirectoryManager
 }
 
-var globalProvider = &providerState{}
+var globalProvider providerState
 
-// Init 初始化全局 observability provider。根据 Config 初始化全局状态。
-func Init(ctx context.Context, cfg Config) error {
+// Init 初始化 CozeLoop Client 和 Eino 官方 Callback。
+func Init(_ context.Context, cfg Config) error {
 	cfg = cfg.Normalize()
-
-	// 创建敏感信息脱敏器
 	redactor, err := NewRedactor(cfg.RedactionRules)
 	if err != nil {
-		return fmt.Errorf("create redactor: %w", err)
+		return fmt.Errorf("create CozeLoop redactor: %w", err)
 	}
-
-	var dirManager *traceDirectoryManager
 	if cfg.Enabled {
-		dirManager, err = newTraceDirectoryManager(cfg.TraceDir)
-		if err != nil {
-			return fmt.Errorf("create trace directory manager: %w", err)
+		if cfg.WorkspaceID == "" {
+			return fmt.Errorf("%s is required when CozeLoop is enabled", envWorkspaceID)
+		}
+		if !cfg.hasAuthentication() {
+			return fmt.Errorf("CozeLoop requires %s or complete JWT OAuth credentials", envAPIToken)
 		}
 	}
 
-	// 获取互斥锁，确保并发安全
 	globalProvider.mu.Lock()
 	defer globalProvider.mu.Unlock()
-
-	// 如果已有 Provider，先优雅关闭，避免资源泄漏
-	if globalProvider.tp != nil {
-		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		_ = globalProvider.tp.Shutdown(shutdownCtx)
-		globalProvider.tp = nil
+	if globalProvider.client != nil {
+		return fmt.Errorf("CozeLoop observability is already initialized")
 	}
-
-	// 保存配置和脱敏器
 	globalProvider.cfg = cfg
 	globalProvider.redactor = redactor
-	globalProvider.dirMgr = dirManager
-
-	// 未启用时，设置一个永不采样的 Provider，避免性能开销
 	if !cfg.Enabled {
-		otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.NeverSample())))
-		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 		return nil
 	}
 
-	// 根据配置创建导出器
-	spanProcessors := make([]sdktrace.TracerProviderOption, 0, len(cfg.Exporters)+2)
-	for _, kind := range cfg.Exporters {
-		exporter, err := buildSpanExporter(ctx, cfg, kind, redactor, dirManager)
-		if err != nil {
-			return fmt.Errorf("build exporter %s: %w", kind, err)
-		}
-		spanProcessors = append(spanProcessors, sdktrace.WithBatcher(exporter))
+	options := []cozeloop.Option{
+		cozeloop.WithWorkspaceID(cfg.WorkspaceID),
+		cozeloop.WithTraceTagTruncateConf(&cozeloop.TagTruncateConf{
+			NormalFieldMaxByte:      cfg.NormalMaxBytes,
+			InputOutputFieldMaxByte: cfg.InputOutputMaxBytes,
+		}),
 	}
-
-	// 创建 Resource，包含服务元信息（服务名、版本、环境）
-	res, err := resource.New(ctx,
-		resource.WithAttributes(
-			otelattribute.String("service.name", cfg.ServiceName),
-			otelattribute.String("service.version", cfg.ServiceVersion),
-			otelattribute.String("deployment.environment", cfg.Environment),
-		),
-	)
+	if cfg.APIBaseURL != "" {
+		options = append(options, cozeloop.WithAPIBaseURL(cfg.APIBaseURL))
+	}
+	if cfg.APIToken != "" {
+		options = append(options, cozeloop.WithAPIToken(cfg.APIToken))
+	} else {
+		options = append(options,
+			cozeloop.WithJWTOAuthClientID(cfg.JWTClientID),
+			cozeloop.WithJWTOAuthPrivateKey(cfg.JWTPrivateKey),
+			cozeloop.WithJWTOAuthPublicKeyID(cfg.JWTPublicKeyID),
+		)
+	}
+	client, err := cozeloop.NewClient(options...)
 	if err != nil {
-		return fmt.Errorf("build resource: %w", err)
+		return fmt.Errorf("create CozeLoop client: %w", err)
 	}
-
-	// 配置采样器：基于 TraceID 比例采样，继承父 Span 的采样决策
-	sampler := sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.SampleRate))
-	tp := sdktrace.NewTracerProvider(
-		append(spanProcessors,
-			sdktrace.WithSampler(sampler),
-			sdktrace.WithResource(res),
-		)...,
+	parser := newSafeDataParser(loopcallback.NewDefaultDataParser(cfg.AggregateOutput), redactor)
+	handler := loopcallback.NewLoopHandler(client,
+		loopcallback.WithCallbackDataParser(parser),
+		loopcallback.WithAggrMessageOutput(cfg.AggregateOutput),
 	)
-
-	// 设置全局 Provider 和 Propagator（用于 Context 传播）
-	globalProvider.tp = tp
-	otel.SetTracerProvider(tp)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
+	globalProvider.client = client
+	globalProvider.handler = newSafeEinoHandler(handler, redactor)
 	return nil
 }
 
-// Shutdown 关闭全局 observability provider。
+// Shutdown 强制上报队列中的 Span 并关闭 CozeLoop Client。
 func Shutdown(ctx context.Context) error {
 	globalProvider.mu.Lock()
-	defer globalProvider.mu.Unlock()
-	if globalProvider.tp == nil {
-		return nil
-	}
-	err := globalProvider.tp.Shutdown(ctx)
-	globalProvider.tp = nil
+	client := globalProvider.client
+	globalProvider.client = nil
+	globalProvider.handler = nil
 	globalProvider.redactor = nil
 	globalProvider.cfg = Config{}
-	globalProvider.dirMgr = nil
-	return err
+	globalProvider.mu.Unlock()
+	if client == nil {
+		return nil
+	}
+	client.Flush(ctx)
+	client.Close(ctx)
+	return ctx.Err()
 }
 
-func currentConfig() Config {
+// EinoHandler 返回当前 CozeLoop Eino Callback；未启用时返回 nil。
+func EinoHandler() callbacks.Handler {
 	globalProvider.mu.RLock()
 	defer globalProvider.mu.RUnlock()
-	return globalProvider.cfg
+	return globalProvider.handler
 }
 
-func currentRedactor() *Redactor {
+func providerSnapshot() (cozeloop.Client, Config, *Redactor) {
 	globalProvider.mu.RLock()
 	defer globalProvider.mu.RUnlock()
-	return globalProvider.redactor
-}
-
-func currentTraceDirectoryManager() *traceDirectoryManager {
-	globalProvider.mu.RLock()
-	defer globalProvider.mu.RUnlock()
-	return globalProvider.dirMgr
+	return globalProvider.client, globalProvider.cfg, globalProvider.redactor
 }
