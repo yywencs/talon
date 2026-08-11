@@ -80,7 +80,7 @@ var transitionRules = map[State]map[EventType]transitionRule{
 	StatePlanned: {
 		EventPlanApproved:     {to: StateRemediating, actors: actors(ActorWorkflow)},
 		EventApprovalRequired: {to: StateAwaitingApproval, actors: actors(ActorWorkflow)},
-		EventPlanRejected:     {to: StateInvestigating, actors: actors(ActorWorkflow, ActorHuman)},
+		EventPlanRejected:     {to: StateReinvestigating, actors: actors(ActorWorkflow, ActorHuman)},
 	},
 	StateAwaitingApproval: {
 		EventPlanApproved: {to: StateRemediating, actors: actors(ActorHuman)},

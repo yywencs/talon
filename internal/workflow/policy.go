@@ -76,6 +76,7 @@ var stateAgentActions = map[State]agentActionSet{
 func investigationActions() agentActionSet {
 	return agentActions(
 		AgentActionRead,
+		AgentActionQueryOperation,
 		AgentActionSubmitPlan,
 		AgentActionEscalate,
 	)

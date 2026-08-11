@@ -115,8 +115,8 @@ func TestIncidentWorkflowAgentActionWhitelist(t *testing.T) {
 
 	applyEvents(t, workflow, Event{Type: EventStartInvestigation, Actor: ActorController})
 	require.NoError(t, workflow.AuthorizeAgentAction(AgentActionRead))
+	require.NoError(t, workflow.AuthorizeAgentAction(AgentActionQueryOperation))
 	require.NoError(t, workflow.AuthorizeAgentAction(AgentActionSubmitPlan))
-	assert.ErrorIs(t, workflow.AuthorizeAgentAction(AgentActionQueryOperation), ErrAgentActionDenied)
 
 	applyEvents(t, workflow, Event{Type: EventPlanSubmitted, Actor: ActorAgent})
 	require.NoError(t, workflow.AuthorizeAgentAction(AgentActionRead))
@@ -137,6 +137,7 @@ func TestIncidentWorkflowAllowedAgentActionsAreStable(t *testing.T) {
 
 	assert.Equal(t, []AgentAction{
 		AgentActionEscalate,
+		AgentActionQueryOperation,
 		AgentActionRead,
 		AgentActionSubmitPlan,
 	}, workflow.AllowedAgentActions())

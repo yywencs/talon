@@ -52,13 +52,11 @@ func (p *PlanProcessor) DryRun(ctx context.Context) (workflow.PlanDryRun, error)
 
 	request := remediationDryRunRequest(snapshot.IncidentID, *snapshot.Plan)
 	operation, callErr := p.platform.ExecuteRemediation(ctx, request)
+	status, failure := analyzeDryRunResult(operation, callErr)
 	result := workflow.PlanDryRun{
 		PlanID: snapshot.Plan.ID, OperationID: operation.ID, IdempotencyKey: request.IdempotencyKey,
-		Status: dryRunStatus(operation.Status, callErr), OperationStatus: string(operation.Status),
-		Message: operation.Message, Result: cloneMap(operation.Result),
-	}
-	if callErr != nil {
-		result.Error = callErr.Error()
+		Status: status, OperationStatus: string(operation.Status), Message: operation.Message,
+		Failure: failure, Result: cloneMap(operation.Result),
 	}
 	recorded, recordErr := p.workflow.RecordPlanDryRun(result)
 	if recordErr != nil {
@@ -89,29 +87,57 @@ func remediationDryRunRequest(incidentID string, plan workflow.Plan) platform.Re
 	}
 }
 
-func dryRunStatus(status platform.OperationStatus, err error) workflow.PlanDryRunStatus {
+func analyzeDryRunResult(operation platform.Operation, err error) (workflow.PlanDryRunStatus, *workflow.PlanDryRunFailure) {
 	if err != nil {
-		if status == platform.OperationFailed || status == platform.OperationRejected || status == platform.OperationCancelled || isPlanDryRunDomainError(err) {
-			return workflow.PlanDryRunFailed
+		message := strings.TrimSpace(operation.Message)
+		if message == "" {
+			message = err.Error()
 		}
-		return workflow.PlanDryRunIndeterminate
+		switch {
+		case errors.Is(err, platform.ErrNotFound):
+			return failedPlanDryRun(workflow.PlanDryRunFailurePlanInvalid, "capability_not_found", message, workflow.PlanDryRunNextReplan)
+		case errors.Is(err, platform.ErrUnsupported):
+			return failedPlanDryRun(workflow.PlanDryRunFailurePlanInvalid, "capability_unsupported", message, workflow.PlanDryRunNextReplan)
+		case errors.Is(err, platform.ErrUnauthorized):
+			return failedPlanDryRun(workflow.PlanDryRunFailureAuthorizationRequired, "authorization_denied", message, workflow.PlanDryRunNextEscalate)
+		case errors.Is(err, platform.ErrConflict):
+			return failedPlanDryRun(workflow.PlanDryRunFailurePreconditionChanged, "state_conflict", message, workflow.PlanDryRunNextReinvestigate)
+		case errors.Is(err, platform.ErrPreconditionFailed):
+			return failedPlanDryRun(workflow.PlanDryRunFailurePreconditionChanged, "precondition_failed", message, workflow.PlanDryRunNextReinvestigate)
+		default:
+			return workflow.PlanDryRunIndeterminate, &workflow.PlanDryRunFailure{
+				Category: workflow.PlanDryRunFailurePlatformUnavailable, Code: "platform_unavailable",
+				Message: message, NextAction: workflow.PlanDryRunNextRetry, Retryable: true,
+			}
+		}
 	}
-	switch status {
+	message := strings.TrimSpace(operation.Message)
+	switch operation.Status {
 	case platform.OperationPending, platform.OperationRunning:
-		return workflow.PlanDryRunPending
+		return workflow.PlanDryRunPending, nil
 	case platform.OperationSucceeded:
-		return workflow.PlanDryRunSucceeded
+		return workflow.PlanDryRunSucceeded, nil
+	case platform.OperationRejected:
+		return failedPlanDryRun(workflow.PlanDryRunFailurePlanInvalid, "operation_rejected", message, workflow.PlanDryRunNextReplan)
+	case platform.OperationFailed:
+		return failedPlanDryRun(workflow.PlanDryRunFailureExecutionFailed, "operation_failed", message, workflow.PlanDryRunNextReinvestigate)
+	case platform.OperationCancelled:
+		return workflow.PlanDryRunIndeterminate, &workflow.PlanDryRunFailure{
+			Category: workflow.PlanDryRunFailurePlatformUnavailable, Code: "operation_cancelled",
+			Message: message, NextAction: workflow.PlanDryRunNextRetry, Retryable: true,
+		}
 	default:
-		return workflow.PlanDryRunFailed
+		return workflow.PlanDryRunIndeterminate, &workflow.PlanDryRunFailure{
+			Category: workflow.PlanDryRunFailurePlatformUnavailable, Code: "invalid_operation_status",
+			Message: message, NextAction: workflow.PlanDryRunNextRetry, Retryable: true,
+		}
 	}
 }
 
-func isPlanDryRunDomainError(err error) bool {
-	return errors.Is(err, platform.ErrNotFound) ||
-		errors.Is(err, platform.ErrUnauthorized) ||
-		errors.Is(err, platform.ErrConflict) ||
-		errors.Is(err, platform.ErrPreconditionFailed) ||
-		errors.Is(err, platform.ErrUnsupported)
+func failedPlanDryRun(category workflow.PlanDryRunFailureCategory, code, message string, next workflow.PlanDryRunNextAction) (workflow.PlanDryRunStatus, *workflow.PlanDryRunFailure) {
+	return workflow.PlanDryRunFailed, &workflow.PlanDryRunFailure{
+		Category: category, Code: code, Message: message, NextAction: next,
+	}
 }
 
 func cloneMap(value map[string]any) map[string]any {

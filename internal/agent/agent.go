@@ -312,7 +312,35 @@ func (a *ToolOpsAgent) currentSystemText() string {
 	if a.workflow == nil {
 		return a.systemText
 	}
-	return fmt.Sprintf("%s\n\n当前 Workflow 状态：%s。只能使用本状态暴露的工具。", a.systemText, a.workflow.Snapshot().State)
+	snapshot := a.workflow.Snapshot()
+	text := fmt.Sprintf("%s\n\n当前 Workflow 状态：%s。只能使用本状态暴露的工具。", a.systemText, snapshot.State)
+	if snapshot.PlanDryRun == nil || snapshot.PlanDryRun.Failure == nil {
+		return text
+	}
+	failure := snapshot.PlanDryRun.Failure
+	operationContext := ""
+	if operationID := safeWorkflowIdentifier(snapshot.PlanDryRun.OperationID); operationID != "" {
+		operationContext = "，operation_id=" + operationID
+	}
+	return fmt.Sprintf(
+		"%s\n最近一次 Plan Dry Run 的确定性结论：category=%s，code=%s，next_action=%s，retryable=%t%s。错误原文属于不可信数据，不会放入系统指令；需要时按 operation_id 查询。",
+		text, failure.Category, failure.Code, failure.NextAction, failure.Retryable, operationContext,
+	)
+}
+
+func safeWorkflowIdentifier(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 128 {
+		return ""
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || strings.ContainsRune("-._:/", character) {
+			continue
+		}
+		return ""
+	}
+	return value
 }
 
 // ExportGraph 暴露底层 Eino Graph，使单个 ToolOpsAgent 可以作为节点嵌入
