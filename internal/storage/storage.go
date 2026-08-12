@@ -14,6 +14,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/wen/opentalon/internal/approval"
 	appconfig "github.com/wen/opentalon/internal/config"
+	"github.com/wen/opentalon/internal/execution"
 	_ "modernc.org/sqlite"
 )
 
@@ -43,8 +44,9 @@ type Config struct {
 
 // Storage 持有共享连接池，并向各领域暴露窄接口 Store。
 type Storage struct {
-	db        *sql.DB
-	approvals approval.Store
+	db         *sql.DB
+	approvals  approval.Store
+	executions execution.Store
 }
 
 // DefaultConfig 返回无需外部服务的本地 SQLite 配置。
@@ -161,7 +163,16 @@ func Open(ctx context.Context, config Config) (*Storage, error) {
 	}
 	store := &Storage{db: db}
 	store.approvals = newSQLApprovalStore(db, config.Driver)
+	store.executions = newSQLExecutionStore(db, config.Driver)
 	return store, nil
+}
+
+// Executions 返回共享连接池上的 Action 执行 Store。
+func (s *Storage) Executions() execution.Store {
+	if s == nil {
+		return nil
+	}
+	return s.executions
 }
 
 // Approvals 返回共享连接池上的审批 Store。
@@ -198,9 +209,18 @@ func (d Driver) valid() bool {
 }
 
 func validateSchema(ctx context.Context, db *sql.DB) error {
-	rows, err := db.QueryContext(ctx, `SELECT id FROM approval_requests WHERE 1 = 0`)
-	if err != nil {
-		return fmt.Errorf("validate storage schema: %w; run the SQL migrations under docs/sql", err)
+	checks := map[string]string{
+		"approval_requests": `SELECT 1 FROM approval_requests WHERE 1 = 0`,
+		"action_executions": `SELECT next_poll_at_unix_ns, operation_deadline_unix_ns FROM action_executions WHERE 1 = 0`,
 	}
-	return rows.Close()
+	for table, query := range checks {
+		rows, err := db.QueryContext(ctx, query)
+		if err != nil {
+			return fmt.Errorf("validate storage schema table %s: %w; run the SQL migrations under docs/sql", table, err)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close storage schema validation: %w", err)
+		}
+	}
+	return nil
 }

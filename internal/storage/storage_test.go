@@ -77,6 +77,7 @@ func TestSQLiteApprovalStoreContract(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = storage.Close() })
 	runApprovalStoreContract(t, storage.Approvals(), "sqlite")
+	runExecutionStoreContract(t, storage.Executions(), "sqlite")
 }
 
 // PostgreSQL 契约测试默认跳过；设置 TALON_TEST_POSTGRES_DSN 后会连接真实测试库。
@@ -90,6 +91,7 @@ func TestPostgresApprovalStoreContract(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = storage.Close() })
 	runApprovalStoreContract(t, storage.Approvals(), "postgres-"+time.Now().UTC().Format("150405.000000000"))
+	runExecutionStoreContract(t, storage.Executions(), "postgres-"+time.Now().UTC().Format("150405.000000000"))
 }
 
 func runApprovalStoreContract(t *testing.T, store approval.Store, prefix string) {

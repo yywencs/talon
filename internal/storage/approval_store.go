@@ -127,9 +127,10 @@ WHERE id = ? AND plan_id = ? AND action_id = ? AND action_digest = ? AND status 
 }
 
 func (s *sqlApprovalStore) bind(query string) string {
-	if s.driver != DriverPostgres {
-		return query
-	}
+	return bindSQL(s.driver, query)
+}
+
+func bindPostgres(query string) string {
 	var result strings.Builder
 	index := 1
 	for _, character := range query {
