@@ -7,9 +7,42 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wen/opentalon/internal/approval"
 	"github.com/wen/opentalon/internal/platform"
 	"github.com/wen/opentalon/internal/workflow"
 )
+
+func TestPlanPolicyPersistsAndDecidesActionApproval(t *testing.T) {
+	processor, instance, service := processorWithSuccessfulDryRun(t, platform.RemediationCapability{
+		Name: "rollback_mapping", Risk: "medium", RequiresApproval: true,
+	})
+	store, err := approval.NewSQLiteStore(t.TempDir() + "/approvals.db")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	processor, err = NewPlanProcessor(service, instance, WithApprovalStore(store))
+	require.NoError(t, err)
+
+	decisions, err := processor.EvaluatePolicy(context.Background())
+	require.NoError(t, err)
+	require.Len(t, decisions, 1)
+	pending, err := processor.ListPendingApprovals(context.Background())
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	assert.Equal(t, decisions[0].ActionID, pending[0].ActionID)
+	assert.Equal(t, decisions[0].ActionDigest, pending[0].ActionDigest)
+	assert.Equal(t, "rollback_mapping", pending[0].ToolName)
+
+	_, err = processor.Approve(context.Background(), approvalRequest(decisions[0], "oncall", "verified"))
+	require.NoError(t, err)
+	assert.Equal(t, workflow.StateRemediating, instance.Snapshot().State)
+	pending, err = processor.ListPendingApprovals(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, pending)
+	persisted, err := store.Get(context.Background(), approval.RequestID(decisions[0].ActionID))
+	require.NoError(t, err)
+	assert.Equal(t, approval.StatusApproved, persisted.Status)
+	assert.Equal(t, "oncall", persisted.DecidedBy)
+}
 
 func TestPlanPolicyAutoApprovesExplicitLowRiskAction(t *testing.T) {
 	processor, instance, service := processorWithSuccessfulDryRun(t, platform.RemediationCapability{
@@ -51,7 +84,7 @@ func TestPlanPolicyRequiresApprovalAndBindsDecisionToAction(t *testing.T) {
 	_, err = processor.Approve(context.Background(), ApprovalRequest{
 		PlanID: decision.PlanID, ActionID: decision.ActionID, ActionDigest: "tampered-digest", Approver: "oncall@example.com",
 	})
-	require.ErrorContains(t, err, "does not match a frozen action")
+	require.ErrorContains(t, err, "does not match persisted action")
 
 	request := approvalRequest(decision, "oncall@example.com", "rollback scope verified")
 	approval, err := processor.Approve(context.Background(), request)
@@ -66,7 +99,7 @@ func TestPlanPolicyRequiresApprovalAndBindsDecisionToAction(t *testing.T) {
 	assert.Equal(t, approval, repeated)
 	request.Approver = "different@example.com"
 	_, err = processor.Approve(context.Background(), request)
-	require.ErrorContains(t, err, "immutable decision")
+	require.ErrorContains(t, err, "already decided")
 }
 
 func TestPlanPolicyWaitsForEveryRequiredActionApproval(t *testing.T) {
@@ -81,7 +114,10 @@ func TestPlanPolicyWaitsForEveryRequiredActionApproval(t *testing.T) {
 			{Name: "restart_service", Risk: "high", RequiresApproval: true},
 		},
 	}
-	processor, err := NewPlanProcessor(service, instance)
+	store, err := approval.NewSQLiteStore(t.TempDir() + "/approvals.db")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	processor, err := NewPlanProcessor(service, instance, WithApprovalStore(store))
 	require.NoError(t, err)
 	results, err := processor.DryRun(context.Background())
 	require.NoError(t, err)
@@ -156,6 +192,25 @@ func TestPlanPolicyRequiresEveryActionDryRun(t *testing.T) {
 	assert.Zero(t, service.capabilitiesCalls)
 }
 
+func TestPlanPolicyRefusesHumanApprovalWithoutPersistentStore(t *testing.T) {
+	instance := plannedWorkflow(t, "incident-001", map[string]any{"idempotency_key": "rollback-001"})
+	service := &recordingPlatform{
+		operation: platform.Operation{ID: "dry-run-001", Status: platform.OperationSucceeded},
+		capabilities: []platform.RemediationCapability{{
+			Name: "rollback_mapping", Risk: "medium", RequiresApproval: true,
+		}},
+	}
+	processor, err := NewPlanProcessor(service, instance)
+	require.NoError(t, err)
+	_, err = processor.DryRun(context.Background())
+	require.NoError(t, err)
+
+	_, err = processor.EvaluatePolicy(context.Background())
+	require.ErrorContains(t, err, "approval store is required")
+	assert.Equal(t, workflow.StatePlanned, instance.Snapshot().State)
+	assert.Empty(t, instance.Snapshot().PlanPolicies)
+}
+
 func TestPlanPolicyPlatformFailureKeepsPlanPlanned(t *testing.T) {
 	processor, instance, service := processorWithSuccessfulDryRun(t)
 	service.capabilitiesErr = errors.New("catalog unavailable")
@@ -176,7 +231,10 @@ func processorWithSuccessfulDryRun(t *testing.T, capabilities ...platform.Remedi
 		operation:    platform.Operation{ID: "operation-dry-run-001", Status: platform.OperationSucceeded, Message: "dry run completed"},
 		capabilities: capabilities,
 	}
-	processor, err := NewPlanProcessor(service, instance)
+	store, err := approval.NewSQLiteStore(t.TempDir() + "/approvals.db")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+	processor, err := NewPlanProcessor(service, instance, WithApprovalStore(store))
 	require.NoError(t, err)
 	_, err = processor.DryRun(context.Background())
 	require.NoError(t, err)

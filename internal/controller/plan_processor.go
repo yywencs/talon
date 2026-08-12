@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/wen/opentalon/internal/approval"
 	"github.com/wen/opentalon/internal/platform"
 	"github.com/wen/opentalon/internal/workflow"
 )
@@ -15,19 +16,43 @@ var ErrPlanDryRunFailed = errors.New("plan dry run failed")
 
 // PlanProcessor 负责执行已经由 Workflow 冻结的 Plan，不让 Agent 直接调用生产写操作。
 type PlanProcessor struct {
-	platform platform.ToolOpsPlatform
-	workflow *workflow.IncidentWorkflow
+	platform      platform.ToolOpsPlatform
+	workflow      *workflow.IncidentWorkflow
+	approvalStore approval.Store
+}
+
+// PlanProcessorOption 配置 PlanProcessor 的可选控制面能力。
+type PlanProcessorOption func(*PlanProcessor) error
+
+// WithApprovalStore 接入持久化审批收件箱。
+func WithApprovalStore(store approval.Store) PlanProcessorOption {
+	return func(processor *PlanProcessor) error {
+		if store == nil {
+			return fmt.Errorf("approval store is required")
+		}
+		processor.approvalStore = store
+		return nil
+	}
 }
 
 // NewPlanProcessor 创建 Plan 执行编排器。
-func NewPlanProcessor(service platform.ToolOpsPlatform, instance *workflow.IncidentWorkflow) (*PlanProcessor, error) {
+func NewPlanProcessor(service platform.ToolOpsPlatform, instance *workflow.IncidentWorkflow, options ...PlanProcessorOption) (*PlanProcessor, error) {
 	if service == nil {
 		return nil, fmt.Errorf("toolops platform is required")
 	}
 	if instance == nil {
 		return nil, fmt.Errorf("incident workflow is required")
 	}
-	return &PlanProcessor{platform: service, workflow: instance}, nil
+	processor := &PlanProcessor{platform: service, workflow: instance}
+	for _, option := range options {
+		if option == nil {
+			continue
+		}
+		if err := option(processor); err != nil {
+			return nil, fmt.Errorf("configure plan processor: %w", err)
+		}
+	}
+	return processor, nil
 }
 
 // DryRun 按顺序对当前冻结 Plan 的每个 Action 做无副作用预执行。
