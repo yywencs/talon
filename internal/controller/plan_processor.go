@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/wen/opentalon/internal/approval"
+	"github.com/wen/opentalon/internal/execution"
 	"github.com/wen/opentalon/internal/platform"
 	"github.com/wen/opentalon/internal/workflow"
 )
@@ -16,9 +18,24 @@ var ErrPlanDryRunFailed = errors.New("plan dry run failed")
 
 // PlanProcessor 负责执行已经由 Workflow 冻结的 Plan，不让 Agent 直接调用生产写操作。
 type PlanProcessor struct {
-	platform      platform.ToolOpsPlatform
-	workflow      *workflow.IncidentWorkflow
-	approvalStore approval.Store
+	platform         platform.ToolOpsPlatform
+	workflow         *workflow.IncidentWorkflow
+	approvalStore    approval.Store
+	executionStore   execution.Store
+	workerID         string
+	leaseDuration    time.Duration
+	submitTimeout    time.Duration
+	pollInitial      time.Duration
+	pollMaximum      time.Duration
+	operationTimeout time.Duration
+}
+
+// AsyncExecutionConfig 配置异步修复提交、轮询退避和 Operation 总超时。
+type AsyncExecutionConfig struct {
+	SubmitTimeout       time.Duration
+	InitialPollInterval time.Duration
+	MaxPollInterval     time.Duration
+	OperationTimeout    time.Duration
 }
 
 // PlanProcessorOption 配置 PlanProcessor 的可选控制面能力。
@@ -35,6 +52,40 @@ func WithApprovalStore(store approval.Store) PlanProcessorOption {
 	}
 }
 
+// WithExecutionStore 接入 Action 执行记录、Worker 身份和租约时长。
+func WithExecutionStore(store execution.Store, workerID string, leaseDuration time.Duration) PlanProcessorOption {
+	return func(processor *PlanProcessor) error {
+		if store == nil {
+			return fmt.Errorf("execution store is required")
+		}
+		if strings.TrimSpace(workerID) == "" {
+			return fmt.Errorf("execution worker ID is required")
+		}
+		if leaseDuration <= 0 {
+			return fmt.Errorf("execution lease duration must be positive")
+		}
+		processor.executionStore = store
+		processor.workerID = strings.TrimSpace(workerID)
+		processor.leaseDuration = leaseDuration
+		return nil
+	}
+}
+
+// WithAsyncExecution 配置“短同步提交 + 异步轮询”的时间边界。
+func WithAsyncExecution(config AsyncExecutionConfig) PlanProcessorOption {
+	return func(processor *PlanProcessor) error {
+		if config.SubmitTimeout <= 0 || config.InitialPollInterval <= 0 ||
+			config.MaxPollInterval < config.InitialPollInterval || config.OperationTimeout <= 0 {
+			return fmt.Errorf("async execution durations are invalid")
+		}
+		processor.submitTimeout = config.SubmitTimeout
+		processor.pollInitial = config.InitialPollInterval
+		processor.pollMaximum = config.MaxPollInterval
+		processor.operationTimeout = config.OperationTimeout
+		return nil
+	}
+}
+
 // NewPlanProcessor 创建 Plan 执行编排器。
 func NewPlanProcessor(service platform.ToolOpsPlatform, instance *workflow.IncidentWorkflow, options ...PlanProcessorOption) (*PlanProcessor, error) {
 	if service == nil {
@@ -43,7 +94,11 @@ func NewPlanProcessor(service platform.ToolOpsPlatform, instance *workflow.Incid
 	if instance == nil {
 		return nil, fmt.Errorf("incident workflow is required")
 	}
-	processor := &PlanProcessor{platform: service, workflow: instance}
+	processor := &PlanProcessor{
+		platform: service, workflow: instance,
+		submitTimeout: 10 * time.Second, pollInitial: 2 * time.Second,
+		pollMaximum: 30 * time.Second, operationTimeout: 10 * time.Minute,
+	}
 	for _, option := range options {
 		if option == nil {
 			continue
