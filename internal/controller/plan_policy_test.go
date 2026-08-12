@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/wen/opentalon/internal/approval"
 	"github.com/wen/opentalon/internal/platform"
+	storagepkg "github.com/wen/opentalon/internal/storage"
 	"github.com/wen/opentalon/internal/workflow"
 )
 
@@ -16,10 +17,10 @@ func TestPlanPolicyPersistsAndDecidesActionApproval(t *testing.T) {
 	processor, instance, service := processorWithSuccessfulDryRun(t, platform.RemediationCapability{
 		Name: "rollback_mapping", Risk: "medium", RequiresApproval: true,
 	})
-	store, err := approval.NewSQLiteStore(t.TempDir() + "/approvals.db")
+	database, err := storagepkg.OpenSQLite(context.Background(), t.TempDir()+"/approvals.db")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
-	processor, err = NewPlanProcessor(service, instance, WithApprovalStore(store))
+	t.Cleanup(func() { _ = database.Close() })
+	processor, err = NewPlanProcessor(service, instance, WithApprovalStore(database.Approvals()))
 	require.NoError(t, err)
 
 	decisions, err := processor.EvaluatePolicy(context.Background())
@@ -38,7 +39,7 @@ func TestPlanPolicyPersistsAndDecidesActionApproval(t *testing.T) {
 	pending, err = processor.ListPendingApprovals(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, pending)
-	persisted, err := store.Get(context.Background(), approval.RequestID(decisions[0].ActionID))
+	persisted, err := database.Approvals().Get(context.Background(), approval.RequestID(decisions[0].ActionID))
 	require.NoError(t, err)
 	assert.Equal(t, approval.StatusApproved, persisted.Status)
 	assert.Equal(t, "oncall", persisted.DecidedBy)
@@ -114,10 +115,10 @@ func TestPlanPolicyWaitsForEveryRequiredActionApproval(t *testing.T) {
 			{Name: "restart_service", Risk: "high", RequiresApproval: true},
 		},
 	}
-	store, err := approval.NewSQLiteStore(t.TempDir() + "/approvals.db")
+	database, err := storagepkg.OpenSQLite(context.Background(), t.TempDir()+"/approvals.db")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
-	processor, err := NewPlanProcessor(service, instance, WithApprovalStore(store))
+	t.Cleanup(func() { _ = database.Close() })
+	processor, err := NewPlanProcessor(service, instance, WithApprovalStore(database.Approvals()))
 	require.NoError(t, err)
 	results, err := processor.DryRun(context.Background())
 	require.NoError(t, err)
@@ -231,10 +232,10 @@ func processorWithSuccessfulDryRun(t *testing.T, capabilities ...platform.Remedi
 		operation:    platform.Operation{ID: "operation-dry-run-001", Status: platform.OperationSucceeded, Message: "dry run completed"},
 		capabilities: capabilities,
 	}
-	store, err := approval.NewSQLiteStore(t.TempDir() + "/approvals.db")
+	database, err := storagepkg.OpenSQLite(context.Background(), t.TempDir()+"/approvals.db")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = store.Close() })
-	processor, err := NewPlanProcessor(service, instance, WithApprovalStore(store))
+	t.Cleanup(func() { _ = database.Close() })
+	processor, err := NewPlanProcessor(service, instance, WithApprovalStore(database.Approvals()))
 	require.NoError(t, err)
 	_, err = processor.DryRun(context.Background())
 	require.NoError(t, err)
