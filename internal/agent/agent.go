@@ -118,6 +118,13 @@ func (a *ToolOpsAgent) IncidentID() string {
 	return a.incidentID
 }
 
+// Investigate 实现顶层 IncidentController 所需的最小调查接口。
+// Controller 只依赖 Agent 是否通过工具推动了 Workflow，不解析自然语言回答。
+func (a *ToolOpsAgent) Investigate(ctx context.Context, instruction string) error {
+	_, err := a.Run(ctx, instruction)
+	return err
+}
+
 // Run 使用一条工作流指令启动一次 Agent 调用。
 // instruction 为空时，Agent 默认开始调查当前 Incident。
 func (a *ToolOpsAgent) Run(ctx context.Context, instruction string, opts ...flowagent.AgentOption) (*schema.Message, error) {

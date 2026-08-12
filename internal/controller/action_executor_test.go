@@ -18,16 +18,17 @@ import (
 
 type idempotentExecutionPlatform struct {
 	platform.ToolOpsPlatform
-	mu             sync.Mutex
-	capabilities   []platform.RemediationCapability
-	operations     map[string]platform.Operation
-	executeCalls   int
-	sideEffects    int
-	failFirstCall  bool
-	async          bool
-	stayPending    bool
-	blockSubmit    bool
-	executionTools []string
+	mu              sync.Mutex
+	capabilities    []platform.RemediationCapability
+	operations      map[string]platform.Operation
+	executeCalls    int
+	sideEffects     int
+	failFirstCall   bool
+	async           bool
+	stayPending     bool
+	blockSubmit     bool
+	executionStatus platform.OperationStatus
+	executionTools  []string
 }
 
 func (p *idempotentExecutionPlatform) GetRemediationCapabilities(context.Context, platform.StateQuery) ([]platform.RemediationCapability, error) {
@@ -55,6 +56,9 @@ func (p *idempotentExecutionPlatform) ExecuteRemediation(ctx context.Context, re
 	p.sideEffects++
 	p.executionTools = append(p.executionTools, request.ToolName)
 	status := platform.OperationSucceeded
+	if p.executionStatus != "" {
+		status = p.executionStatus
+	}
 	if p.async {
 		status = platform.OperationPending
 	}
