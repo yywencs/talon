@@ -39,7 +39,7 @@ func (e *captureExporter) snapshot() []*entity.UploadSpan {
 	return append([]*entity.UploadSpan(nil), e.spans...)
 }
 
-func TestAgentAndEinoSpansUseOneRedactedTrace(t *testing.T) {
+func TestIncidentCallbackAgentAndEinoSpansUseOneRedactedTrace(t *testing.T) {
 	require.NoError(t, Shutdown(context.Background()))
 	exporter := &captureExporter{}
 	client, err := cozeloop.NewClient(
@@ -78,11 +78,14 @@ func TestAgentAndEinoSpansUseOneRedactedTrace(t *testing.T) {
 		require.NoError(t, Shutdown(shutdownCtx))
 	})
 
-	ctx, run := StartAgentRun(context.Background(), "incident-001", "run", "investigating", map[string]any{
+	ctx, finishIncident := BeginCallback(context.Background(), "toolops.incident.run", map[string]any{
+		"incident_id": "incident-001",
+	})
+	agentCtx, run := StartAgentRun(ctx, "incident-001", "run", "investigating", map[string]any{
 		"authorization": "Bearer agent-root-secret",
 	})
 	info := &callbacks.RunInfo{Name: "ToolOpsModel", Type: "OpenAI", Component: components.ComponentOfChatModel}
-	modelCtx := handler.OnStart(ctx, info, &model.CallbackInput{
+	modelCtx := handler.OnStart(agentCtx, info, &model.CallbackInput{
 		Messages: []*schema.Message{schema.UserMessage("Authorization: Bearer model-input-secret")},
 		Config:   &model.Config{Model: "deepseek-test"},
 	})
@@ -97,6 +100,12 @@ func TestAgentAndEinoSpansUseOneRedactedTrace(t *testing.T) {
 	FinishAgentRun(run, nil, "planned", []WorkflowTransition{{
 		From: "investigating", To: "planned", Event: "plan_submitted", Actor: "agent", Version: 2,
 	}}, map[string]any{"result": "Bearer agent-output-secret"})
+	_, err = RunCallback(ctx, "toolops.plan.dry_run", map[string]any{"plan_id": "plan-001"},
+		func(context.Context) (map[string]any, error) {
+			return map[string]any{"status": "succeeded"}, nil
+		})
+	require.NoError(t, err)
+	finishIncident(map[string]any{"state": "resolved"}, nil)
 
 	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -104,26 +113,37 @@ func TestAgentAndEinoSpansUseOneRedactedTrace(t *testing.T) {
 	require.NoError(t, flushCtx.Err())
 
 	spans := exporter.snapshot()
-	require.Len(t, spans, 2)
-	var root, chat *entity.UploadSpan
+	require.Len(t, spans, 4)
+	var incident, agentRun, dryRun, chat *entity.UploadSpan
 	for _, span := range spans {
 		switch span.SpanName {
+		case "toolops.incident.run":
+			incident = span
 		case "toolops.agent.run":
-			root = span
+			agentRun = span
+		case "toolops.plan.dry_run":
+			dryRun = span
 		case "ToolOpsModel":
 			chat = span
 		}
 	}
-	require.NotNil(t, root)
+	require.NotNil(t, incident)
+	require.NotNil(t, agentRun)
+	require.NotNil(t, dryRun)
 	require.NotNil(t, chat)
-	assert.Equal(t, "agent", root.SpanType)
-	assert.Equal(t, root.TraceID, chat.TraceID)
-	assert.Equal(t, root.SpanID, chat.ParentID)
-	assert.Equal(t, "talon-observability-test", root.ServiceName)
-	assert.Contains(t, root.Input, defaultRedactionReplacement)
-	assert.Contains(t, root.Output, defaultRedactionReplacement)
-	assert.NotContains(t, root.Input+root.Output, "agent-root-secret")
-	assert.NotContains(t, root.Input+root.Output, "agent-output-secret")
+	assert.Equal(t, "Lambda", incident.SpanType)
+	assert.Equal(t, "agent", agentRun.SpanType)
+	assert.Equal(t, incident.TraceID, agentRun.TraceID)
+	assert.Equal(t, incident.SpanID, agentRun.ParentID)
+	assert.Equal(t, incident.TraceID, dryRun.TraceID)
+	assert.Equal(t, incident.SpanID, dryRun.ParentID)
+	assert.Equal(t, agentRun.TraceID, chat.TraceID)
+	assert.Equal(t, agentRun.SpanID, chat.ParentID)
+	assert.Equal(t, "talon-observability-test", agentRun.ServiceName)
+	assert.Contains(t, agentRun.Input, defaultRedactionReplacement)
+	assert.Contains(t, agentRun.Output, defaultRedactionReplacement)
+	assert.NotContains(t, agentRun.Input+agentRun.Output, "agent-root-secret")
+	assert.NotContains(t, agentRun.Input+agentRun.Output, "agent-output-secret")
 	assert.Contains(t, chat.Input, defaultRedactionReplacement)
 	assert.Contains(t, chat.Output, defaultRedactionReplacement)
 	assert.NotContains(t, chat.Input+chat.Output, "model-input-secret")

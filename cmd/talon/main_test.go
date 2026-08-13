@@ -1,0 +1,32 @@
+package main
+
+import (
+	"errors"
+	"flag"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestParseOptionsUsesRunnableDefaults(t *testing.T) {
+	result, err := parseOptions(nil)
+	require.NoError(t, err)
+	assert.Equal(t, "data/toolops-v1", result.datasetRoot)
+	assert.Equal(t, "mapping-regression-rollback-001", result.scenarioID)
+	assert.True(t, result.autoApprove)
+	assert.Equal(t, 5*time.Minute, result.timeout)
+}
+
+func TestParseOptionsRejectsInvalidLimits(t *testing.T) {
+	_, err := parseOptions([]string{"--timeout=0s"})
+	require.EqualError(t, err, "timeout must be positive")
+	_, err = parseOptions([]string{"--max-agent-steps=0"})
+	require.EqualError(t, err, "max-agent-steps must be positive")
+}
+
+func TestParseOptionsSupportsHelp(t *testing.T) {
+	_, err := parseOptions([]string{"--help"})
+	assert.True(t, errors.Is(err, flag.ErrHelp))
+}

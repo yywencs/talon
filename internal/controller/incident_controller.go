@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wen/opentalon/internal/observability"
 	"github.com/wen/opentalon/internal/workflow"
 )
 
@@ -134,7 +135,7 @@ func (c *IncidentController) Run(ctx context.Context) (IncidentRunResult, error)
 			}
 
 		case workflow.StatePlanned:
-			if _, err := c.planProcessor.DryRun(ctx); err != nil {
+			if _, err := observability.RunCallback(ctx, "toolops.plan.dry_run", before, c.planProcessor.DryRun); err != nil {
 				after := c.workflow.Snapshot()
 				if errors.Is(err, ErrPlanDryRunFailed) && after.State != workflow.StatePlanned {
 					continue
@@ -144,12 +145,16 @@ func (c *IncidentController) Run(ctx context.Context) (IncidentRunResult, error)
 			if !allPlanDryRunsSucceeded(c.workflow.Snapshot()) {
 				return c.result("", advances), fmt.Errorf("%w: plan dry run is still pending", ErrControllerNoProgress)
 			}
-			if _, err := c.planProcessor.EvaluatePolicy(ctx); err != nil {
+			if _, err := observability.RunCallback(ctx, "toolops.plan.policy", c.workflow.Snapshot(), c.planProcessor.EvaluatePolicy); err != nil {
 				return c.result("", advances), fmt.Errorf("evaluate incident plan policy: %w", err)
 			}
 
 		case workflow.StateRemediating:
-			if err := c.actionWorker.Run(ctx); err != nil {
+			_, err := observability.RunCallback(ctx, "toolops.remediation.execute", before, func(ctx context.Context) (workflow.Snapshot, error) {
+				err := c.actionWorker.Run(ctx)
+				return c.workflow.Snapshot(), err
+			})
+			if err != nil {
 				after := c.workflow.Snapshot()
 				if after.State == workflow.StateReinvestigating || after.State == workflow.StateEscalated {
 					continue
@@ -160,7 +165,7 @@ func (c *IncidentController) Run(ctx context.Context) (IncidentRunResult, error)
 		case workflow.StateAwaitingApproval:
 			return c.result(StopAwaitingApproval, advances), nil
 		case workflow.StateProbing:
-			if _, err := c.probeProcessor.Run(ctx); err != nil {
+			if _, err := observability.RunCallback(ctx, "toolops.probe.run", before, c.probeProcessor.Run); err != nil {
 				after := c.workflow.Snapshot()
 				if after.State == workflow.StateReinvestigating || after.State == workflow.StateEscalated {
 					continue
@@ -168,7 +173,7 @@ func (c *IncidentController) Run(ctx context.Context) (IncidentRunResult, error)
 				return c.result("", advances), fmt.Errorf("run traffic probe: %w", err)
 			}
 		case workflow.StateRecovering:
-			if _, err := c.recoveryProcessor.Run(ctx); err != nil {
+			if _, err := observability.RunCallback(ctx, "toolops.recovery.run", before, c.recoveryProcessor.Run); err != nil {
 				after := c.workflow.Snapshot()
 				if after.State == workflow.StateReinvestigating || after.State == workflow.StateEscalated {
 					continue
