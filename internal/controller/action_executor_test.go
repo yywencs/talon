@@ -18,17 +18,21 @@ import (
 
 type idempotentExecutionPlatform struct {
 	platform.ToolOpsPlatform
-	mu              sync.Mutex
-	capabilities    []platform.RemediationCapability
-	operations      map[string]platform.Operation
-	executeCalls    int
-	sideEffects     int
-	failFirstCall   bool
-	async           bool
-	stayPending     bool
-	blockSubmit     bool
-	executionStatus platform.OperationStatus
-	executionTools  []string
+	mu               sync.Mutex
+	capabilities     []platform.RemediationCapability
+	operations       map[string]platform.Operation
+	executeCalls     int
+	sideEffects      int
+	failFirstCall    bool
+	async            bool
+	stayPending      bool
+	blockSubmit      bool
+	executionStatus  platform.OperationStatus
+	executionTools   []string
+	probeOutcome     string
+	probeAsync       bool
+	probeStayPending bool
+	probeCalls       int
 }
 
 func (p *idempotentExecutionPlatform) GetRemediationCapabilities(context.Context, platform.StateQuery) ([]platform.RemediationCapability, error) {
@@ -74,13 +78,48 @@ func (p *idempotentExecutionPlatform) ExecuteRemediation(ctx context.Context, re
 	return operation, nil
 }
 
+func (p *idempotentExecutionPlatform) RequestProbe(_ context.Context, request platform.ProbeRequest) (platform.Operation, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.probeCalls++
+	if existing, ok := p.operations[request.IdempotencyKey]; ok {
+		return existing, nil
+	}
+	outcome := p.probeOutcome
+	if outcome == "" {
+		outcome = "healthy"
+	}
+	status := platform.OperationSucceeded
+	result := map[string]any{"outcome": outcome}
+	if p.probeAsync {
+		status = platform.OperationPending
+		result = map[string]any{"outcome": "pending"}
+	}
+	operation := platform.Operation{
+		ID: "probe-" + request.RouteID, IncidentID: request.IncidentID,
+		Kind: platform.OperationProbe, Name: "request_probe", Status: status,
+		IdempotencyKey: request.IdempotencyKey, Result: result,
+	}
+	p.operations[request.IdempotencyKey] = operation
+	return operation, nil
+}
+
 func (p *idempotentExecutionPlatform) GetOperation(_ context.Context, query platform.OperationQuery) (platform.Operation, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for key, operation := range p.operations {
 		if operation.ID == query.OperationID {
-			if p.async && !p.stayPending && operation.Status == platform.OperationPending {
+			if operation.Kind == platform.OperationRemediation && p.async && !p.stayPending && operation.Status == platform.OperationPending {
 				operation.Status = platform.OperationSucceeded
+				p.operations[key] = operation
+			}
+			if operation.Kind == platform.OperationProbe && p.probeAsync && !p.probeStayPending && operation.Status == platform.OperationPending {
+				outcome := p.probeOutcome
+				if outcome == "" {
+					outcome = "healthy"
+				}
+				operation.Status = platform.OperationSucceeded
+				operation.Result = map[string]any{"outcome": outcome}
 				p.operations[key] = operation
 			}
 			return operation, nil

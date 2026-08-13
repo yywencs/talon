@@ -30,7 +30,7 @@ func (s *scriptedInvestigator) Investigate(_ context.Context, instruction string
 	return s.run(len(s.instructions), instruction)
 }
 
-func TestIncidentControllerRunsFromProtectedToProbing(t *testing.T) {
+func TestIncidentControllerRunsFromProtectedThroughProbe(t *testing.T) {
 	service := executionPlatform("safe_fix")
 	controller, _, database, investigator := incidentControllerForTest(t, service, func(instance *workflow.IncidentWorkflow) *scriptedInvestigator {
 		return planSubmittingInvestigator(instance, "safe_fix")
@@ -39,10 +39,11 @@ func TestIncidentControllerRunsFromProtectedToProbing(t *testing.T) {
 
 	result, err := controller.Run(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, StopProbing, result.Reason)
-	assert.Equal(t, workflow.StateProbing, result.Snapshot.State)
+	assert.Equal(t, StopRecovering, result.Reason)
+	assert.Equal(t, workflow.StateRecovering, result.Snapshot.State)
 	assert.Len(t, investigator.instructions, 1)
 	assert.Equal(t, 1, service.sideEffects)
+	assert.Equal(t, 1, service.probeCalls)
 }
 
 func TestIncidentControllerStopsForActionApproval(t *testing.T) {
@@ -84,9 +85,87 @@ func TestIncidentControllerResumesAfterApproval(t *testing.T) {
 
 	resumed, err := controller.Run(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, StopProbing, resumed.Reason)
-	assert.Equal(t, workflow.StateProbing, resumed.Snapshot.State)
+	assert.Equal(t, StopRecovering, resumed.Reason)
+	assert.Equal(t, workflow.StateRecovering, resumed.Snapshot.State)
 	assert.Equal(t, 1, service.sideEffects)
+}
+
+func TestIncidentControllerPollsAsyncProbeUntilHealthy(t *testing.T) {
+	service := executionPlatform("safe_fix")
+	service.probeAsync = true
+	controller, _, database, _ := incidentControllerForTest(t, service, func(instance *workflow.IncidentWorkflow) *scriptedInvestigator {
+		return planSubmittingInvestigator(instance, "safe_fix")
+	})
+	defer database.Close()
+
+	result, err := controller.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, StopRecovering, result.Reason)
+	assert.Equal(t, workflow.StateRecovering, result.Snapshot.State)
+	assert.Equal(t, 1, service.probeCalls)
+	require.NotEmpty(t, result.Snapshot.History)
+	transition := result.Snapshot.History[len(result.Snapshot.History)-1]
+	assert.Equal(t, "healthy", transition.Metadata["outcome"])
+	assert.Equal(t, "safe-recovery", transition.Metadata["policy_id"])
+}
+
+func TestIncidentControllerReinvestigatesAfterProbeHardStop(t *testing.T) {
+	service := executionPlatform("safe_fix")
+	service.probeOutcome = "hard_stop"
+	controller, instance, database, investigator := incidentControllerForTest(t, service, func(instance *workflow.IncidentWorkflow) *scriptedInvestigator {
+		value := &scriptedInvestigator{incidentID: instance.Snapshot().IncidentID, workflow: instance}
+		value.run = func(run int, _ string) error {
+			if run == 1 {
+				_, err := instance.SubmitPlan(testPlanDraft("safe_fix"))
+				return err
+			}
+			_, err := instance.Apply(workflow.Event{
+				Type: workflow.EventEscalated, Actor: workflow.ActorAgent,
+				Reason: "探测硬停止后没有其他安全修复",
+			})
+			return err
+		}
+		return value
+	})
+	defer database.Close()
+
+	result, err := controller.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, StopEscalated, result.Reason)
+	assert.Equal(t, workflow.StateEscalated, instance.Snapshot().State)
+	require.Len(t, investigator.instructions, 2)
+	assert.Contains(t, investigator.instructions[1], "hard-stop")
+	assert.Equal(t, 1, service.probeCalls)
+}
+
+func TestIncidentControllerReinvestigatesAfterProbeTimeout(t *testing.T) {
+	service := executionPlatform("safe_fix")
+	service.probeAsync = true
+	service.probeStayPending = true
+	controller, instance, database, investigator := incidentControllerForTest(t, service, func(instance *workflow.IncidentWorkflow) *scriptedInvestigator {
+		value := &scriptedInvestigator{incidentID: instance.Snapshot().IncidentID, workflow: instance}
+		value.run = func(run int, _ string) error {
+			if run == 1 {
+				_, err := instance.SubmitPlan(testPlanDraft("safe_fix"))
+				return err
+			}
+			_, err := instance.Apply(workflow.Event{
+				Type: workflow.EventEscalated, Actor: workflow.ActorAgent,
+				Reason: "探测超时后转人工确认",
+			})
+			return err
+		}
+		return value
+	})
+	defer database.Close()
+	controller.probeProcessor.operationTimeout = 5 * time.Millisecond
+
+	result, err := controller.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, StopEscalated, result.Reason)
+	assert.Equal(t, workflow.StateEscalated, instance.Snapshot().State)
+	require.Len(t, investigator.instructions, 2)
+	assert.Contains(t, investigator.instructions[1], "execution deadline")
 }
 
 func TestIncidentControllerReinvestigatesWithExecutionFailure(t *testing.T) {

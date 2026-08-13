@@ -31,7 +31,6 @@ type StopReason string
 
 const (
 	StopAwaitingApproval StopReason = "awaiting_approval"
-	StopProbing          StopReason = "probing"
 	StopRecovering       StopReason = "recovering"
 	StopCompensating     StopReason = "compensating"
 	StopResolved         StopReason = "resolved"
@@ -54,14 +53,15 @@ type IncidentRunResult struct {
 	Snapshot workflow.Snapshot `json:"snapshot"`
 }
 
-// IncidentController 根据 Workflow 状态串联 Agent、Plan 校验和 ActionWorker。
+// IncidentController 根据 Workflow 状态串联 Agent、Plan 校验、ActionWorker 和流量探测。
 // 它不替代状态机，也不绕过各阶段既有的 Policy 与持久化边界。
 type IncidentController struct {
-	workflow      *workflow.IncidentWorkflow
-	investigator  Investigator
-	planProcessor *PlanProcessor
-	actionWorker  *ActionWorker
-	maxAdvances   int
+	workflow       *workflow.IncidentWorkflow
+	investigator   Investigator
+	planProcessor  *PlanProcessor
+	actionWorker   *ActionWorker
+	probeProcessor *ProbeProcessor
+	maxAdvances    int
 }
 
 // NewIncidentController 创建单 Incident 的顶层编排器。
@@ -84,6 +84,10 @@ func NewIncidentController(config IncidentControllerConfig) (*IncidentController
 	if err != nil {
 		return nil, fmt.Errorf("build action worker: %w", err)
 	}
+	probeProcessor, err := newProbeProcessor(config.PlanProcessor)
+	if err != nil {
+		return nil, fmt.Errorf("build probe processor: %w", err)
+	}
 	maxAdvances := config.MaxAdvances
 	if maxAdvances == 0 {
 		maxAdvances = defaultMaxControllerAdvances
@@ -93,13 +97,15 @@ func NewIncidentController(config IncidentControllerConfig) (*IncidentController
 	}
 	return &IncidentController{
 		workflow: config.Workflow, investigator: config.Investigator,
-		planProcessor: config.PlanProcessor, actionWorker: worker, maxAdvances: maxAdvances,
+		planProcessor: config.PlanProcessor, actionWorker: worker,
+		probeProcessor: probeProcessor, maxAdvances: maxAdvances,
 	}, nil
 }
 
 // Run 从当前 checkpoint 持续推进，直到完成、升级人工，或到达需要外部组件接管的阶段。
 func (c *IncidentController) Run(ctx context.Context) (IncidentRunResult, error) {
-	if c == nil || c.workflow == nil || c.investigator == nil || c.planProcessor == nil || c.actionWorker == nil {
+	if c == nil || c.workflow == nil || c.investigator == nil || c.planProcessor == nil ||
+		c.actionWorker == nil || c.probeProcessor == nil {
 		return IncidentRunResult{}, fmt.Errorf("incident controller is not initialized")
 	}
 	for advances := 0; advances < c.maxAdvances; advances++ {
@@ -149,7 +155,13 @@ func (c *IncidentController) Run(ctx context.Context) (IncidentRunResult, error)
 		case workflow.StateAwaitingApproval:
 			return c.result(StopAwaitingApproval, advances), nil
 		case workflow.StateProbing:
-			return c.result(StopProbing, advances), nil
+			if _, err := c.probeProcessor.Run(ctx); err != nil {
+				after := c.workflow.Snapshot()
+				if after.State == workflow.StateReinvestigating || after.State == workflow.StateEscalated {
+					continue
+				}
+				return c.result("", advances), fmt.Errorf("run traffic probe: %w", err)
+			}
 		case workflow.StateRecovering:
 			return c.result(StopRecovering, advances), nil
 		case workflow.StateCompensating:
