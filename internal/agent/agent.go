@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/compose"
@@ -16,6 +17,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/wen/opentalon/internal/observability"
 	"github.com/wen/opentalon/internal/platform"
+	"github.com/wen/opentalon/internal/runartifact"
 	toolset "github.com/wen/opentalon/internal/tools"
 	"github.com/wen/opentalon/internal/workflow"
 )
@@ -35,6 +37,7 @@ type Config struct {
 	IncidentID string
 	MaxSteps   int
 	Workflow   *workflow.IncidentWorkflow
+	Artifact   *runartifact.Recorder
 
 	// AdditionalInstructions 只能补充当前部署环境的调查说明，
 	// 固定的安全边界始终由 Agent 内置提示词和 Platform 共同保证。
@@ -81,17 +84,24 @@ func NewToolOpsAgent(ctx context.Context, config Config) (*ToolOpsAgent, error) 
 
 	visibleTools := tools.ToolsForActions(config.Workflow.AllowedAgentActions())
 	persona := systemPrompt(incidentID, config.AdditionalInstructions)
+	trackedModel := model.ToolCallingChatModel(config.Model)
+	if config.Artifact != nil {
+		trackedModel = &recordingModel{next: config.Model, recorder: config.Artifact}
+	}
 	runner, err := react.NewAgent(ctx, &react.AgentConfig{
-		ToolCallingModel: config.Model,
+		ToolCallingModel: trackedModel,
 		ToolsConfig: compose.ToolsNodeConfig{
 			Tools:               visibleTools,
 			ExecuteSequentially: true,
-			ToolCallMiddlewares: []compose.ToolMiddleware{workflowToolGuard(config.Workflow, tools)},
-			UnknownToolsHandler: func(_ context.Context, name, _ string) (string, error) {
+			ToolCallMiddlewares: []compose.ToolMiddleware{workflowToolGuard(config.Workflow, tools, config.Artifact)},
+			UnknownToolsHandler: func(_ context.Context, name, input string) (string, error) {
 				result, marshalErr := json.Marshal(map[string]any{
 					"data":  nil,
 					"error": fmt.Sprintf("工具 %s 不存在，只能调用当前已注册的工具", name),
 				})
+				if config.Artifact != nil {
+					config.Artifact.RecordUnknownTool(name, input, string(result), marshalErr)
+				}
 				return string(result), marshalErr
 			},
 		},
@@ -255,30 +265,49 @@ func (a *ToolOpsAgent) withWorkflowTools(ctx context.Context, options []flowagen
 // 模型在一轮 ReAct 开始时拿到的工具列表可能因 submit_plan 或 escalate 等调用而过期，
 // 因此不能只依赖“模型是否看得见工具”；未分类或当前状态已禁止的工具会返回结构化拒绝结果。
 // escalate_incident 成功后，Guard 还负责提交 EventEscalated，使平台操作和状态机保持一致。
-func workflowToolGuard(instance *workflow.IncidentWorkflow, tools *toolset.Set) compose.ToolMiddleware {
+func workflowToolGuard(instance *workflow.IncidentWorkflow, tools *toolset.Set, recorder *runartifact.Recorder) compose.ToolMiddleware {
 	return compose.ToolMiddleware{
 		Invokable: func(next compose.InvokableToolEndpoint) compose.InvokableToolEndpoint {
 			return func(ctx context.Context, input *compose.ToolInput) (*compose.ToolOutput, error) {
+				started := time.Now()
 				action, classified := tools.AgentAction(input.Name)
 				if !classified {
-					return deniedToolOutput(fmt.Errorf("tool %q is not available to the Agent workflow", input.Name))
+					denied, err := deniedToolOutput(fmt.Errorf("tool %q is not available to the Agent workflow", input.Name))
+					recordToolCall(recorder, input, action, denied, started, err, true)
+					return denied, err
 				}
 				if err := instance.AuthorizeAgentAction(action); err != nil {
-					return deniedToolOutput(err)
+					denied, outputErr := deniedToolOutput(err)
+					recordToolCall(recorder, input, action, denied, started, outputErr, true)
+					return denied, outputErr
 				}
 				output, err := next(ctx, input)
 				if err != nil {
+					recordToolCall(recorder, input, action, output, started, err, false)
 					return nil, err
 				}
 				if action == workflow.AgentActionEscalate && toolResponseSucceeded(output.Result) {
 					if _, applyErr := instance.Apply(workflow.Event{Type: workflow.EventEscalated, Actor: workflow.ActorAgent}); applyErr != nil {
+						recordToolCall(recorder, input, action, output, started, applyErr, false)
 						return nil, fmt.Errorf("apply escalation event: %w", applyErr)
 					}
 				}
+				recordToolCall(recorder, input, action, output, started, nil, false)
 				return output, nil
 			}
 		},
 	}
+}
+
+func recordToolCall(recorder *runartifact.Recorder, input *compose.ToolInput, action workflow.AgentAction, output *compose.ToolOutput, started time.Time, err error, denied bool) {
+	if recorder == nil || input == nil {
+		return
+	}
+	result := ""
+	if output != nil {
+		result = output.Result
+	}
+	recorder.RecordToolCall(input.CallID, input.Name, action, input.Arguments, result, started, err, denied)
 }
 
 func deniedToolOutput(err error) (*compose.ToolOutput, error) {

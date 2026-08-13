@@ -39,6 +39,7 @@ type Snapshot struct {
 	SuspendedState State                `json:"suspended_state,omitempty"`
 	Version        uint64               `json:"version"`
 	Plan           *Plan                `json:"plan,omitempty"`
+	Plans          []Plan               `json:"plans"`
 	PlanDryRuns    []PlanDryRun         `json:"plan_dry_runs,omitempty"`
 	PlanPolicies   []PlanPolicyDecision `json:"plan_policies,omitempty"`
 	PlanApprovals  []PlanApproval       `json:"plan_approvals,omitempty"`
@@ -55,6 +56,7 @@ type IncidentWorkflow struct {
 	suspendedState State
 	version        uint64
 	plan           *Plan
+	plans          []Plan
 	planDryRuns    []PlanDryRun
 	planPolicies   []PlanPolicyDecision
 	planApprovals  []PlanApproval
@@ -198,7 +200,7 @@ func (w *IncidentWorkflow) Snapshot() Snapshot {
 	}
 	return Snapshot{
 		IncidentID: w.incidentID, State: w.state, SuspendedState: w.suspendedState,
-		Version: w.version, Plan: clonePlanPointer(w.plan), PlanDryRuns: clonePlanDryRuns(w.planDryRuns),
+		Version: w.version, Plan: clonePlanPointer(w.plan), Plans: clonePlans(w.plans), PlanDryRuns: clonePlanDryRuns(w.planDryRuns),
 		PlanPolicies: clonePlanPolicyDecisions(w.planPolicies), PlanApprovals: clonePlanApprovals(w.planApprovals), History: history,
 	}
 }

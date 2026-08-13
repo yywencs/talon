@@ -76,10 +76,19 @@ func (w *IncidentWorkflow) SubmitPlan(draft PlanDraft) (PlanSubmission, error) {
 		SubmittedAt: transition.At,
 	}
 	w.plan = &plan
+	w.plans = append(w.plans, *clonePlanPointer(&plan))
 	w.planDryRuns = nil
 	w.planPolicies = nil
 	w.planApprovals = nil
 	return PlanSubmission{Plan: *clonePlanPointer(&plan), Transition: transition}, nil
+}
+
+func clonePlans(values []Plan) []Plan {
+	result := make([]Plan, len(values))
+	for index := range values {
+		result[index] = *clonePlanPointer(&values[index])
+	}
+	return result
 }
 
 func validatePlanDraft(draft PlanDraft) error {

@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wen/opentalon/internal/approval"
+	"github.com/wen/opentalon/internal/runartifact"
+	"github.com/wen/opentalon/internal/workflow"
 )
 
 func TestLoadConfigFromEnvDefaultsToSQLite(t *testing.T) {
@@ -78,6 +80,7 @@ func TestSQLiteApprovalStoreContract(t *testing.T) {
 	t.Cleanup(func() { _ = storage.Close() })
 	runApprovalStoreContract(t, storage.Approvals(), "sqlite")
 	runExecutionStoreContract(t, storage.Executions(), "sqlite")
+	runArtifactStoreContract(t, storage.RunArtifacts())
 }
 
 // PostgreSQL 契约测试默认跳过；设置 TALON_TEST_POSTGRES_DSN 后会连接真实测试库。
@@ -92,6 +95,34 @@ func TestPostgresApprovalStoreContract(t *testing.T) {
 	t.Cleanup(func() { _ = storage.Close() })
 	runApprovalStoreContract(t, storage.Approvals(), "postgres-"+time.Now().UTC().Format("150405.000000000"))
 	runExecutionStoreContract(t, storage.Executions(), "postgres-"+time.Now().UTC().Format("150405.000000000"))
+	runArtifactStoreContract(t, storage.RunArtifacts())
+}
+
+func runArtifactStoreContract(t *testing.T, store runartifact.Store) {
+	t.Helper()
+	ctx := context.Background()
+	recorder := runartifact.New("scenario-artifact-store")
+	running := recorder.Snapshot()
+	require.NoError(t, store.Upsert(ctx, running))
+	persisted, err := store.Get(ctx, running.RunID)
+	require.NoError(t, err)
+	assert.Equal(t, "running", persisted.Outcome)
+	assert.Equal(t, running.RunID, persisted.RunID)
+
+	recorder.BeginAgentRun("investigate", workflow.Snapshot{State: workflow.StateInvestigating})
+	recorder.RecordToolCall("call-1", "query_logs", workflow.AgentActionRead, `{}`, `{"data":[{"code":"failed"}]}`, time.Now(), nil, false)
+	recorder.EndAgentRun(workflow.Snapshot{State: workflow.StatePlanned}, nil)
+	completed := recorder.Finish("resolved", workflow.Snapshot{State: workflow.StateResolved}, nil)
+	require.NoError(t, store.Upsert(ctx, completed))
+	persisted, err = store.Get(ctx, completed.RunID)
+	require.NoError(t, err)
+	assert.Equal(t, "completed", persisted.Outcome)
+	assert.Equal(t, "resolved", persisted.StopReason)
+	require.Len(t, persisted.AgentRuns, 1)
+	assert.NotEmpty(t, persisted.AgentRuns[0].NewEvidenceRefs)
+
+	_, err = store.Get(ctx, "00000000-0000-4000-8000-000000000000")
+	assert.ErrorIs(t, err, runartifact.ErrNotFound)
 }
 
 func runApprovalStoreContract(t *testing.T, store approval.Store, prefix string) {

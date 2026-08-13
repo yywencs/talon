@@ -185,6 +185,27 @@ func TestIncidentWorkflowSubmitPlanValidatesRequiredFields(t *testing.T) {
 	assert.Zero(t, workflow.Snapshot().Plan)
 }
 
+func TestIncidentWorkflowSnapshotRetainsEverySubmittedPlan(t *testing.T) {
+	instance := newTestWorkflow(t, nil)
+	applyEvents(t, instance, Event{Type: EventStartInvestigation, Actor: ActorController})
+	draft := PlanDraft{Summary: "first plan", RootCause: "first hypothesis", EvidenceRefs: []string{"log:first"}, Actions: []PlannedAction{{ToolName: "repair", Arguments: map[string]any{}}}, ProbeRouteID: "route-a", RecoveryPolicyID: "safe"}
+	first, err := instance.SubmitPlan(draft)
+	require.NoError(t, err)
+	_, err = instance.Apply(Event{Type: EventPlanRejected, Actor: ActorWorkflow, Reason: "probe produced contrary evidence"})
+	require.NoError(t, err)
+	draft.Summary, draft.RootCause, draft.EvidenceRefs = "second plan", "revised hypothesis", []string{"log:first", "trace:new"}
+	second, err := instance.SubmitPlan(draft)
+	require.NoError(t, err)
+
+	snapshot := instance.Snapshot()
+	require.Len(t, snapshot.Plans, 2)
+	assert.Equal(t, first.Plan.ID, snapshot.Plans[0].ID)
+	assert.Equal(t, second.Plan.ID, snapshot.Plans[1].ID)
+	assert.Equal(t, second.Plan.ID, snapshot.Plan.ID)
+	snapshot.Plans[0].EvidenceRefs[0] = "mutated"
+	assert.Equal(t, "log:first", instance.Snapshot().Plans[0].EvidenceRefs[0])
+}
+
 func TestIncidentWorkflowSnapshotDoesNotShareMetadata(t *testing.T) {
 	workflow := newTestWorkflow(t, nil)
 	metadata := map[string]string{"trigger": "error_rate"}

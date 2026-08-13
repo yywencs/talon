@@ -19,7 +19,7 @@ LLM_API_KEY=your-api-key
 go run ./cmd/talon
 ```
 
-默认运行 `mapping-regression-rollback-001`，使用临时 SQLite，并在终端输出 Agent 回答、审批、异步 Operation、Workflow 状态流转和最终路由权重。中风险修复会显示 `SIMULATOR AUTO-APPROVE`，表示场景运行器在隔离环境中自动批准；如需停在审批门禁：
+默认运行 `mapping-regression-rollback-001`。配置 `DATABASE_DRIVER` / `DATABASE_DSN` 时使用对应的持久化数据库；未配置时使用运行后删除的临时 SQLite。终端会输出 RunArtifact ID、Agent 回答、审批、异步 Operation、Workflow 状态流转和最终路由权重。中风险修复会显示 `SIMULATOR AUTO-APPROVE`，表示场景运行器在隔离环境中自动批准；如需停在审批门禁：
 
 ```bash
 go run ./cmd/talon --auto-approve=false

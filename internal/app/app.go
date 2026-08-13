@@ -4,6 +4,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -16,6 +17,7 @@ import (
 	"github.com/wen/opentalon/internal/controller"
 	"github.com/wen/opentalon/internal/observability"
 	"github.com/wen/opentalon/internal/platform"
+	"github.com/wen/opentalon/internal/runartifact"
 	"github.com/wen/opentalon/internal/scenario"
 	"github.com/wen/opentalon/internal/simulator"
 	"github.com/wen/opentalon/internal/storage"
@@ -38,10 +40,11 @@ type Config struct {
 	WorkerRetryInterval time.Duration
 }
 
-// Result 汇总一次场景运行结束时的 Workflow 与 Simulator 状态。
+// Result 汇总一次场景运行的最终状态与完整机器可读审计轨迹。
 type Result struct {
 	Controller controller.IncidentRunResult
 	World      simulator.Snapshot
+	Artifact   runartifact.RunArtifact
 }
 
 // Run 从数据集异常事件开始，运行到 resolved、escalated 或审批门禁。
@@ -76,6 +79,28 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 	if !ok {
 		return Result{}, fmt.Errorf("scenario %q was not found", cfg.ScenarioID)
 	}
+	recorder := runartifact.New(item.Scenario.Metadata.ID)
+	artifactStore := cfg.Storage.RunArtifacts()
+	printer := &safePrinter{writer: cfg.Output}
+	var flow *workflow.IncidentWorkflow
+	defer func() {
+		snapshot := workflow.Snapshot{}
+		if flow != nil {
+			snapshot = flow.Snapshot()
+		}
+		artifact := recorder.Finish(string(result.Controller.Reason), snapshot, err)
+		persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancelPersist()
+		if persistErr := artifactStore.Upsert(persistCtx, artifact); persistErr != nil {
+			err = errors.Join(err, fmt.Errorf("persist final run artifact: %w", persistErr))
+			artifact = recorder.Finish(string(result.Controller.Reason), snapshot, err)
+		}
+		result.Artifact = artifact
+	}()
+	if err := artifactStore.Upsert(ctx, recorder.Snapshot()); err != nil {
+		return Result{}, fmt.Errorf("persist initial run artifact: %w", err)
+	}
+	printer.printf("[artifact] run_id=%s checkpoint=running\n", recorder.Snapshot().RunID)
 	service, err := simulator.New(item.Scenario)
 	if err != nil {
 		return Result{}, fmt.Errorf("create scenario simulator: %w", err)
@@ -88,11 +113,10 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 		return Result{}, fmt.Errorf("advance simulator to incident: %w", err)
 	}
 
-	printer := &safePrinter{writer: cfg.Output}
 	printer.printf("[talon] scenario=%s title=%s\n", item.Scenario.Metadata.ID, item.Scenario.Metadata.Title)
 	printer.printf("[simulator] advanced_to=%s incident_after=%s\n", service.Snapshot().Now.Format(time.RFC3339), incidentAt)
 
-	flow, err := workflow.NewIncidentWorkflow(workflow.Config{IncidentID: item.Scenario.Metadata.ID})
+	flow, err = workflow.NewIncidentWorkflow(workflow.Config{IncidentID: item.Scenario.Metadata.ID})
 	if err != nil {
 		return Result{}, fmt.Errorf("create incident workflow: %w", err)
 	}
@@ -119,7 +143,7 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 		}
 		toolOpsAgent, buildErr := agent.NewToolOpsAgent(ctx, agent.Config{
 			Model: cfg.Model, Platform: service, IncidentID: item.Scenario.Metadata.ID,
-			Workflow: flow, MaxSteps: cfg.AgentMaxSteps,
+			Workflow: flow, MaxSteps: cfg.AgentMaxSteps, Artifact: recorder,
 		})
 		if buildErr != nil {
 			return Result{}, fmt.Errorf("create ToolOps Agent: %w", buildErr)
@@ -129,6 +153,7 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 	if investigator.IncidentID() != item.Scenario.Metadata.ID {
 		return Result{}, fmt.Errorf("investigator incident ID does not match scenario")
 	}
+	investigator = &recordingInvestigator{next: investigator, workflow: flow, recorder: recorder, store: artifactStore}
 
 	processor, err := controller.NewPlanProcessor(service, flow,
 		controller.WithApprovalStore(cfg.Storage.Approvals()),
@@ -360,3 +385,24 @@ func (p *safePrinter) printf(format string, values ...any) {
 }
 
 var _ controller.Investigator = (*printingInvestigator)(nil)
+
+type recordingInvestigator struct {
+	next     controller.Investigator
+	workflow *workflow.IncidentWorkflow
+	recorder *runartifact.Recorder
+	store    runartifact.Store
+}
+
+func (r *recordingInvestigator) IncidentID() string { return r.next.IncidentID() }
+
+func (r *recordingInvestigator) Investigate(ctx context.Context, instruction string) (err error) {
+	r.recorder.BeginAgentRun(instruction, r.workflow.Snapshot())
+	err = r.next.Investigate(ctx, instruction)
+	r.recorder.EndAgentRun(r.workflow.Snapshot(), err)
+	if persistErr := r.store.Upsert(ctx, r.recorder.Snapshot()); persistErr != nil {
+		return errors.Join(err, fmt.Errorf("persist Agent run artifact checkpoint: %w", persistErr))
+	}
+	return err
+}
+
+var _ controller.Investigator = (*recordingInvestigator)(nil)

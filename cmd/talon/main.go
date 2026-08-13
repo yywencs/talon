@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -76,17 +77,26 @@ func run(arguments []string) error {
 		return fmt.Errorf("create LLM adapter: %w", err)
 	}
 
-	databasePath := opts.database
+	databasePath := strings.TrimSpace(opts.database)
 	var temporaryDirectory string
-	if databasePath == "" {
+	var database *storage.Storage
+	databaseDriverConfigured := strings.TrimSpace(os.Getenv(storage.EnvDatabaseDriver)) != ""
+	databaseDSNConfigured := strings.TrimSpace(os.Getenv(storage.EnvDatabaseDSN)) != ""
+	if databasePath != "" {
+		database, err = storage.OpenSQLite(ctx, databasePath)
+	} else if databaseDSNConfigured && !databaseDriverConfigured {
+		return fmt.Errorf("%s is required when %s is configured", storage.EnvDatabaseDriver, storage.EnvDatabaseDSN)
+	} else if databaseDriverConfigured {
+		database, err = storage.OpenFromEnv(ctx)
+	} else {
 		temporaryDirectory, err = os.MkdirTemp("", "talon-scenario-")
 		if err != nil {
 			return fmt.Errorf("create temporary runtime directory: %w", err)
 		}
 		defer os.RemoveAll(temporaryDirectory)
 		databasePath = filepath.Join(temporaryDirectory, "talon.db")
+		database, err = storage.OpenSQLite(ctx, databasePath)
 	}
-	database, err := storage.OpenSQLite(ctx, databasePath)
 	if err != nil {
 		return fmt.Errorf("open runtime storage: %w", err)
 	}

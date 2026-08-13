@@ -57,6 +57,17 @@ func TestRunCompletesScriptedEndToEndScenario(t *testing.T) {
 	assert.Equal(t, workflow.StateResolved, result.Controller.Snapshot.State)
 	assert.Equal(t, 80, result.World.Routes["route-a"].Weight)
 	assert.Equal(t, 20, result.World.Routes["route-b"].Weight)
+	assert.Equal(t, "talon.run-artifact/v1", result.Artifact.SchemaVersion)
+	assert.Equal(t, "completed", result.Artifact.Outcome)
+	assert.Equal(t, string(controller.StopResolved), result.Artifact.StopReason)
+	assert.Equal(t, 1, result.Artifact.Summary.AgentRuns)
+	require.Len(t, result.Artifact.Plans, 1)
+	require.Len(t, result.Artifact.AgentRuns[0].Plans, 1)
+	assert.Equal(t, "rollback mapping regression", result.Artifact.Plans[0].Summary)
+	assert.NotEmpty(t, result.Artifact.WorkflowHistory)
+	persisted, err := database.RunArtifacts().Get(context.Background(), result.Artifact.RunID)
+	require.NoError(t, err)
+	assert.Equal(t, result.Artifact, persisted)
 	assert.Contains(t, output.String(), "SIMULATOR AUTO-APPROVE")
 	assert.Contains(t, output.String(), "probing -> recovering")
 	assert.Contains(t, output.String(), "recovering -> resolved")
@@ -80,6 +91,24 @@ func TestRunStopsAtApprovalWhenAutoApprovalDisabled(t *testing.T) {
 	assert.Equal(t, controller.StopAwaitingApproval, result.Controller.Reason)
 	assert.Equal(t, workflow.StateAwaitingApproval, result.Controller.Snapshot.State)
 	assert.Equal(t, 10, result.World.Routes["route-a"].Weight)
+	assert.Equal(t, "completed", result.Artifact.Outcome)
+	assert.Equal(t, string(controller.StopAwaitingApproval), result.Artifact.StopReason)
+}
+
+func TestRunPersistsFailedArtifact(t *testing.T) {
+	database, err := storage.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "talon.db"))
+	require.NoError(t, err)
+	defer database.Close()
+
+	result, err := Run(context.Background(), Config{
+		DatasetRoot: testDatasetRoot(t), ScenarioID: defaultScenarioID, Storage: database,
+	})
+	require.ErrorContains(t, err, "model is required")
+	assert.Equal(t, "failed", result.Artifact.Outcome)
+	require.NotNil(t, result.Artifact.Failure)
+	persisted, getErr := database.RunArtifacts().Get(context.Background(), result.Artifact.RunID)
+	require.NoError(t, getErr)
+	assert.Equal(t, result.Artifact, persisted)
 }
 
 func testDatasetRoot(t *testing.T) string {
