@@ -191,13 +191,31 @@ action_behavior:
       error_type_cleared: connection_refused
   request_probe:
     result: accepted
-    outcome_sequence:
-      - outcome: hard_stop
-        reason: connection_refused
-        reveal_after_failure:
-          logs:
-            - level: warn
-              component: provider-connector
-              code: resolver_cache_hit
-              message: connection pool generation 13 reused resolver cache generation 4
-      - outcome: healthy
+    window_duration: 1m
+    attempts:
+      - steps:
+          - sample_count: 100
+            success_rate: 0.40
+            latency_p95_ms: 700
+            cost_per_success: 0.015
+            telemetry_complete: true
+            error_types: [connection_refused]
+            reveal_on_hard_stop:
+              logs:
+                - level: warn
+                  component: provider-connector
+                  code: resolver_cache_hit
+                  message: connection pool generation 13 reused resolver cache generation 4
+      - steps:
+          - sample_count: 100
+            success_rate: 0.99
+            latency_p95_ms: 750
+            cost_per_success: 0.015
+            telemetry_complete: true
+            error_types: []
+          - sample_count: 100
+            success_rate: 0.99
+            latency_p95_ms: 750
+            cost_per_success: 0.015
+            telemetry_complete: true
+            error_types: []

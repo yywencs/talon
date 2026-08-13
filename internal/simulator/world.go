@@ -37,6 +37,7 @@ type World struct {
 	operations        map[string]platform.Operation
 	idempotency       map[string]string
 	pending           map[string]scheduledOperation
+	probes            map[string]*probeSession
 	operationSequence int
 	probeAttempt      int
 	lastProbeOutcome  string
@@ -105,6 +106,7 @@ func NewWorld(document scenario.Scenario) (*World, error) {
 		operations:       make(map[string]platform.Operation),
 		idempotency:      make(map[string]string),
 		pending:          make(map[string]scheduledOperation),
+		probes:           make(map[string]*probeSession),
 		controller:       document.Controller,
 		agentPolicy:      document.AgentPolicy,
 		timeline:         append([]scenario.TimelineEvent(nil), document.Timeline...),
@@ -442,6 +444,12 @@ func cloneAny(value any) any {
 		result := make([]any, len(typed))
 		for index := range typed {
 			result[index] = cloneAny(typed[index])
+		}
+		return result
+	case []map[string]any:
+		result := make([]map[string]any, len(typed))
+		for index := range typed {
+			result[index] = cloneAnyMap(typed[index])
 		}
 		return result
 	case []string:

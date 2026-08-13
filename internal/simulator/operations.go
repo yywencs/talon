@@ -110,29 +110,20 @@ func (s *Simulator) RequestProbe(ctx context.Context, request platform.ProbeRequ
 	if asString(behavior["result"]) == "rejected" {
 		return w.rejectOperationLocked(operation, asString(behavior["reason"]), platform.ErrPreconditionFailed)
 	}
-	outcome := asString(behavior["outcome"])
-	outcomeData := behavior
-	sequence := asMapSlice(behavior["outcome_sequence"])
-	if len(sequence) > 0 {
-		index := w.probeAttempt
-		if index >= len(sequence) {
-			index = len(sequence) - 1
-		}
-		outcomeData = sequence[index]
-		outcome = asString(outcomeData["outcome"])
+	if len(w.probes) > 0 {
+		return w.rejectOperationLocked(operation, "another probe is already running", platform.ErrConflict)
+	}
+	session, err := w.newProbeSessionLocked(operation.ID, request.RouteID, behavior)
+	if err != nil {
+		failed := w.failOperationLocked(operation, err.Error())
+		return failed, err
 	}
 	w.probeAttempt++
-	w.lastProbeOutcome = outcome
-	operation.Status = platform.OperationSucceeded
-	operation.UpdatedAt = w.now
-	operation.Message = "probe completed"
-	operation.Result = map[string]any{"outcome": outcome}
-	if reason := asString(outcomeData["reason"]); reason != "" {
-		operation.Result["reason"] = reason
-	}
-	if reveal := asMap(outcomeData["reveal_after_failure"]); outcome == "hard_stop" && len(reveal) > 0 {
-		w.ingestTelemetryLocked(route.ProviderID, reveal)
-	}
+	w.lastProbeOutcome = ""
+	w.probes[operation.ID] = session
+	operation.Status = platform.OperationPending
+	operation.Message = "probe accepted; waiting for the first observation window"
+	operation.Result = w.probeResultLocked(session, "pending", "")
 	w.storeOperationLocked(operation)
 	return cloneOperation(operation), nil
 }

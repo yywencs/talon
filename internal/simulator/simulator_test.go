@@ -76,7 +76,29 @@ func TestSimulatorCompletesMappingRollbackFlow(t *testing.T) {
 		PolicyID: "default-safe-recovery", IdempotencyKey: "probe-001",
 	})
 	require.NoError(t, err)
+	require.Equal(t, platform.OperationPending, probe.Status)
+	require.Equal(t, "pending", probe.Result["outcome"])
+	// 探测流量独立记录在 ProbeSession 中，不直接修改受保护路由的正式权重。
+	require.Equal(t, 10, simulator.Snapshot().Routes["route-a"].Weight)
+	require.NoError(t, simulator.Advance(ctx, time.Minute))
+	probe, err = simulator.GetOperation(ctx, platform.OperationQuery{
+		IncidentID: item.Scenario.Metadata.ID, OperationID: probe.ID,
+	})
+	require.NoError(t, err)
+	require.Equal(t, platform.OperationRunning, probe.Status)
+	require.Equal(t, "running", probe.Result["outcome"])
+	require.NoError(t, simulator.Advance(ctx, 5*time.Minute))
+	probe, err = simulator.GetOperation(ctx, platform.OperationQuery{
+		IncidentID: item.Scenario.Metadata.ID, OperationID: probe.ID,
+	})
+	require.NoError(t, err)
+	require.Equal(t, platform.OperationSucceeded, probe.Status)
 	require.Equal(t, "healthy", probe.Result["outcome"])
+	windows, ok := probe.Result["windows"].([]map[string]any)
+	require.True(t, ok)
+	require.Len(t, windows, 6)
+	require.Equal(t, 0.01, windows[0]["traffic_fraction"])
+	require.Equal(t, 0.05, windows[5]["traffic_fraction"])
 
 	recovery, err := simulator.RequestRecovery(ctx, platform.RecoveryRequest{
 		IncidentID: item.Scenario.Metadata.ID,
@@ -154,6 +176,13 @@ func TestSimulatorUsesFailedProbeEvidenceBeforeRecreatingPool(t *testing.T) {
 		PolicyID: "default-safe-recovery", IdempotencyKey: "connection-probe-001",
 	})
 	require.NoError(t, err)
+	require.Equal(t, platform.OperationPending, firstProbe.Status)
+	require.NoError(t, simulator.Advance(ctx, time.Minute))
+	firstProbe, err = simulator.GetOperation(ctx, platform.OperationQuery{
+		IncidentID: item.Scenario.Metadata.ID, OperationID: firstProbe.ID,
+	})
+	require.NoError(t, err)
+	require.Equal(t, platform.OperationSucceeded, firstProbe.Status)
 	require.Equal(t, "hard_stop", firstProbe.Result["outcome"])
 	logs, err := simulator.QueryLogs(ctx, platform.LogQuery{
 		Scope: platform.Scope{IncidentID: item.Scenario.Metadata.ID, RouteID: "route-a"},
@@ -181,6 +210,12 @@ func TestSimulatorUsesFailedProbeEvidenceBeforeRecreatingPool(t *testing.T) {
 		PolicyID: "default-safe-recovery", IdempotencyKey: "connection-probe-002",
 	})
 	require.NoError(t, err)
+	require.Equal(t, platform.OperationPending, secondProbe.Status)
+	require.NoError(t, simulator.Advance(ctx, 6*time.Minute))
+	secondProbe, err = simulator.GetOperation(ctx, platform.OperationQuery{
+		IncidentID: item.Scenario.Metadata.ID, OperationID: secondProbe.ID,
+	})
+	require.NoError(t, err)
 	require.Equal(t, "healthy", secondProbe.Result["outcome"])
 	_, err = simulator.RequestRecovery(ctx, platform.RecoveryRequest{
 		IncidentID: item.Scenario.Metadata.ID,
@@ -195,4 +230,56 @@ func TestSimulatorCannotAdvancePastScenarioEnd(t *testing.T) {
 	simulator, err := New(item.Scenario)
 	require.NoError(t, err)
 	require.ErrorContains(t, simulator.Advance(context.Background(), 41*time.Minute), "exceeds world end time")
+}
+
+func TestSimulatorProbeRequiresSamplesAndConsecutiveHealthyWindows(t *testing.T) {
+	item := findTestCase(t, "mapping-regression-rollback-001")
+	item.Scenario.ActionBehavior["request_probe"] = map[string]any{
+		"result": "accepted", "window_duration": "1m",
+		"attempts": []any{
+			map[string]any{
+				"steps": []any{
+					map[string]any{
+						"sample_count": 40, "success_rate": 0.99, "latency_p95_ms": 1200,
+						"cost_per_success": 0.04, "telemetry_complete": true, "error_types": []any{},
+					},
+					map[string]any{
+						"sample_count": 100, "success_rate": 0.99, "latency_p95_ms": 1200,
+						"cost_per_success": 0.04, "telemetry_complete": false, "error_types": []any{},
+					},
+				},
+			},
+		},
+	}
+	simulator, err := New(item.Scenario)
+	require.NoError(t, err)
+	ctx := context.Background()
+	require.NoError(t, simulator.Advance(ctx, 5*time.Minute))
+	probe, err := simulator.RequestProbe(ctx, platform.ProbeRequest{
+		IncidentID: item.Scenario.Metadata.ID, RouteID: "route-a",
+		PolicyID: "default-safe-recovery", IdempotencyKey: "probe-window-gates",
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, simulator.Advance(ctx, 2*time.Minute))
+	probe, err = simulator.GetOperation(ctx, platform.OperationQuery{IncidentID: item.Scenario.Metadata.ID, OperationID: probe.ID})
+	require.NoError(t, err)
+	require.Equal(t, platform.OperationRunning, probe.Status)
+	require.Equal(t, 1, probe.Result["current_step"])
+	require.Equal(t, 80, probe.Result["step_sample_count"])
+	require.Equal(t, 2, probe.Result["healthy_windows"])
+
+	require.NoError(t, simulator.Advance(ctx, time.Minute))
+	probe, err = simulator.GetOperation(ctx, platform.OperationQuery{IncidentID: item.Scenario.Metadata.ID, OperationID: probe.ID})
+	require.NoError(t, err)
+	require.Equal(t, 2, probe.Result["current_step"])
+	require.Equal(t, 0.05, probe.Result["traffic_fraction"])
+
+	require.NoError(t, simulator.Advance(ctx, 3*time.Minute))
+	probe, err = simulator.GetOperation(ctx, platform.OperationQuery{IncidentID: item.Scenario.Metadata.ID, OperationID: probe.ID})
+	require.NoError(t, err)
+	require.Equal(t, platform.OperationRunning, probe.Status)
+	require.Equal(t, 0, probe.Result["healthy_windows"])
+	windows := probe.Result["windows"].([]map[string]any)
+	require.Contains(t, windows[len(windows)-1]["failed_requirements"], "telemetry_complete")
 }

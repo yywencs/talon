@@ -8,7 +8,7 @@ import (
 	"github.com/wen/opentalon/internal/scenario"
 )
 
-// advanceToLocked 按发生时间合并处理场景事件和异步操作完成事件。
+// advanceToLocked 按发生时间合并处理场景事件、修复完成事件和探测窗口。
 // 调用方必须持有 World 的写锁。
 func (w *World) advanceToLocked(target time.Time) error {
 	for {
@@ -17,30 +17,56 @@ func (w *World) advanceToLocked(target time.Time) error {
 			return err
 		}
 		operationID, operationAt, hasOperation := w.nextOperationAtLocked()
-		if !hasEvent && !hasOperation {
+		probeID, probeAt, hasProbe := w.nextProbeAtLocked()
+		if !hasEvent && !hasOperation && !hasProbe {
 			break
 		}
 
-		if hasEvent && (!hasOperation || !operationAt.Before(eventAt)) {
-			if eventAt.After(target) {
-				break
+		nextAt := eventAt
+		kind := "event"
+		if !hasEvent {
+			nextAt, kind = operationAt, "operation"
+			if !hasOperation {
+				nextAt, kind = probeAt, "probe"
 			}
-			w.now = eventAt
+		}
+		if hasOperation && (nextAt.IsZero() || operationAt.Before(nextAt)) {
+			nextAt, kind = operationAt, "operation"
+		}
+		if hasProbe && (nextAt.IsZero() || probeAt.Before(nextAt)) {
+			nextAt, kind = probeAt, "probe"
+		}
+		if nextAt.After(target) {
+			break
+		}
+		w.now = nextAt
+		switch kind {
+		case "event":
 			if err := w.applyTimelineEventLocked(w.timeline[w.nextTimelineEvent]); err != nil {
 				return err
 			}
 			w.nextTimelineEvent++
-			continue
+		case "operation":
+			w.completeOperationLocked(operationID)
+		case "probe":
+			w.processProbeWindowLocked(probeID)
 		}
-
-		if operationAt.After(target) {
-			break
-		}
-		w.now = operationAt
-		w.completeOperationLocked(operationID)
 	}
 	w.now = target
 	return nil
+}
+
+func (w *World) nextProbeAtLocked() (string, time.Time, bool) {
+	var selectedID string
+	var selectedAt time.Time
+	for id, session := range w.probes {
+		if selectedID == "" || session.dueAt.Before(selectedAt) ||
+			(session.dueAt.Equal(selectedAt) && id < selectedID) {
+			selectedID = id
+			selectedAt = session.dueAt
+		}
+	}
+	return selectedID, selectedAt, selectedID != ""
 }
 
 func (w *World) nextEventAtLocked() (time.Time, bool, error) {

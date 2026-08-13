@@ -171,4 +171,18 @@ action_behavior:
       error_type_cleared: invalid_parameter_type
   request_probe:
     result: accepted
-    outcome: healthy
+    window_duration: 1m
+    attempts:
+      - steps:
+          - sample_count: 100
+            success_rate: 0.99
+            latency_p95_ms: 1200
+            cost_per_success: 0.04
+            telemetry_complete: true
+            error_types: []
+          - sample_count: 100
+            success_rate: 0.99
+            latency_p95_ms: 1200
+            cost_per_success: 0.04
+            telemetry_complete: true
+            error_types: []
