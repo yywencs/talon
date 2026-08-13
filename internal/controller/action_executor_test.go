@@ -18,21 +18,25 @@ import (
 
 type idempotentExecutionPlatform struct {
 	platform.ToolOpsPlatform
-	mu               sync.Mutex
-	capabilities     []platform.RemediationCapability
-	operations       map[string]platform.Operation
-	executeCalls     int
-	sideEffects      int
-	failFirstCall    bool
-	async            bool
-	stayPending      bool
-	blockSubmit      bool
-	executionStatus  platform.OperationStatus
-	executionTools   []string
-	probeOutcome     string
-	probeAsync       bool
-	probeStayPending bool
-	probeCalls       int
+	mu                  sync.Mutex
+	capabilities        []platform.RemediationCapability
+	operations          map[string]platform.Operation
+	executeCalls        int
+	sideEffects         int
+	failFirstCall       bool
+	async               bool
+	stayPending         bool
+	blockSubmit         bool
+	executionStatus     platform.OperationStatus
+	executionTools      []string
+	probeOutcome        string
+	probeAsync          bool
+	probeStayPending    bool
+	probeCalls          int
+	recoveryOutcome     string
+	recoveryAsync       bool
+	recoveryStayPending bool
+	recoveryCalls       int
 }
 
 func (p *idempotentExecutionPlatform) GetRemediationCapabilities(context.Context, platform.StateQuery) ([]platform.RemediationCapability, error) {
@@ -104,6 +108,32 @@ func (p *idempotentExecutionPlatform) RequestProbe(_ context.Context, request pl
 	return operation, nil
 }
 
+func (p *idempotentExecutionPlatform) RequestRecovery(_ context.Context, request platform.RecoveryRequest) (platform.Operation, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.recoveryCalls++
+	if existing, ok := p.operations[request.IdempotencyKey]; ok {
+		return existing, nil
+	}
+	outcome := p.recoveryOutcome
+	if outcome == "" {
+		outcome = "healthy"
+	}
+	status := platform.OperationSucceeded
+	result := map[string]any{"outcome": outcome, "route_id": request.RouteID}
+	if p.recoveryAsync {
+		status = platform.OperationPending
+		result["outcome"] = "pending"
+	}
+	operation := platform.Operation{
+		ID: "recovery-" + request.RouteID, IncidentID: request.IncidentID,
+		Kind: platform.OperationRecovery, Name: "request_recovery", Status: status,
+		IdempotencyKey: request.IdempotencyKey, Result: result,
+	}
+	p.operations[request.IdempotencyKey] = operation
+	return operation, nil
+}
+
 func (p *idempotentExecutionPlatform) GetOperation(_ context.Context, query platform.OperationQuery) (platform.Operation, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -120,6 +150,15 @@ func (p *idempotentExecutionPlatform) GetOperation(_ context.Context, query plat
 				}
 				operation.Status = platform.OperationSucceeded
 				operation.Result = map[string]any{"outcome": outcome}
+				p.operations[key] = operation
+			}
+			if operation.Kind == platform.OperationRecovery && p.recoveryAsync && !p.recoveryStayPending && operation.Status == platform.OperationPending {
+				outcome := p.recoveryOutcome
+				if outcome == "" {
+					outcome = "healthy"
+				}
+				operation.Status = platform.OperationSucceeded
+				operation.Result["outcome"] = outcome
 				p.operations[key] = operation
 			}
 			return operation, nil

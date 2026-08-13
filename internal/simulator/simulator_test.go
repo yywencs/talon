@@ -101,11 +101,22 @@ func TestSimulatorCompletesMappingRollbackFlow(t *testing.T) {
 	require.Equal(t, 0.05, windows[5]["traffic_fraction"])
 
 	recovery, err := simulator.RequestRecovery(ctx, platform.RecoveryRequest{
-		IncidentID: item.Scenario.Metadata.ID,
-		PolicyID:   "default-safe-recovery", IdempotencyKey: "recovery-001",
+		IncidentID: item.Scenario.Metadata.ID, RouteID: "route-a",
+		PolicyID: "default-safe-recovery", IdempotencyKey: "recovery-001",
+	})
+	require.NoError(t, err)
+	require.Equal(t, platform.OperationPending, recovery.Status)
+	require.Equal(t, 10, simulator.Snapshot().Routes["route-a"].Weight)
+	require.NoError(t, simulator.Advance(ctx, 3*time.Minute))
+	require.Equal(t, 20, simulator.Snapshot().Routes["route-a"].Weight)
+	require.NoError(t, simulator.Advance(ctx, 9*time.Minute))
+	recovery, err = simulator.GetOperation(ctx, platform.OperationQuery{
+		IncidentID: item.Scenario.Metadata.ID, OperationID: recovery.ID,
 	})
 	require.NoError(t, err)
 	require.Equal(t, platform.OperationSucceeded, recovery.Status)
+	require.Equal(t, "healthy", recovery.Result["outcome"])
+	require.Len(t, recovery.Result["windows"], 12)
 	snapshot = simulator.Snapshot()
 	require.Equal(t, 80, snapshot.Routes["route-a"].Weight)
 	require.Equal(t, 20, snapshot.Routes["route-b"].Weight)
@@ -218,11 +229,60 @@ func TestSimulatorUsesFailedProbeEvidenceBeforeRecreatingPool(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "healthy", secondProbe.Result["outcome"])
 	_, err = simulator.RequestRecovery(ctx, platform.RecoveryRequest{
-		IncidentID: item.Scenario.Metadata.ID,
-		PolicyID:   "default-safe-recovery", IdempotencyKey: "connection-recovery-001",
+		IncidentID: item.Scenario.Metadata.ID, RouteID: "route-a",
+		PolicyID: "default-safe-recovery", IdempotencyKey: "connection-recovery-001",
 	})
 	require.NoError(t, err)
+	require.NoError(t, simulator.Advance(ctx, 12*time.Minute))
 	require.Equal(t, 70, simulator.Snapshot().Routes["route-a"].Weight)
+}
+
+func TestSimulatorRecoveryHardStopReturnsToProtectedWeight(t *testing.T) {
+	item := findTestCase(t, "mapping-regression-rollback-001")
+	item.Scenario.ActionBehavior["request_recovery"] = map[string]any{
+		"result": "accepted", "window_duration": "1m",
+		"steps": []any{
+			map[string]any{"sample_count": 100, "success_rate": 0.99, "latency_p95_ms": 1200, "cost_per_success": 0.04, "telemetry_complete": true, "error_types": []any{}},
+			map[string]any{"sample_count": 100, "success_rate": 0.90, "latency_p95_ms": 1200, "cost_per_success": 0.04, "telemetry_complete": true, "error_types": []any{"regression_returned"}},
+		},
+	}
+	simulator, err := New(item.Scenario)
+	require.NoError(t, err)
+	ctx := context.Background()
+	require.NoError(t, simulator.Advance(ctx, 5*time.Minute))
+	rollback, err := simulator.ExecuteRemediation(ctx, platform.RemediationRequest{
+		IncidentID: item.Scenario.Metadata.ID, ToolName: "rollback_mapping",
+		Arguments:       map[string]any{"tool_id": "generate_image", "target_version": "mapping-v1"},
+		ExpectedVersion: "mapping-v2", IdempotencyKey: "recovery-hard-stop-rollback",
+	})
+	require.NoError(t, err)
+	require.Equal(t, platform.OperationPending, rollback.Status)
+	require.NoError(t, simulator.Advance(ctx, time.Minute))
+	probe, err := simulator.RequestProbe(ctx, platform.ProbeRequest{
+		IncidentID: item.Scenario.Metadata.ID, RouteID: "route-a",
+		PolicyID: "default-safe-recovery", IdempotencyKey: "recovery-hard-stop-probe",
+	})
+	require.NoError(t, err)
+	require.NoError(t, simulator.Advance(ctx, 6*time.Minute))
+	probe, err = simulator.GetOperation(ctx, platform.OperationQuery{IncidentID: item.Scenario.Metadata.ID, OperationID: probe.ID})
+	require.NoError(t, err)
+	require.Equal(t, "healthy", probe.Result["outcome"])
+
+	recovery, err := simulator.RequestRecovery(ctx, platform.RecoveryRequest{
+		IncidentID: item.Scenario.Metadata.ID, RouteID: "route-a",
+		PolicyID: "default-safe-recovery", IdempotencyKey: "recovery-hard-stop",
+	})
+	require.NoError(t, err)
+	require.NoError(t, simulator.Advance(ctx, 3*time.Minute))
+	require.Equal(t, 20, simulator.Snapshot().Routes["route-a"].Weight)
+	require.NoError(t, simulator.Advance(ctx, time.Minute))
+	recovery, err = simulator.GetOperation(ctx, platform.OperationQuery{IncidentID: item.Scenario.Metadata.ID, OperationID: recovery.ID})
+	require.NoError(t, err)
+	require.Equal(t, platform.OperationSucceeded, recovery.Status)
+	require.Equal(t, "hard_stop", recovery.Result["outcome"])
+	require.Contains(t, recovery.Result["reason"], "error_rate")
+	require.Equal(t, 10, simulator.Snapshot().Routes["route-a"].Weight)
+	require.Equal(t, 90, simulator.Snapshot().Routes["route-b"].Weight)
 }
 
 func TestSimulatorCannotAdvancePastScenarioEnd(t *testing.T) {

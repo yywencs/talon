@@ -219,3 +219,11 @@ action_behavior:
             cost_per_success: 0.015
             telemetry_complete: true
             error_types: []
+  request_recovery:
+    result: accepted
+    window_duration: 1m
+    steps:
+      - {sample_count: 100, success_rate: 0.99, latency_p95_ms: 750, cost_per_success: 0.015, telemetry_complete: true, error_types: []}
+      - {sample_count: 100, success_rate: 0.99, latency_p95_ms: 750, cost_per_success: 0.015, telemetry_complete: true, error_types: []}
+      - {sample_count: 100, success_rate: 0.99, latency_p95_ms: 750, cost_per_success: 0.015, telemetry_complete: true, error_types: []}
+      - {sample_count: 100, success_rate: 0.99, latency_p95_ms: 750, cost_per_success: 0.015, telemetry_complete: true, error_types: []}

@@ -31,7 +31,6 @@ type StopReason string
 
 const (
 	StopAwaitingApproval StopReason = "awaiting_approval"
-	StopRecovering       StopReason = "recovering"
 	StopCompensating     StopReason = "compensating"
 	StopResolved         StopReason = "resolved"
 	StopEscalated        StopReason = "escalated"
@@ -53,15 +52,16 @@ type IncidentRunResult struct {
 	Snapshot workflow.Snapshot `json:"snapshot"`
 }
 
-// IncidentController 根据 Workflow 状态串联 Agent、Plan 校验、ActionWorker 和流量探测。
+// IncidentController 根据 Workflow 状态串联 Agent、Plan 校验、ActionWorker、流量探测和逐级恢复。
 // 它不替代状态机，也不绕过各阶段既有的 Policy 与持久化边界。
 type IncidentController struct {
-	workflow       *workflow.IncidentWorkflow
-	investigator   Investigator
-	planProcessor  *PlanProcessor
-	actionWorker   *ActionWorker
-	probeProcessor *ProbeProcessor
-	maxAdvances    int
+	workflow          *workflow.IncidentWorkflow
+	investigator      Investigator
+	planProcessor     *PlanProcessor
+	actionWorker      *ActionWorker
+	probeProcessor    *ProbeProcessor
+	recoveryProcessor *RecoveryProcessor
+	maxAdvances       int
 }
 
 // NewIncidentController 创建单 Incident 的顶层编排器。
@@ -88,6 +88,10 @@ func NewIncidentController(config IncidentControllerConfig) (*IncidentController
 	if err != nil {
 		return nil, fmt.Errorf("build probe processor: %w", err)
 	}
+	recoveryProcessor, err := newRecoveryProcessor(config.PlanProcessor)
+	if err != nil {
+		return nil, fmt.Errorf("build recovery processor: %w", err)
+	}
 	maxAdvances := config.MaxAdvances
 	if maxAdvances == 0 {
 		maxAdvances = defaultMaxControllerAdvances
@@ -98,14 +102,15 @@ func NewIncidentController(config IncidentControllerConfig) (*IncidentController
 	return &IncidentController{
 		workflow: config.Workflow, investigator: config.Investigator,
 		planProcessor: config.PlanProcessor, actionWorker: worker,
-		probeProcessor: probeProcessor, maxAdvances: maxAdvances,
+		probeProcessor: probeProcessor, recoveryProcessor: recoveryProcessor,
+		maxAdvances: maxAdvances,
 	}, nil
 }
 
 // Run 从当前 checkpoint 持续推进，直到完成、升级人工，或到达需要外部组件接管的阶段。
 func (c *IncidentController) Run(ctx context.Context) (IncidentRunResult, error) {
 	if c == nil || c.workflow == nil || c.investigator == nil || c.planProcessor == nil ||
-		c.actionWorker == nil || c.probeProcessor == nil {
+		c.actionWorker == nil || c.probeProcessor == nil || c.recoveryProcessor == nil {
 		return IncidentRunResult{}, fmt.Errorf("incident controller is not initialized")
 	}
 	for advances := 0; advances < c.maxAdvances; advances++ {
@@ -163,7 +168,13 @@ func (c *IncidentController) Run(ctx context.Context) (IncidentRunResult, error)
 				return c.result("", advances), fmt.Errorf("run traffic probe: %w", err)
 			}
 		case workflow.StateRecovering:
-			return c.result(StopRecovering, advances), nil
+			if _, err := c.recoveryProcessor.Run(ctx); err != nil {
+				after := c.workflow.Snapshot()
+				if after.State == workflow.StateReinvestigating || after.State == workflow.StateEscalated {
+					continue
+				}
+				return c.result("", advances), fmt.Errorf("run gradual recovery: %w", err)
+			}
 		case workflow.StateCompensating:
 			return c.result(StopCompensating, advances), nil
 		case workflow.StateResolved:
@@ -203,8 +214,28 @@ func investigationInstruction(snapshot workflow.Snapshot) string {
 		return "调查当前 Incident，收集足够证据后提交安全的结构化 Plan；无法安全处理时升级人工。"
 	}
 	reason := "上一阶段执行失败"
-	if len(snapshot.History) > 0 && strings.TrimSpace(snapshot.History[len(snapshot.History)-1].Reason) != "" {
-		reason = strings.TrimSpace(snapshot.History[len(snapshot.History)-1].Reason)
+	metadata := map[string]string(nil)
+	if len(snapshot.History) > 0 {
+		last := snapshot.History[len(snapshot.History)-1]
+		metadata = last.Metadata
+		if strings.TrimSpace(last.Reason) != "" {
+			reason = strings.TrimSpace(last.Reason)
+		}
 	}
-	return fmt.Sprintf("重新调查当前 Incident。上一阶段失败原因：%s。获取新证据并修订根因假设，不要无新证据重复相同修复；随后提交新 Plan 或升级人工。", reason)
+	contextText := reinvestigationContext(metadata)
+	return fmt.Sprintf("重新调查当前 Incident。上一阶段失败原因：%s。%s获取新证据并修订根因假设，不要无新证据重复相同修复；随后提交新 Plan 或升级人工。", reason, contextText)
+}
+
+func reinvestigationContext(metadata map[string]string) string {
+	keys := []string{"operation_id", "route_id", "policy_id", "outcome", "action_id", "plan_id"}
+	values := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if value := strings.TrimSpace(metadata[key]); value != "" {
+			values = append(values, key+"="+value)
+		}
+	}
+	if len(values) == 0 {
+		return ""
+	}
+	return "关联执行上下文：" + strings.Join(values, "，") + "。"
 }

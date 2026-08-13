@@ -304,9 +304,10 @@ type ProbeRequest struct {
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
-// RecoveryRequest 请求控制器进入逐级恢复流程。
+// RecoveryRequest 请求控制器对已通过探测的指定路由进入逐级恢复流程。
 type RecoveryRequest struct {
 	IncidentID     string `json:"incident_id"`
+	RouteID        string `json:"route_id"`
 	PolicyID       string `json:"policy_id"`
 	IdempotencyKey string `json:"idempotency_key"`
 }

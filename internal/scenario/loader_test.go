@@ -71,6 +71,20 @@ func TestLoadDatasetRejectsUnsupportedSchema(t *testing.T) {
 	require.ErrorContains(t, err, "unsupported scenario schema")
 }
 
+func TestLoadDatasetRejectsRecoveryPolicyWithoutFullTrafficStep(t *testing.T) {
+	files := validScenarioFiles(t)
+	files[scenarioFileName] = strings.Replace(
+		files[scenarioFileName],
+		"recovery_steps: [0.10, 0.25, 0.50, 1.00]",
+		"recovery_steps: [0.10, 0.25, 0.50, 0.75]",
+		1,
+	)
+	root := newDatasetWithCase(t, "partial-recovery", files)
+
+	_, err := LoadDataset(root)
+	require.ErrorContains(t, err, "recovery_steps must end at 1")
+}
+
 func TestLoadDatasetRejectsDuplicateScenarioIDs(t *testing.T) {
 	root := t.TempDir()
 	for _, directory := range []string{"first", "second"} {

@@ -144,25 +144,33 @@ func (s *Simulator) RequestRecovery(ctx context.Context, request platform.Recove
 		return operation, err
 	}
 	operation := w.newOperationLocked(request.IncidentID, platform.OperationRecovery, "request_recovery", request.IdempotencyKey)
+	operation.Result = map[string]any{"route_id": request.RouteID, "policy_id": request.PolicyID}
 	if request.PolicyID != w.controller.RecoveryPolicy.ID {
 		return w.rejectOperationLocked(operation, "unknown recovery policy", platform.ErrNotFound)
 	}
 	if w.lastProbeOutcome != "healthy" {
 		return w.rejectOperationLocked(operation, "a healthy probe is required before recovery", platform.ErrPreconditionFailed)
 	}
-	weights := make(map[string]any, len(w.routes))
-	for id, route := range w.routes {
-		route.Weight = route.BaselineWeight
-		w.routes[id] = route
-		weights[id] = route.Weight
+	if request.RouteID == "" || request.RouteID != w.affectedRouteID {
+		return w.rejectOperationLocked(operation, "recovery route does not match the protected route", platform.ErrPreconditionFailed)
 	}
-	operation.Status = platform.OperationSucceeded
-	operation.UpdatedAt = w.now
-	operation.Message = "controller completed gradual traffic recovery"
-	operation.Result = map[string]any{
-		"policy_id": request.PolicyID, "steps": append([]float64(nil), w.controller.RecoveryPolicy.RecoverySteps...),
-		"final_weights": weights,
+	if len(w.recoveries) > 0 {
+		return w.rejectOperationLocked(operation, "another recovery is already running", platform.ErrConflict)
 	}
+	behavior := w.actionBehavior["request_recovery"]
+	if asString(behavior["result"]) == "rejected" {
+		return w.rejectOperationLocked(operation, asString(behavior["reason"]), platform.ErrPreconditionFailed)
+	}
+	session, err := w.newRecoverySessionLocked(operation.ID, request.RouteID, behavior)
+	if err != nil {
+		failed := w.failOperationLocked(operation, err.Error())
+		return failed, err
+	}
+	w.recoveries[operation.ID] = session
+	w.applyRecoveryWeightLocked(session, session.policy.RecoverySteps[0])
+	operation.Status = platform.OperationPending
+	operation.Message = "recovery accepted; waiting for the first health window"
+	operation.Result = w.recoveryResultLocked(session, "pending", "")
 	w.storeOperationLocked(operation)
 	return cloneOperation(operation), nil
 }

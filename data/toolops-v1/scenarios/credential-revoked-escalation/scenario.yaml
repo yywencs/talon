@@ -63,6 +63,8 @@ controller:
   recovery_policy:
     id: auth-recovery
     probe_steps: [0.01]
+    recovery_steps: [1.00]
+    step_mode: fraction_of_baseline_weight
     min_requests_per_step: 30
     healthy_windows_required: 2
     require:

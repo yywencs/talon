@@ -170,6 +170,14 @@ action_behavior:
             cost_per_success: 0.04
             telemetry_complete: true
             error_types: []
+  request_recovery:
+    result: accepted
+    window_duration: 1m
+    steps:
+      - {sample_count: 100, success_rate: 0.99, latency_p95_ms: 1200, cost_per_success: 0.04, telemetry_complete: true, error_types: []}
+      - {sample_count: 100, success_rate: 0.99, latency_p95_ms: 1200, cost_per_success: 0.04, telemetry_complete: true, error_types: []}
+      - {sample_count: 100, success_rate: 0.99, latency_p95_ms: 1200, cost_per_success: 0.04, telemetry_complete: true, error_types: []}
+      - {sample_count: 100, success_rate: 0.99, latency_p95_ms: 1200, cost_per_success: 0.04, telemetry_complete: true, error_types: []}
 ```
 
 ### 字段含义
@@ -189,6 +197,8 @@ action_behavior:
 | `action_behavior` | Simulator 中函数成功、失败、延迟、冲突以及探测窗口的确定性输入 |
 
 `request_probe.attempts` 按探测次数排列，`steps` 与 `controller.recovery_policy.probe_steps` 对应。每个窗口提供聚合指标，由 Simulator 按 `require` 和 `hard_stop_when` 判断，数据不能直接声明 `healthy`。`sample_count` 可以表示真实窗口统计，也可以表示 Benchmark 回放的预聚合样本，从而在较短虚拟时间内覆盖大样本策略。
+
+`request_recovery.steps` 与 `controller.recovery_policy.recovery_steps` 对应。Controller 每次只提升到当前步骤允许的权重，达到最小样本量和连续健康窗口后才进入下一步；任一窗口触发硬停止条件或不满足健康要求，都会立刻退回恢复前的保护权重。
 
 日志、Trace、指标、当前配置和变更记录原则上都可以提供，但必须遵循最小权限、脱敏、采样和时间范围限制。Agent 只能查询与当前 Incident 相关的数据，不能获得密钥、个人数据或任意平台读权限。
 

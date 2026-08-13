@@ -215,6 +215,9 @@ func validateController(controller Controller) error {
 	if err := validateIncreasingRatios("controller.recovery_policy.recovery_steps", policy.RecoverySteps); err != nil {
 		return err
 	}
+	if policy.RecoverySteps[len(policy.RecoverySteps)-1] != 1 {
+		return fmt.Errorf("controller.recovery_policy.recovery_steps must end at 1")
+	}
 	if len(policy.Require) == 0 {
 		return fmt.Errorf("controller.recovery_policy.require is required")
 	}
@@ -225,6 +228,9 @@ func validateController(controller Controller) error {
 }
 
 func validateIncreasingRatios(field string, values []float64) error {
+	if len(values) == 0 {
+		return fmt.Errorf("%s is required", field)
+	}
 	previous := float64(0)
 	for index, value := range values {
 		if value <= 0 || value > 1 {

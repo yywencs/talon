@@ -30,7 +30,7 @@ func (s *scriptedInvestigator) Investigate(_ context.Context, instruction string
 	return s.run(len(s.instructions), instruction)
 }
 
-func TestIncidentControllerRunsFromProtectedThroughProbe(t *testing.T) {
+func TestIncidentControllerRunsFromProtectedToResolved(t *testing.T) {
 	service := executionPlatform("safe_fix")
 	controller, _, database, investigator := incidentControllerForTest(t, service, func(instance *workflow.IncidentWorkflow) *scriptedInvestigator {
 		return planSubmittingInvestigator(instance, "safe_fix")
@@ -39,11 +39,12 @@ func TestIncidentControllerRunsFromProtectedThroughProbe(t *testing.T) {
 
 	result, err := controller.Run(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, StopRecovering, result.Reason)
-	assert.Equal(t, workflow.StateRecovering, result.Snapshot.State)
+	assert.Equal(t, StopResolved, result.Reason)
+	assert.Equal(t, workflow.StateResolved, result.Snapshot.State)
 	assert.Len(t, investigator.instructions, 1)
 	assert.Equal(t, 1, service.sideEffects)
 	assert.Equal(t, 1, service.probeCalls)
+	assert.Equal(t, 1, service.recoveryCalls)
 }
 
 func TestIncidentControllerStopsForActionApproval(t *testing.T) {
@@ -85,8 +86,8 @@ func TestIncidentControllerResumesAfterApproval(t *testing.T) {
 
 	resumed, err := controller.Run(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, StopRecovering, resumed.Reason)
-	assert.Equal(t, workflow.StateRecovering, resumed.Snapshot.State)
+	assert.Equal(t, StopResolved, resumed.Reason)
+	assert.Equal(t, workflow.StateResolved, resumed.Snapshot.State)
 	assert.Equal(t, 1, service.sideEffects)
 }
 
@@ -100,13 +101,91 @@ func TestIncidentControllerPollsAsyncProbeUntilHealthy(t *testing.T) {
 
 	result, err := controller.Run(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, StopRecovering, result.Reason)
-	assert.Equal(t, workflow.StateRecovering, result.Snapshot.State)
+	assert.Equal(t, StopResolved, result.Reason)
+	assert.Equal(t, workflow.StateResolved, result.Snapshot.State)
 	assert.Equal(t, 1, service.probeCalls)
 	require.NotEmpty(t, result.Snapshot.History)
+	probeTransition := result.Snapshot.History[len(result.Snapshot.History)-2]
+	assert.Equal(t, "healthy", probeTransition.Metadata["outcome"])
+	assert.Equal(t, "safe-recovery", probeTransition.Metadata["policy_id"])
+}
+
+func TestIncidentControllerPollsAsyncRecoveryUntilResolved(t *testing.T) {
+	service := executionPlatform("safe_fix")
+	service.recoveryAsync = true
+	controller, _, database, _ := incidentControllerForTest(t, service, func(instance *workflow.IncidentWorkflow) *scriptedInvestigator {
+		return planSubmittingInvestigator(instance, "safe_fix")
+	})
+	defer database.Close()
+
+	result, err := controller.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, StopResolved, result.Reason)
+	assert.Equal(t, workflow.StateResolved, result.Snapshot.State)
+	assert.Equal(t, 1, service.recoveryCalls)
 	transition := result.Snapshot.History[len(result.Snapshot.History)-1]
 	assert.Equal(t, "healthy", transition.Metadata["outcome"])
-	assert.Equal(t, "safe-recovery", transition.Metadata["policy_id"])
+	assert.Equal(t, "route-a", transition.Metadata["route_id"])
+}
+
+func TestIncidentControllerReinvestigatesAfterRecoveryHardStop(t *testing.T) {
+	service := executionPlatform("safe_fix")
+	service.recoveryOutcome = "hard_stop"
+	controller, instance, database, investigator := incidentControllerForTest(t, service, func(instance *workflow.IncidentWorkflow) *scriptedInvestigator {
+		value := &scriptedInvestigator{incidentID: instance.Snapshot().IncidentID, workflow: instance}
+		value.run = func(run int, _ string) error {
+			if run == 1 {
+				_, err := instance.SubmitPlan(testPlanDraft("safe_fix"))
+				return err
+			}
+			_, err := instance.Apply(workflow.Event{
+				Type: workflow.EventEscalated, Actor: workflow.ActorAgent,
+				Reason: "恢复硬停止后转人工处理",
+			})
+			return err
+		}
+		return value
+	})
+	defer database.Close()
+
+	result, err := controller.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, StopEscalated, result.Reason)
+	assert.Equal(t, workflow.StateEscalated, instance.Snapshot().State)
+	require.Len(t, investigator.instructions, 2)
+	assert.Contains(t, investigator.instructions[1], "hard-stop")
+	assert.Contains(t, investigator.instructions[1], "operation_id=recovery-route-a")
+	assert.Contains(t, investigator.instructions[1], "outcome=hard_stop")
+}
+
+func TestIncidentControllerReinvestigatesAfterRecoveryTimeout(t *testing.T) {
+	service := executionPlatform("safe_fix")
+	service.recoveryAsync = true
+	service.recoveryStayPending = true
+	controller, instance, database, investigator := incidentControllerForTest(t, service, func(instance *workflow.IncidentWorkflow) *scriptedInvestigator {
+		value := &scriptedInvestigator{incidentID: instance.Snapshot().IncidentID, workflow: instance}
+		value.run = func(run int, _ string) error {
+			if run == 1 {
+				_, err := instance.SubmitPlan(testPlanDraft("safe_fix"))
+				return err
+			}
+			_, err := instance.Apply(workflow.Event{
+				Type: workflow.EventEscalated, Actor: workflow.ActorAgent,
+				Reason: "恢复超时后转人工确认",
+			})
+			return err
+		}
+		return value
+	})
+	defer database.Close()
+	controller.recoveryProcessor.operationTimeout = 5 * time.Millisecond
+
+	result, err := controller.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, StopEscalated, result.Reason)
+	assert.Equal(t, workflow.StateEscalated, instance.Snapshot().State)
+	require.Len(t, investigator.instructions, 2)
+	assert.Contains(t, investigator.instructions[1], "execution deadline")
 }
 
 func TestIncidentControllerReinvestigatesAfterProbeHardStop(t *testing.T) {

@@ -38,6 +38,7 @@ type World struct {
 	idempotency       map[string]string
 	pending           map[string]scheduledOperation
 	probes            map[string]*probeSession
+	recoveries        map[string]*recoverySession
 	operationSequence int
 	probeAttempt      int
 	lastProbeOutcome  string
@@ -107,6 +108,7 @@ func NewWorld(document scenario.Scenario) (*World, error) {
 		idempotency:      make(map[string]string),
 		pending:          make(map[string]scheduledOperation),
 		probes:           make(map[string]*probeSession),
+		recoveries:       make(map[string]*recoverySession),
 		controller:       document.Controller,
 		agentPolicy:      document.AgentPolicy,
 		timeline:         append([]scenario.TimelineEvent(nil), document.Timeline...),

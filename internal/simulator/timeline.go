@@ -8,7 +8,7 @@ import (
 	"github.com/wen/opentalon/internal/scenario"
 )
 
-// advanceToLocked 按发生时间合并处理场景事件、修复完成事件和探测窗口。
+// advanceToLocked 按发生时间合并处理场景事件、修复完成事件、探测窗口和恢复窗口。
 // 调用方必须持有 World 的写锁。
 func (w *World) advanceToLocked(target time.Time) error {
 	for {
@@ -18,7 +18,8 @@ func (w *World) advanceToLocked(target time.Time) error {
 		}
 		operationID, operationAt, hasOperation := w.nextOperationAtLocked()
 		probeID, probeAt, hasProbe := w.nextProbeAtLocked()
-		if !hasEvent && !hasOperation && !hasProbe {
+		recoveryID, recoveryAt, hasRecovery := w.nextRecoveryAtLocked()
+		if !hasEvent && !hasOperation && !hasProbe && !hasRecovery {
 			break
 		}
 
@@ -36,6 +37,9 @@ func (w *World) advanceToLocked(target time.Time) error {
 		if hasProbe && (nextAt.IsZero() || probeAt.Before(nextAt)) {
 			nextAt, kind = probeAt, "probe"
 		}
+		if hasRecovery && (nextAt.IsZero() || recoveryAt.Before(nextAt)) {
+			nextAt, kind = recoveryAt, "recovery"
+		}
 		if nextAt.After(target) {
 			break
 		}
@@ -50,10 +54,25 @@ func (w *World) advanceToLocked(target time.Time) error {
 			w.completeOperationLocked(operationID)
 		case "probe":
 			w.processProbeWindowLocked(probeID)
+		case "recovery":
+			w.processRecoveryWindowLocked(recoveryID)
 		}
 	}
 	w.now = target
 	return nil
+}
+
+func (w *World) nextRecoveryAtLocked() (string, time.Time, bool) {
+	var selectedID string
+	var selectedAt time.Time
+	for id, session := range w.recoveries {
+		if selectedID == "" || session.dueAt.Before(selectedAt) ||
+			(session.dueAt.Equal(selectedAt) && id < selectedID) {
+			selectedID = id
+			selectedAt = session.dueAt
+		}
+	}
+	return selectedID, selectedAt, selectedID != ""
 }
 
 func (w *World) nextProbeAtLocked() (string, time.Time, bool) {

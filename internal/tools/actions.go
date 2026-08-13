@@ -16,6 +16,7 @@ type probeInput struct {
 }
 
 type recoveryInput struct {
+	RouteID        string `json:"route_id" jsonschema:"required,description=已通过健康探测且需要逐级恢复的路由ID"`
 	PolicyID       string `json:"policy_id" jsonschema:"required,description=已通过健康探测的恢复策略ID"`
 	IdempotencyKey string `json:"idempotency_key" jsonschema:"required,description=本次恢复请求的唯一幂等键"`
 }
@@ -44,7 +45,7 @@ func buildActionTools(service platform.ToolOpsPlatform, incidentID string) ([]ei
 	}
 	recovery, err := toolutils.InferTool("request_recovery", "仅在最近一次小流量探测健康后，请求控制器按照恢复策略逐级恢复路由权重。", func(ctx context.Context, input recoveryInput) (response[platform.Operation], error) {
 		result, callErr := service.RequestRecovery(ctx, platform.RecoveryRequest{
-			IncidentID: incidentID, PolicyID: input.PolicyID, IdempotencyKey: input.IdempotencyKey,
+			IncidentID: incidentID, RouteID: input.RouteID, PolicyID: input.PolicyID, IdempotencyKey: input.IdempotencyKey,
 		})
 		return platformResponse(result, callErr), nil
 	})
