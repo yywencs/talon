@@ -14,7 +14,12 @@ import (
 	"github.com/wen/opentalon/internal/workflow"
 )
 
-const SchemaVersion = "talon.run-artifact/v1"
+const SchemaVersion = "talon.run-artifact/v2"
+
+type Versions struct {
+	AgentVersion   string
+	DatasetVersion string
+}
 
 type TokenUsage struct {
 	PromptTokens       int `json:"prompt_tokens"`
@@ -98,20 +103,22 @@ type Failure struct {
 }
 
 type RunArtifact struct {
-	SchemaVersion   string                `json:"schema_version"`
-	RunID           string                `json:"run_id"`
-	ScenarioID      string                `json:"scenario_id"`
-	StartedAt       time.Time             `json:"started_at"`
-	FinishedAt      time.Time             `json:"finished_at"`
-	Duration        time.Duration         `json:"duration"`
-	Outcome         string                `json:"outcome"`
-	StopReason      string                `json:"stop_reason,omitempty"`
-	Failure         *Failure              `json:"failure,omitempty"`
-	AgentRuns       []AgentRun            `json:"agent_runs"`
-	Plans           []workflow.Plan       `json:"plans"`
-	WorkflowHistory []workflow.Transition `json:"workflow_history"`
-	BlockedAttempts []BlockedAttempt      `json:"blocked_attempts"`
-	Summary         Summary               `json:"summary"`
+	ArtifactSchemaVersion string                `json:"artifact_schema_version"`
+	AgentVersion          string                `json:"agent_version"`
+	DatasetVersion        string                `json:"dataset_version"`
+	RunID                 string                `json:"run_id"`
+	ScenarioID            string                `json:"scenario_id"`
+	StartedAt             time.Time             `json:"started_at"`
+	FinishedAt            time.Time             `json:"finished_at"`
+	Duration              time.Duration         `json:"duration"`
+	Outcome               string                `json:"outcome"`
+	StopReason            string                `json:"stop_reason,omitempty"`
+	Failure               *Failure              `json:"failure,omitempty"`
+	AgentRuns             []AgentRun            `json:"agent_runs"`
+	Plans                 []workflow.Plan       `json:"plans"`
+	WorkflowHistory       []workflow.Transition `json:"workflow_history"`
+	BlockedAttempts       []BlockedAttempt      `json:"blocked_attempts"`
+	Summary               Summary               `json:"summary"`
 }
 
 type Recorder struct {
@@ -123,9 +130,37 @@ type Recorder struct {
 	now              func() time.Time
 }
 
-func New(scenarioID string) *Recorder {
+func New(scenarioID string, versions Versions) *Recorder {
 	now := time.Now
-	return &Recorder{artifact: RunArtifact{SchemaVersion: SchemaVersion, RunID: newRunID(), ScenarioID: strings.TrimSpace(scenarioID), StartedAt: now(), Outcome: "running", AgentRuns: []AgentRun{}, Plans: []workflow.Plan{}, WorkflowHistory: []workflow.Transition{}, BlockedAttempts: []BlockedAttempt{}}, evidence: map[string]struct{}{}, now: now}
+	return &Recorder{artifact: RunArtifact{
+		ArtifactSchemaVersion: SchemaVersion,
+		AgentVersion:          strings.TrimSpace(versions.AgentVersion),
+		DatasetVersion:        strings.TrimSpace(versions.DatasetVersion),
+		RunID:                 newRunID(),
+		ScenarioID:            strings.TrimSpace(scenarioID),
+		StartedAt:             now(),
+		Outcome:               "running",
+		AgentRuns:             []AgentRun{},
+		Plans:                 []workflow.Plan{},
+		WorkflowHistory:       []workflow.Transition{},
+		BlockedAttempts:       []BlockedAttempt{},
+	}, evidence: map[string]struct{}{}, now: now}
+}
+
+// UnmarshalJSON 兼容已经持久化的 v1 Artifact；v1 使用 schema_version 字段。
+func (r *RunArtifact) UnmarshalJSON(data []byte) error {
+	type artifactAlias RunArtifact
+	value := struct {
+		*artifactAlias
+		LegacySchemaVersion string `json:"schema_version"`
+	}{artifactAlias: (*artifactAlias)(r)}
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	if r.ArtifactSchemaVersion == "" {
+		r.ArtifactSchemaVersion = value.LegacySchemaVersion
+	}
+	return nil
 }
 
 func (r *Recorder) BeginAgentRun(instruction string, snapshot workflow.Snapshot) {

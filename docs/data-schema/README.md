@@ -20,9 +20,17 @@ Agent 不能直接读取场景文件，也不能修改路由权重。Simulator �
 每个场景使用一个目录：
 
 ```text
-data/toolops-v1/scenarios/mapping-regression/
-├── scenario.yaml       # 虚拟世界、控制策略、可见证据和可用函数
-└── expectations.yaml   # 根因和期望轨迹，仅 Evaluator 使用
+data/toolops-v1/
+├── dataset.yaml        # 数据集的稳定版本
+└── scenarios/mapping-regression/
+    ├── scenario.yaml       # 虚拟世界、控制策略、可见证据和可用函数
+    └── expectations.yaml   # 根因和期望轨迹，仅 Evaluator 使用
+```
+
+`dataset.yaml` 必须显式声明数据集版本；每次会影响评测结果的数据变更都应递增版本：
+
+```yaml
+version: toolops-v1
 ```
 
 首批 15 个金标准场景可以写完整状态。格式稳定后再提取公共 fixture，不能为了复用而让场景难以阅读。

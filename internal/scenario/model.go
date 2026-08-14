@@ -8,8 +8,13 @@ const (
 
 // Dataset 表示由场景和期望结果配对组成的确定性数据集。
 type Dataset struct {
-	Root  string
-	Cases []Case
+	Root    string
+	Version string
+	Cases   []Case
+}
+
+type DatasetMetadata struct {
+	Version string `yaml:"version"`
 }
 
 // Find 根据稳定的场景 ID 查找对应的场景数据和期望结果。

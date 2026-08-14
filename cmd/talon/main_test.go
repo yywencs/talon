@@ -30,3 +30,9 @@ func TestParseOptionsSupportsHelp(t *testing.T) {
 	_, err := parseOptions([]string{"--help"})
 	assert.True(t, errors.Is(err, flag.ErrHelp))
 }
+
+func TestParseOptionsSupportsVersion(t *testing.T) {
+	result, err := parseOptions([]string{"--version"})
+	require.NoError(t, err)
+	assert.True(t, result.showVersion)
+}

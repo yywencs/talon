@@ -23,8 +23,10 @@ func newSQLRunArtifactStore(db *sql.DB, driver Driver) *sqlRunArtifactStore {
 }
 
 func (s *sqlRunArtifactStore) Upsert(ctx context.Context, artifact runartifact.RunArtifact) error {
-	if strings.TrimSpace(artifact.RunID) == "" || strings.TrimSpace(artifact.ScenarioID) == "" || strings.TrimSpace(artifact.SchemaVersion) == "" {
-		return fmt.Errorf("run ID, scenario ID and schema version are required")
+	if strings.TrimSpace(artifact.RunID) == "" || strings.TrimSpace(artifact.ScenarioID) == "" ||
+		strings.TrimSpace(artifact.ArtifactSchemaVersion) == "" || strings.TrimSpace(artifact.AgentVersion) == "" ||
+		strings.TrimSpace(artifact.DatasetVersion) == "" {
+		return fmt.Errorf("run ID, scenario ID, artifact schema version, agent version and dataset version are required")
 	}
 	if artifact.StartedAt.IsZero() || (artifact.Outcome != "running" && artifact.Outcome != "completed" && artifact.Outcome != "failed") {
 		return fmt.Errorf("run artifact start time and valid outcome are required")
@@ -62,7 +64,7 @@ ON CONFLICT(run_id) DO UPDATE SET
 		artifactPlaceholder = "CAST(? AS JSONB)"
 	}
 	query = strings.Replace(query, "__ARTIFACT__", artifactPlaceholder, 1)
-	_, err = s.db.ExecContext(ctx, bindSQL(s.driver, query), artifact.RunID, artifact.ScenarioID, artifact.SchemaVersion,
+	_, err = s.db.ExecContext(ctx, bindSQL(s.driver, query), artifact.RunID, artifact.ScenarioID, artifact.ArtifactSchemaVersion,
 		artifact.Outcome, artifact.StopReason, artifact.StartedAt.UTC(), finishedAt,
 		artifact.Duration.Milliseconds(), artifact.Summary.TotalTokens, failureStage, string(payload))
 	if err != nil {

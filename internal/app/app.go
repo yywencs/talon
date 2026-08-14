@@ -30,6 +30,7 @@ const defaultScenarioID = "mapping-regression-rollback-001"
 type Config struct {
 	DatasetRoot         string
 	ScenarioID          string
+	AgentVersion        string
 	Model               model.ToolCallingChatModel
 	InvestigatorFactory func(*workflow.IncidentWorkflow, platform.ToolOpsPlatform) (controller.Investigator, error)
 	Storage             *storage.Storage
@@ -79,7 +80,13 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 	if !ok {
 		return Result{}, fmt.Errorf("scenario %q was not found", cfg.ScenarioID)
 	}
-	recorder := runartifact.New(item.Scenario.Metadata.ID)
+	agentVersion := strings.TrimSpace(cfg.AgentVersion)
+	if agentVersion == "" {
+		agentVersion = agent.Version
+	}
+	recorder := runartifact.New(item.Scenario.Metadata.ID, runartifact.Versions{
+		AgentVersion: agentVersion, DatasetVersion: dataset.Version,
+	})
 	artifactStore := cfg.Storage.RunArtifacts()
 	printer := &safePrinter{writer: cfg.Output}
 	var flow *workflow.IncidentWorkflow

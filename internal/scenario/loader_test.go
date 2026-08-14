@@ -13,6 +13,7 @@ import (
 func TestLoadDatasetLoadsVersionedScenarioPairs(t *testing.T) {
 	dataset, err := LoadDataset(testDatasetRoot(t))
 	require.NoError(t, err)
+	require.Equal(t, "toolops-v1", dataset.Version)
 	require.Len(t, dataset.Cases, 3)
 
 	ids := make([]string, 0, len(dataset.Cases))
@@ -57,6 +58,15 @@ func TestLoadDatasetRejectsMissingExpectations(t *testing.T) {
 	require.ErrorContains(t, err, "expectations.yaml")
 }
 
+func TestLoadDatasetRejectsMissingVersionMetadata(t *testing.T) {
+	root := t.TempDir()
+	writeCase(t, root, "missing-version", validScenarioFiles(t))
+	require.NoError(t, os.Remove(filepath.Join(root, datasetFileName)))
+
+	_, err := LoadDataset(root)
+	require.ErrorContains(t, err, datasetFileName)
+}
+
 func TestLoadDatasetRejectsUnsupportedSchema(t *testing.T) {
 	files := validScenarioFiles(t)
 	files[scenarioFileName] = strings.Replace(
@@ -97,6 +107,7 @@ func TestLoadDatasetRejectsDuplicateScenarioIDs(t *testing.T) {
 
 func TestLoadDatasetRejectsSymlinkedScenarioDirectory(t *testing.T) {
 	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, datasetFileName), []byte("version: test-dataset/v1\n"), 0o600))
 	scenariosRoot := filepath.Join(root, scenariosDirectoryName)
 	require.NoError(t, os.MkdirAll(scenariosRoot, 0o700))
 	target := filepath.Join(testDatasetRoot(t), scenariosDirectoryName, "mapping-regression-rollback")
@@ -122,12 +133,17 @@ func validScenarioFiles(t *testing.T) map[string]string {
 func newDatasetWithCase(t *testing.T, directory string, files map[string]string) string {
 	t.Helper()
 	root := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(root, datasetFileName), []byte("version: test-dataset/v1\n"), 0o600))
 	writeCase(t, root, directory, files)
 	return root
 }
 
 func writeCase(t *testing.T, root, directory string, files map[string]string) {
 	t.Helper()
+	metadataPath := filepath.Join(root, datasetFileName)
+	if _, err := os.Stat(metadataPath); os.IsNotExist(err) {
+		require.NoError(t, os.WriteFile(metadataPath, []byte("version: test-dataset/v1\n"), 0o600))
+	}
 	caseDirectory := filepath.Join(root, scenariosDirectoryName, directory)
 	require.NoError(t, os.MkdirAll(caseDirectory, 0o700))
 	for name, content := range files {

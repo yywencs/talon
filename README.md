@@ -2,6 +2,27 @@
 
 Talon 当前实现了从异常调查、Plan 校验、受控修复、小流量探测到逐级恢复的 ToolOps Agent 闭环。
 
+## 构建带版本的二进制
+
+使用 Makefile 构建时，可以通过 `VERSION` 指定 Agent 发布版本：
+
+```bash
+make build VERSION=v1.2.0
+./bin/talon --version
+```
+
+输出类似：
+
+```text
+talon-toolops-agent/v1.2.0 (commit a84f21c7d812)
+```
+
+该 Agent 版本会在运行时注入 `app.Config`，并随每个 RunArtifact 的 `agent_version` 持久化。没有显式指定 `VERSION` 时，Makefile 使用当前 Git tag 或 commit 描述；`COMMIT` 默认取当前 Git commit，也可以在 CI 中覆盖：
+
+```bash
+make build VERSION=v1.2.0 COMMIT=a84f21c7d812
+```
+
 ## 运行完整 ToolOps 链路
 
 先在项目根目录准备 `.env`，至少配置支持 Tool Calling 的模型：

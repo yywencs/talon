@@ -14,6 +14,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/wen/opentalon/internal/app"
+	"github.com/wen/opentalon/internal/buildinfo"
 	"github.com/wen/opentalon/internal/config"
 	"github.com/wen/opentalon/internal/llm"
 	"github.com/wen/opentalon/internal/observability"
@@ -28,6 +29,7 @@ type options struct {
 	timeout     time.Duration
 	autoApprove bool
 	maxSteps    int
+	showVersion bool
 }
 
 func main() {
@@ -44,6 +46,10 @@ func run(arguments []string) error {
 	opts, err := parseOptions(arguments)
 	if err != nil {
 		return err
+	}
+	if opts.showVersion {
+		fmt.Fprintf(os.Stdout, "%s (commit %s)\n", buildinfo.AgentVersion, buildinfo.Commit)
+		return nil
 	}
 	if opts.envFile != "" {
 		if err := godotenv.Load(opts.envFile); err != nil && !os.IsNotExist(err) {
@@ -104,7 +110,8 @@ func run(arguments []string) error {
 
 	result, err := app.Run(ctx, app.Config{
 		DatasetRoot: opts.datasetRoot, ScenarioID: opts.scenarioID,
-		Model: chatModel, Storage: database, Output: os.Stdout,
+		AgentVersion: buildinfo.AgentVersion,
+		Model:        chatModel, Storage: database, Output: os.Stdout,
 		AutoApprove: opts.autoApprove, AgentMaxSteps: opts.maxSteps,
 	})
 	if err != nil {
@@ -127,6 +134,7 @@ func parseOptions(arguments []string) (options, error) {
 	set.DurationVar(&result.timeout, "timeout", 5*time.Minute, "整个场景运行的真实时间上限")
 	set.BoolVar(&result.autoApprove, "auto-approve", true, "仅在隔离的 Simulator 场景中自动批准待审批 Action")
 	set.IntVar(&result.maxSteps, "max-agent-steps", 24, "单次 Agent ReAct 最大步骤数")
+	set.BoolVar(&result.showVersion, "version", false, "显示构建时注入的 Agent 版本和 Git commit")
 	if err := set.Parse(arguments); err != nil {
 		return options{}, err
 	}

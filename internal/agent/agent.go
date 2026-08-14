@@ -23,6 +23,10 @@ import (
 )
 
 const (
+	// Version 标识会影响 Agent 行为的 Prompt、工具集和编排协议版本。
+	// 这些行为发生不兼容变化时必须递增该版本。
+	Version = "talon-toolops-agent/v1"
+
 	// DefaultMaxSteps 限制一次 Agent 调用最多执行的 Eino Graph 节点数，
 	// 防止模型在查询或工具失败时无限循环。
 	DefaultMaxSteps = 24

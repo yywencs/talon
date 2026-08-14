@@ -101,7 +101,9 @@ func TestPostgresApprovalStoreContract(t *testing.T) {
 func runArtifactStoreContract(t *testing.T, store runartifact.Store) {
 	t.Helper()
 	ctx := context.Background()
-	recorder := runartifact.New("scenario-artifact-store")
+	recorder := runartifact.New("scenario-artifact-store", runartifact.Versions{
+		AgentVersion: "agent/v1", DatasetVersion: "dataset/v1",
+	})
 	running := recorder.Snapshot()
 	require.NoError(t, store.Upsert(ctx, running))
 	persisted, err := store.Get(ctx, running.RunID)

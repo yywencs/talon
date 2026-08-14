@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/goccy/go-yaml"
 )
 
 const (
 	scenariosDirectoryName = "scenarios"
+	datasetFileName        = "dataset.yaml"
 	scenarioFileName       = "scenario.yaml"
 	expectationsFileName   = "expectations.yaml"
 )
@@ -22,13 +24,22 @@ func LoadDataset(root string) (*Dataset, error) {
 		return nil, fmt.Errorf("resolve dataset root %q: %w", root, err)
 	}
 
+	metadata, err := loadYAML[DatasetMetadata](filepath.Join(absoluteRoot, datasetFileName))
+	if err != nil {
+		return nil, err
+	}
+	metadata.Version = strings.TrimSpace(metadata.Version)
+	if metadata.Version == "" {
+		return nil, fmt.Errorf("dataset version in %q is required", filepath.Join(absoluteRoot, datasetFileName))
+	}
+
 	scenariosRoot := filepath.Join(absoluteRoot, scenariosDirectoryName)
 	entries, err := os.ReadDir(scenariosRoot)
 	if err != nil {
 		return nil, fmt.Errorf("read scenarios directory %q: %w", scenariosRoot, err)
 	}
 
-	dataset := &Dataset{Root: absoluteRoot}
+	dataset := &Dataset{Root: absoluteRoot, Version: metadata.Version}
 	seenIDs := make(map[string]string)
 	for _, entry := range entries {
 		if entry.Type()&os.ModeSymlink != 0 {
