@@ -61,7 +61,7 @@ func (w *IncidentWorkflow) SubmitPlan(draft PlanDraft) (PlanSubmission, error) {
 		return PlanSubmission{}, err
 	}
 
-	planID := fmt.Sprintf("%s-plan-%d", w.incidentID, w.version+1)
+	planID := fmt.Sprintf("%s-plan-%d", w.planIDPrefix, w.version+1)
 	transition, err := w.applyLocked(Event{
 		Type: EventPlanSubmitted, Actor: ActorAgent,
 		Metadata: map[string]string{"plan_id": planID},

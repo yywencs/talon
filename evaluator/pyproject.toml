@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "talon-evaluator"
+version = "0.2.0"
+description = "Deterministic offline evaluator for Talon ToolOps runs"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+talon-evaluator = "talon_evaluator.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

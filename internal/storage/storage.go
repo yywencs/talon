@@ -7,23 +7,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/wen/opentalon/internal/approval"
-	appconfig "github.com/wen/opentalon/internal/config"
 	"github.com/wen/opentalon/internal/execution"
 	"github.com/wen/opentalon/internal/runartifact"
 	_ "modernc.org/sqlite"
 )
 
-const (
-	EnvDatabaseDriver      = "DATABASE_DRIVER"
-	EnvDatabaseDSN         = "DATABASE_DSN"
-	EnvDatabaseAutoMigrate = "DATABASE_AUTO_MIGRATE"
-)
+const EnvDatabaseDSN = "DATABASE_DSN"
 
 // Driver 是 storage 支持的数据库类型。
 type Driver string
@@ -51,69 +45,29 @@ type Storage struct {
 	runArtifacts runartifact.Store
 }
 
-// DefaultConfig 返回无需外部服务的本地 SQLite 配置。
-func DefaultConfig() (Config, error) {
-	root, err := appconfig.FindRoot()
-	if err != nil {
-		return Config{}, fmt.Errorf("find storage root: %w", err)
+// LoadPostgresConfigFromEnv 读取正式运行的 PostgreSQL 配置。
+// 表结构不会自动创建，应先执行 docs/sql/postgresql 中的迁移。
+func LoadPostgresConfigFromEnv() (Config, error) {
+	dsn := strings.TrimSpace(os.Getenv(EnvDatabaseDSN))
+	if dsn == "" {
+		return Config{}, fmt.Errorf("%s is required for PostgreSQL", EnvDatabaseDSN)
 	}
 	return Config{
-		Driver: DriverSQLite, DSN: filepath.Join(root, "talon.db"), AutoMigrate: true,
-		MaxOpenConns: 1, MaxIdleConns: 1,
+		Driver: DriverPostgres, DSN: dsn,
+		MaxOpenConns: 10, MaxIdleConns: 5, ConnMaxLifetime: 30 * time.Minute,
 	}, nil
 }
 
-// LoadConfigFromEnv 从 DATABASE_* 环境变量读取数据库配置。
-// PostgreSQL 默认不自动建表，应先执行 docs/sql/postgresql 中的迁移。
-func LoadConfigFromEnv() (Config, error) {
-	defaults, err := DefaultConfig()
-	if err != nil {
-		return Config{}, err
-	}
-	driverText := strings.ToLower(strings.TrimSpace(os.Getenv(EnvDatabaseDriver)))
-	if driverText == "" {
-		return defaults, nil
-	}
-	driver := Driver(driverText)
-	if !driver.valid() {
-		return Config{}, fmt.Errorf("unsupported database driver %q", driver)
-	}
-	dsn := strings.TrimSpace(os.Getenv(EnvDatabaseDSN))
-	if dsn == "" {
-		if driver == DriverSQLite {
-			dsn = defaults.DSN
-		} else {
-			return Config{}, fmt.Errorf("%s is required for PostgreSQL", EnvDatabaseDSN)
-		}
-	}
-	autoMigrate := driver == DriverSQLite
-	if value := strings.TrimSpace(os.Getenv(EnvDatabaseAutoMigrate)); value != "" {
-		parsed, parseErr := strconv.ParseBool(value)
-		if parseErr != nil {
-			return Config{}, fmt.Errorf("parse %s: %w", EnvDatabaseAutoMigrate, parseErr)
-		}
-		autoMigrate = parsed
-	}
-	config := Config{Driver: driver, DSN: dsn, AutoMigrate: autoMigrate}
-	if driver == DriverSQLite {
-		config.MaxOpenConns, config.MaxIdleConns = 1, 1
-	} else {
-		config.MaxOpenConns, config.MaxIdleConns = 10, 5
-		config.ConnMaxLifetime = 30 * time.Minute
-	}
-	return config, nil
-}
-
-// OpenFromEnv 打开 DATABASE_* 指定的数据库。
-func OpenFromEnv(ctx context.Context) (*Storage, error) {
-	config, err := LoadConfigFromEnv()
+// OpenPostgresFromEnv 使用 DATABASE_DSN 打开正式运行的 PostgreSQL。
+func OpenPostgresFromEnv(ctx context.Context) (*Storage, error) {
+	config, err := LoadPostgresConfigFromEnv()
 	if err != nil {
 		return nil, err
 	}
 	return Open(ctx, config)
 }
 
-// OpenSQLite 打开并自动初始化一个 SQLite 数据库，主要用于本地运行和测试。
+// OpenSQLite 打开并自动初始化 SQLite，仅供测试使用。
 func OpenSQLite(ctx context.Context, path string) (*Storage, error) {
 	return Open(ctx, Config{Driver: DriverSQLite, DSN: path, AutoMigrate: true, MaxOpenConns: 1, MaxIdleConns: 1})
 }

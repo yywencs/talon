@@ -26,6 +26,11 @@ func TestParseOptionsRejectsInvalidLimits(t *testing.T) {
 	require.EqualError(t, err, "max-agent-steps must be positive")
 }
 
+func TestParseOptionsDoesNotAllowDatabaseSelection(t *testing.T) {
+	_, err := parseOptions([]string{"--database=talon.db"})
+	require.Error(t, err)
+}
+
 func TestParseOptionsSupportsHelp(t *testing.T) {
 	_, err := parseOptions([]string{"--help"})
 	assert.True(t, errors.Is(err, flag.ErrHelp))

@@ -88,5 +88,46 @@ func (s *sqlRunArtifactStore) Get(ctx context.Context, runID string) (runartifac
 	if err := json.Unmarshal(payload, &result); err != nil {
 		return runartifact.RunArtifact{}, fmt.Errorf("decode run artifact %q: %w", runID, err)
 	}
+	return runartifact.Normalize(result), nil
+}
+
+func (s *sqlRunArtifactStore) List(ctx context.Context, filter runartifact.VersionFilter) ([]runartifact.RunArtifact, error) {
+	filter.SchemaVersion = strings.TrimSpace(filter.SchemaVersion)
+	filter.CodeVersion = strings.TrimSpace(filter.CodeVersion)
+	filter.DatasetVersion = strings.TrimSpace(filter.DatasetVersion)
+	filter.Outcome = strings.TrimSpace(filter.Outcome)
+	if filter.SchemaVersion == "" || filter.CodeVersion == "" || filter.DatasetVersion == "" || filter.Outcome == "" {
+		return nil, fmt.Errorf("schema, code, dataset and outcome filters are required")
+	}
+	codeExpression := "json_extract(artifact, '$.provenance.code_version')"
+	datasetExpression := "json_extract(artifact, '$.provenance.dataset_version')"
+	if s.driver == DriverPostgres {
+		codeExpression = "artifact #>> '{provenance,code_version}'"
+		datasetExpression = "artifact #>> '{provenance,dataset_version}'"
+	}
+	query := fmt.Sprintf(`SELECT artifact FROM run_artifacts
+WHERE schema_version = ? AND outcome = ?
+  AND %s = ? AND %s = ?
+ORDER BY started_at ASC, run_id ASC`, codeExpression, datasetExpression)
+	rows, err := s.db.QueryContext(ctx, bindSQL(s.driver, query), filter.SchemaVersion, filter.Outcome, filter.CodeVersion, filter.DatasetVersion)
+	if err != nil {
+		return nil, fmt.Errorf("list run artifacts by version: %w", err)
+	}
+	defer rows.Close()
+	result := make([]runartifact.RunArtifact, 0)
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, fmt.Errorf("scan run artifact: %w", err)
+		}
+		var artifact runartifact.RunArtifact
+		if err := json.Unmarshal(payload, &artifact); err != nil {
+			return nil, fmt.Errorf("decode run artifact: %w", err)
+		}
+		result = append(result, runartifact.Normalize(artifact))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate run artifacts: %w", err)
+	}
 	return result, nil
 }

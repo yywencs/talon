@@ -175,6 +175,21 @@ func TestIncidentWorkflowSubmitPlanFreezesDraft(t *testing.T) {
 	assert.ErrorIs(t, err, ErrAgentActionDenied)
 }
 
+func TestIncidentWorkflowUsesIndependentPlanIDPrefix(t *testing.T) {
+	instance, err := NewIncidentWorkflow(Config{IncidentID: "scenario-001", PlanIDPrefix: "run-abc"})
+	require.NoError(t, err)
+	applyEvents(t, instance, Event{Type: EventStartInvestigation, Actor: ActorController})
+	submission, err := instance.SubmitPlan(PlanDraft{
+		Summary: "repair", RootCause: "cause", EvidenceRefs: []string{"evidence"},
+		Actions:      []PlannedAction{{ToolName: "repair", Arguments: map[string]any{"id": "value"}}},
+		ProbeRouteID: "route-a", RecoveryPolicyID: "safe",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "scenario-001", instance.Snapshot().IncidentID)
+	assert.Equal(t, "run-abc-plan-2", submission.Plan.ID)
+	assert.Equal(t, "run-abc-plan-2-action-1", submission.Plan.Actions[0].ID)
+}
+
 func TestIncidentWorkflowSubmitPlanValidatesRequiredFields(t *testing.T) {
 	workflow := newTestWorkflow(t, nil)
 	applyEvents(t, workflow, Event{Type: EventStartInvestigation, Actor: ActorController})

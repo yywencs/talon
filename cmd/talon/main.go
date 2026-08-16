@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/wen/opentalon/internal/config"
 	"github.com/wen/opentalon/internal/llm"
 	"github.com/wen/opentalon/internal/observability"
+	"github.com/wen/opentalon/internal/runartifact"
 	"github.com/wen/opentalon/internal/storage"
 )
 
@@ -24,7 +24,6 @@ type options struct {
 	datasetRoot string
 	scenarioID  string
 	envFile     string
-	database    string
 	timeout     time.Duration
 	autoApprove bool
 	maxSteps    int
@@ -77,28 +76,9 @@ func run(arguments []string) error {
 		return fmt.Errorf("create LLM adapter: %w", err)
 	}
 
-	databasePath := strings.TrimSpace(opts.database)
-	var temporaryDirectory string
-	var database *storage.Storage
-	databaseDriverConfigured := strings.TrimSpace(os.Getenv(storage.EnvDatabaseDriver)) != ""
-	databaseDSNConfigured := strings.TrimSpace(os.Getenv(storage.EnvDatabaseDSN)) != ""
-	if databasePath != "" {
-		database, err = storage.OpenSQLite(ctx, databasePath)
-	} else if databaseDSNConfigured && !databaseDriverConfigured {
-		return fmt.Errorf("%s is required when %s is configured", storage.EnvDatabaseDriver, storage.EnvDatabaseDSN)
-	} else if databaseDriverConfigured {
-		database, err = storage.OpenFromEnv(ctx)
-	} else {
-		temporaryDirectory, err = os.MkdirTemp("", "talon-scenario-")
-		if err != nil {
-			return fmt.Errorf("create temporary runtime directory: %w", err)
-		}
-		defer os.RemoveAll(temporaryDirectory)
-		databasePath = filepath.Join(temporaryDirectory, "talon.db")
-		database, err = storage.OpenSQLite(ctx, databasePath)
-	}
+	database, err := storage.OpenPostgresFromEnv(ctx)
 	if err != nil {
-		return fmt.Errorf("open runtime storage: %w", err)
+		return fmt.Errorf("open PostgreSQL runtime storage: %w", err)
 	}
 	defer database.Close()
 
@@ -106,6 +86,8 @@ func run(arguments []string) error {
 		DatasetRoot: opts.datasetRoot, ScenarioID: opts.scenarioID,
 		Model: chatModel, Storage: database, Output: os.Stdout,
 		AutoApprove: opts.autoApprove, AgentMaxSteps: opts.maxSteps,
+		Provenance: runartifact.Provenance{CodeVersion: strings.TrimSpace(os.Getenv("TALON_CODE_VERSION"))},
+		RunConfig:  runartifact.RunConfig{ModelProvider: llmConfig.Provider, Model: llmConfig.Model},
 	})
 	if err != nil {
 		return err
@@ -123,7 +105,6 @@ func parseOptions(arguments []string) (options, error) {
 	set.StringVar(&result.datasetRoot, "dataset", "data/toolops-v1", "ToolOps 数据集目录")
 	set.StringVar(&result.scenarioID, "scenario", "mapping-regression-rollback-001", "要运行的场景 ID")
 	set.StringVar(&result.envFile, "env-file", ".env", "存在时加载的 LLM 和 CozeLoop 环境变量文件；空值表示不加载")
-	set.StringVar(&result.database, "database", "", "SQLite 文件；空值使用运行后自动清理的临时数据库")
 	set.DurationVar(&result.timeout, "timeout", 5*time.Minute, "整个场景运行的真实时间上限")
 	set.BoolVar(&result.autoApprove, "auto-approve", true, "仅在隔离的 Simulator 场景中自动批准待审批 Action")
 	set.IntVar(&result.maxSteps, "max-agent-steps", 24, "单次 Agent ReAct 最大步骤数")

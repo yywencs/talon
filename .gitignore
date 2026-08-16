@@ -4,6 +4,9 @@
 .env.local
 .env.*.local
 *.env
+/evaluation-data/
+/docs/*
+!/docs/sql/
 
 .DS_Store
 *.swp
