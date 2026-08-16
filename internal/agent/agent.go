@@ -265,6 +265,8 @@ func (a *ToolOpsAgent) withWorkflowTools(ctx context.Context, options []flowagen
 // 模型在一轮 ReAct 开始时拿到的工具列表可能因 submit_plan 或 escalate 等调用而过期，
 // 因此不能只依赖“模型是否看得见工具”；未分类或当前状态已禁止的工具会返回结构化拒绝结果。
 // escalate_incident 成功后，Guard 还负责提交 EventEscalated，使平台操作和状态机保持一致。
+// submit_plan 或 escalate_incident 成功推进到目标状态后，Guard 直接结束当前 ReAct，
+// 避免为了生成一条自然语言总结再次调用模型并耗尽 Graph 步数。
 func workflowToolGuard(instance *workflow.IncidentWorkflow, tools *toolset.Set, recorder *runartifact.Recorder) compose.ToolMiddleware {
 	return compose.ToolMiddleware{
 		Invokable: func(next compose.InvokableToolEndpoint) compose.InvokableToolEndpoint {
@@ -292,11 +294,33 @@ func workflowToolGuard(instance *workflow.IncidentWorkflow, tools *toolset.Set, 
 						return nil, fmt.Errorf("apply escalation event: %w", applyErr)
 					}
 				}
+				if returnErr := returnAfterTerminalAction(ctx, instance, action, output); returnErr != nil {
+					recordToolCall(recorder, input, action, output, started, returnErr, false)
+					return nil, returnErr
+				}
 				recordToolCall(recorder, input, action, output, started, nil, false)
 				return output, nil
 			}
 		},
 	}
+}
+
+func returnAfterTerminalAction(ctx context.Context, instance *workflow.IncidentWorkflow, action workflow.AgentAction, output *compose.ToolOutput) error {
+	if output == nil || !toolResponseSucceeded(output.Result) {
+		return nil
+	}
+	state := instance.Snapshot().State
+	if (action == workflow.AgentActionSubmitPlan && state != workflow.StatePlanned) ||
+		(action == workflow.AgentActionEscalate && state != workflow.StateEscalated) {
+		return nil
+	}
+	if action != workflow.AgentActionSubmitPlan && action != workflow.AgentActionEscalate {
+		return nil
+	}
+	if err := react.SetReturnDirectly(ctx); err != nil {
+		return fmt.Errorf("stop ReAct after successful %s: %w", action, err)
+	}
+	return nil
 }
 
 func recordToolCall(recorder *runartifact.Recorder, input *compose.ToolInput, action workflow.AgentAction, output *compose.ToolOutput, started time.Time, err error, denied bool) {

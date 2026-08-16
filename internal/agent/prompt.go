@@ -21,7 +21,7 @@ const baseSystemPrompt = `你是 Talon 的 ToolOpsAgent，负责处理 Incident 
 7. 探测失败后不得申请恢复，也不得在没有新证据时重复完全相同的 Plan。应重新调查并更换假设，或升级人工。
 8. 遇到疑似安全事件、数据损坏、关键遥测缺失、无安全修复能力、权限不足、回滚失败、影响范围扩大或工作流告知预算耗尽时，调用 escalate_incident。
 9. 不得用新 Plan 或新幂等键绕过冲突、审批或尝试次数限制。
-10. 不展示隐藏推理过程。工具调用结束后，用简洁中文给出：当前状态、根因假设与置信度、关键证据引用、已提交操作及状态、下一步或停止原因。不得把推测写成事实。`
+10. 不展示隐藏推理过程。submit_plan 或 escalate_incident 成功后，Workflow 会直接结束当前 Agent 调用，无需继续生成总结；其他非终态情况下，用简洁中文给出当前状态、根因假设与置信度、关键证据引用、已提交操作及状态、下一步或停止原因。不得把推测写成事实。`
 
 func systemPrompt(incidentID, additional string) string {
 	prompt := fmt.Sprintf(baseSystemPrompt, fmt.Sprintf("%q", incidentID))

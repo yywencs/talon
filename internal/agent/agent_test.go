@@ -50,6 +50,7 @@ func TestToolOpsAgentRunsReActWithIncidentTools(t *testing.T) {
 		assert.Equal(t, schema.System, input[0].Role)
 		assert.Contains(t, input[0].Content, incidentID)
 		assert.Contains(t, input[0].Content, "accepted、pending 或 running 不代表成功")
+		assert.Contains(t, input[0].Content, "无需继续生成总结")
 	}
 	assert.Contains(t, inputs[0][1].Content, "接管当前 Incident")
 	assert.True(t, containsToolResult(inputs[1], "get_services", "image-service"))
@@ -86,14 +87,14 @@ func TestNewToolOpsAgentValidatesConfig(t *testing.T) {
 	}
 }
 
-func TestToolOpsAgentSubmitsPlanAndGuardsChangedState(t *testing.T) {
+func TestToolOpsAgentReturnsImmediatelyAfterSubmittingPlan(t *testing.T) {
 	ctx := context.Background()
 	service, incidentID := testSimulator(t)
 	flow := investigatingWorkflow(t, incidentID)
 	chatModel := &scriptedModel{response: func(call int) *schema.Message {
-		if call <= 2 {
+		if call == 1 {
 			return schema.AssistantMessage("", []schema.ToolCall{{
-				ID: "submit-plan-" + string(rune('0'+call)),
+				ID: "submit-plan-1",
 				Function: schema.FunctionCall{Name: "submit_plan", Arguments: `{
 					"summary":"回滚 Mapping 配置",
 					"root_cause":"mapping schema regression",
@@ -118,7 +119,10 @@ func TestToolOpsAgentSubmitsPlanAndGuardsChangedState(t *testing.T) {
 	require.NoError(t, err)
 	result, err := toolOpsAgent.Run(ctx, "调查并提交修复计划")
 	require.NoError(t, err)
-	assert.Equal(t, "Plan 已提交，等待 Workflow 校验。", result.Content)
+	require.NotNil(t, result)
+	assert.Equal(t, schema.Tool, result.Role)
+	assert.Equal(t, "submit_plan", result.ToolName)
+	assert.Equal(t, "submit-plan-1", result.ToolCallID)
 
 	snapshot := flow.Snapshot()
 	assert.Equal(t, workflow.StatePlanned, snapshot.State)
@@ -128,8 +132,7 @@ func TestToolOpsAgentSubmitsPlanAndGuardsChangedState(t *testing.T) {
 	toolNames, inputs := chatModel.snapshot()
 	assert.Contains(t, toolNames, "submit_plan")
 	assert.NotContains(t, toolNames, "rollback_mapping")
-	require.Len(t, inputs, 3)
-	assert.True(t, containsToolResult(inputs[2], "submit_plan", "not allowed in state"))
+	require.Len(t, inputs, 1)
 }
 
 func TestToolOpsAgentEscalationUpdatesWorkflow(t *testing.T) {
@@ -154,10 +157,59 @@ func TestToolOpsAgentEscalationUpdatesWorkflow(t *testing.T) {
 		Model: chatModel, Platform: service, IncidentID: incidentID, Workflow: flow,
 	})
 	require.NoError(t, err)
-	_, err = toolOpsAgent.Run(ctx, "没有安全修复方案，升级人工")
+	result, err := toolOpsAgent.Run(ctx, "没有安全修复方案，升级人工")
 	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, schema.Tool, result.Role)
+	assert.Equal(t, "escalate_incident", result.ToolName)
+	assert.Equal(t, "escalate-1", result.ToolCallID)
 	assert.Equal(t, workflow.StateEscalated, flow.Snapshot().State)
 	assert.Equal(t, workflow.StateInvestigating, flow.Snapshot().SuspendedState)
+	_, inputs := chatModel.snapshot()
+	require.Len(t, inputs, 1)
+}
+
+func TestToolOpsAgentContinuesAfterRejectedPlan(t *testing.T) {
+	ctx := context.Background()
+	service, incidentID := testSimulator(t)
+	flow := investigatingWorkflow(t, incidentID)
+	chatModel := &scriptedModel{response: func(call int) *schema.Message {
+		policyID := "unknown-policy"
+		if call == 2 {
+			policyID = "default-safe-recovery"
+		}
+		return schema.AssistantMessage("", []schema.ToolCall{{
+			ID: "submit-plan-" + string(rune('0'+call)),
+			Function: schema.FunctionCall{Name: "submit_plan", Arguments: `{
+				"summary":"回滚 Mapping 配置",
+				"root_cause":"mapping schema regression",
+				"evidence_refs":["log:invalid_parameter_type","change:mapping-v2"],
+				"actions":[{"tool_name":"rollback_mapping","arguments":{
+					"tool_id":"generate_image",
+					"target_version":"mapping-v1",
+					"expected_version":"mapping-v2",
+					"idempotency_key":"plan-rollback-001"
+				}}],
+				"probe_route_id":"route-a",
+				"recovery_policy_id":"` + policyID + `"
+			}`},
+		}})
+	}}
+
+	toolOpsAgent, err := NewToolOpsAgent(ctx, Config{
+		Model: chatModel, Platform: service, IncidentID: incidentID, Workflow: flow,
+	})
+	require.NoError(t, err)
+	result, err := toolOpsAgent.Run(ctx, "调查并提交修复计划")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, schema.Tool, result.Role)
+	assert.Equal(t, "submit-plan-2", result.ToolCallID)
+	assert.Equal(t, workflow.StatePlanned, flow.Snapshot().State)
+
+	_, inputs := chatModel.snapshot()
+	require.Len(t, inputs, 2)
+	assert.True(t, containsToolResult(inputs[1], "submit_plan", "unknown-policy"))
 }
 
 func TestToolOpsAgentAddsSystemMessageOnlyOnce(t *testing.T) {
