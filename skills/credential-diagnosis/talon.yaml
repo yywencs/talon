@@ -1,0 +1,4 @@
+schema_version: talon-skill/v1
+allowed_tools:
+  - query_logs
+  - get_credential_metadata

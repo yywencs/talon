@@ -137,10 +137,25 @@ func TestIncidentWorkflowAllowedAgentActionsAreStable(t *testing.T) {
 
 	assert.Equal(t, []AgentAction{
 		AgentActionEscalate,
+		AgentActionManageSkill,
 		AgentActionQueryOperation,
 		AgentActionRead,
 		AgentActionSubmitPlan,
 	}, workflow.AllowedAgentActions())
+}
+
+func TestSkillEventsAreAuditedWithoutLeavingInvestigation(t *testing.T) {
+	instance := newTestWorkflow(t, nil)
+	applyEvents(t, instance, Event{Type: EventStartInvestigation, Actor: ActorController})
+
+	loaded, err := instance.Apply(Event{Type: EventSkillLoaded, Actor: ActorAgent, Metadata: map[string]string{"skill_name": "mapping-diagnosis"}})
+	require.NoError(t, err)
+	assert.Equal(t, StateInvestigating, loaded.From)
+	assert.Equal(t, StateInvestigating, loaded.To)
+	unloaded, err := instance.Apply(Event{Type: EventSkillUnloaded, Actor: ActorAgent, Metadata: map[string]string{"skill_name": "mapping-diagnosis"}})
+	require.NoError(t, err)
+	assert.Equal(t, StateInvestigating, unloaded.To)
+	assert.Equal(t, uint64(3), instance.Snapshot().Version)
 }
 
 func TestIncidentWorkflowSubmitPlanFreezesDraft(t *testing.T) {

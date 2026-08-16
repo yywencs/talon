@@ -16,10 +16,15 @@
 
 ## 2. 调查阶段调用了过多工具
 
+- **状态**：已实现约束，待重新运行 Baseline 验证。
 - **出现情况**：connection 和 credential 运行中，Agent 查询了大量无关或重复的指标、
   日志、链路、配置和连接信息，在提交方案或升级事件前耗尽步数。
 - **原因**：Agent 缺少按故障类型选择工具的约束，也缺少“证据已经足够”的停止判断，
   因此倾向于遍历可用的观测工具。
+- **解决**：Agent 先使用公共只读工具收集证据，再从轻量 Skill Catalog 中自主调用
+  `load_skill`；Harness 只校验 Skill、证据引用、同时加载上限和工具权限。支持最多两个
+  Active Skills，也可用 `unload_skill` 撤销已被新证据否定的假设。可见工具始终限制为
+  Workflow 当前权限与“公共工具 + Active Skills 工具并集”的交集。
 
 ## 3. Connection 版本参数被错误理解
 
@@ -54,3 +59,13 @@
   自由文本根因、Evidence 语义映射和结构化 Experience 等检查会被跳过。
 - **原因**：Run Artifact 尚未保存对应的结构化事实，或现有数据缺少与 expectation 的
   稳定关联，Evaluator 无法据此作出确定性判断。
+
+## 8. Agent 无法正确引用 Skill 加载证据
+
+- **状态**：已修复，并通过 Mapping 真实场景冒烟验证。
+- **出现情况**：Agent 能选中正确的 Mapping Skill，但连续把工具名、错误码、资源 ID 等
+  填入 `evidence_refs`，`load_skill` 被 Harness 拒绝，最终耗尽最大步数。
+- **原因**：Harness 要求引用成功只读工具的调用 ID，但模型可见的工具结果没有显式返回
+  这个值；该引用只存在于内部调用协议和 Run Artifact 中，模型只能猜测。
+- **解决**：每个成功只读工具结果显式返回调用级 `evidence_ref`；提示词和工具参数说明要求
+  `load_skill`、`unload_skill` 原样复制该值，Harness 继续执行严格引用校验。

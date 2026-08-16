@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -319,6 +320,37 @@ func (r *Recorder) RecordToolCall(callID, name string, action workflow.AgentActi
 func (r *Recorder) RecordUnknownTool(name, arguments, output string, err error) {
 	started := r.now()
 	r.RecordToolCall("", name, "", arguments, output, started, err, true)
+}
+
+// ValidateEvidenceRefs 确认引用对应本次运行中已经成功完成的只读工具调用。
+// Agent 可以引用工具调用 ID，或 Artifact 生成的稳定 evidence_ref。
+func (r *Recorder) ValidateEvidenceRefs(refs []string) error {
+	if r == nil {
+		return fmt.Errorf("run artifact recorder is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	available := make(map[string]struct{})
+	for _, run := range r.artifact.AgentRuns {
+		for _, call := range run.ToolCalls {
+			if call.Status != "succeeded" || call.Action != workflow.AgentActionRead {
+				continue
+			}
+			if call.CallID != "" {
+				available[call.CallID] = struct{}{}
+			}
+			if call.EvidenceRef != "" {
+				available[call.EvidenceRef] = struct{}{}
+			}
+		}
+	}
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if _, exists := available[ref]; !exists {
+			return fmt.Errorf("evidence reference %q does not identify a successful read tool call", ref)
+		}
+	}
+	return nil
 }
 
 func (r *Recorder) Finish(stopReason string, snapshot workflow.Snapshot, err error) RunArtifact {

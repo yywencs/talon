@@ -10,8 +10,10 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wen/opentalon/internal/runartifact"
 	"github.com/wen/opentalon/internal/scenario"
 	"github.com/wen/opentalon/internal/simulator"
+	"github.com/wen/opentalon/internal/skill"
 	"github.com/wen/opentalon/internal/workflow"
 )
 
@@ -58,6 +60,85 @@ func TestToolOpsAgentRunsReActWithIncidentTools(t *testing.T) {
 	graph, options := toolOpsAgent.ExportGraph()
 	assert.NotNil(t, graph)
 	assert.NotEmpty(t, options)
+}
+
+func TestToolOpsAgentLoadsSkillAndFiltersTools(t *testing.T) {
+	ctx := context.Background()
+	service, incidentID := testSimulator(t)
+	chatModel := &scriptedModel{response: func(call int) *schema.Message {
+		switch call {
+		case 1:
+			return schema.AssistantMessage("", []schema.ToolCall{{
+				ID:       "call-query-logs",
+				Function: schema.FunctionCall{Name: "query_logs", Arguments: `{}`},
+			}})
+		case 2:
+			return schema.AssistantMessage("", []schema.ToolCall{{
+				ID: "call-load-mapping",
+				Function: schema.FunctionCall{Name: "load_skill", Arguments: `{
+					"skill_name":"mapping-diagnosis",
+					"reason":"参数类型错误与近期配置变更相关",
+					"evidence_refs":["call-query-logs"]
+				}`},
+			}})
+		case 3:
+			return schema.AssistantMessage("", []schema.ToolCall{{
+				ID:       "call-get-changes",
+				Function: schema.FunctionCall{Name: "get_change_records", Arguments: `{}`},
+			}})
+		default:
+			return schema.AssistantMessage("已加载 Mapping Skill，继续验证版本差异。", nil)
+		}
+	}}
+	flow := investigatingWorkflow(t, incidentID)
+	recorder := runartifact.New(incidentID, runartifact.Provenance{}, runartifact.RunConfig{})
+	registry, err := skill.LoadDirectory("../../skills")
+	require.NoError(t, err)
+	session, err := skill.NewSession(registry, 2, recorder.ValidateEvidenceRefs)
+	require.NoError(t, err)
+
+	toolOpsAgent, err := NewToolOpsAgent(ctx, Config{
+		Model: chatModel, Platform: service, IncidentID: incidentID, Workflow: flow, Skills: session, Artifact: recorder,
+	})
+	require.NoError(t, err)
+	recorder.BeginAgentRun("先用公开证据选择需要的 Skill", flow.Snapshot())
+	first, err := toolOpsAgent.Run(ctx, "先用公开证据选择需要的 Skill")
+	recorder.EndAgentRun(flow.Snapshot(), err)
+	require.NoError(t, err)
+	require.Equal(t, schema.Tool, first.Role)
+	require.Equal(t, "load_skill", first.ToolName)
+	require.Equal(t, []string{"mapping-diagnosis"}, activeNamesForTest(session.Active()))
+	snapshot := flow.Snapshot()
+	require.Equal(t, workflow.StateInvestigating, snapshot.State)
+	require.Equal(t, workflow.EventSkillLoaded, snapshot.History[len(snapshot.History)-1].Event)
+
+	discoveryTools, inputs := chatModel.snapshot()
+	assert.Contains(t, discoveryTools, "load_skill")
+	assert.Contains(t, discoveryTools, "query_logs")
+	assert.NotContains(t, discoveryTools, "submit_plan")
+	assert.NotContains(t, discoveryTools, "get_change_records")
+	require.Len(t, inputs, 2)
+	assert.Contains(t, inputs[0][0].Content, "可安装 Skill Catalog")
+	assert.Contains(t, inputs[0][0].Content, "当前没有加载诊断 Skill")
+	assert.True(t, containsToolResult(inputs[1], "query_logs", `"evidence_ref":"call-query-logs"`))
+
+	recorder.BeginAgentRun("继续调查并验证 Mapping 假设", flow.Snapshot())
+	_, err = toolOpsAgent.Run(ctx, "继续调查并验证 Mapping 假设")
+	recorder.EndAgentRun(flow.Snapshot(), err)
+	require.NoError(t, err)
+	_, inputs = chatModel.snapshot()
+	require.Len(t, inputs, 4)
+	assert.Contains(t, inputs[2][0].Content, "当前已加载诊断 Skill：mapping-diagnosis")
+	assert.Contains(t, inputs[2][0].Content, "定位参数映射、Schema 或配置版本回归")
+	assert.True(t, containsToolResult(inputs[3], "get_change_records", `"data"`))
+}
+
+func activeNamesForTest(values []skill.Definition) []string {
+	result := make([]string, len(values))
+	for index := range values {
+		result[index] = values[index].Name
+	}
+	return result
 }
 
 func TestNewToolOpsAgentValidatesConfig(t *testing.T) {

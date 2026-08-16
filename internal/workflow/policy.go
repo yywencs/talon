@@ -21,6 +21,8 @@ const (
 	AgentActionQueryOperation AgentAction = "query_operation"
 	// AgentActionEscalate 代表 Agent 停止自治并提交证据，请求人工接管。
 	AgentActionEscalate AgentAction = "escalate"
+	// AgentActionManageSkill 代表按公开证据加载或卸载诊断 Skill，不执行平台写操作。
+	AgentActionManageSkill AgentAction = "manage_skill"
 )
 
 type agentActionSet map[AgentAction]struct{}
@@ -76,6 +78,7 @@ var stateAgentActions = map[State]agentActionSet{
 func investigationActions() agentActionSet {
 	return agentActions(
 		AgentActionRead,
+		AgentActionManageSkill,
 		AgentActionQueryOperation,
 		AgentActionSubmitPlan,
 		AgentActionEscalate,

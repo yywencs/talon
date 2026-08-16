@@ -22,6 +22,7 @@ import (
 	"github.com/wen/opentalon/internal/runartifact"
 	"github.com/wen/opentalon/internal/scenario"
 	"github.com/wen/opentalon/internal/simulator"
+	"github.com/wen/opentalon/internal/skill"
 	"github.com/wen/opentalon/internal/storage"
 	"github.com/wen/opentalon/internal/workflow"
 )
@@ -31,6 +32,7 @@ const defaultScenarioID = "mapping-regression-rollback-001"
 // Config 定义一次独立、完整的 ToolOps 场景运行。
 type Config struct {
 	DatasetRoot         string
+	SkillDirectory      string
 	ScenarioID          string
 	Model               model.ToolCallingChatModel
 	InvestigatorFactory func(*workflow.IncidentWorkflow, platform.ToolOpsPlatform) (controller.Investigator, error)
@@ -163,9 +165,22 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 		if cfg.Model == nil {
 			return Result{}, fmt.Errorf("model is required when investigator factory is not provided")
 		}
+		skillDirectory := strings.TrimSpace(cfg.SkillDirectory)
+		if skillDirectory == "" {
+			skillDirectory = skill.DefaultDirectory
+		}
+		registry, registryErr := skill.LoadDirectory(skillDirectory)
+		if registryErr != nil {
+			return Result{}, fmt.Errorf("load Skill Registry: %w", registryErr)
+		}
+		skillSession, sessionErr := skill.NewSession(registry, skill.DefaultMaxActive, recorder.ValidateEvidenceRefs)
+		if sessionErr != nil {
+			return Result{}, fmt.Errorf("create Skill session: %w", sessionErr)
+		}
+		printer.printf("[skill] catalog=%d active=0 max_active=%d\n", registry.Len(), skill.DefaultMaxActive)
 		toolOpsAgent, buildErr := agent.NewToolOpsAgent(ctx, agent.Config{
 			Model: cfg.Model, Platform: service, IncidentID: item.Scenario.Metadata.ID,
-			Workflow: flow, MaxSteps: cfg.AgentMaxSteps, Artifact: recorder,
+			Workflow: flow, MaxSteps: cfg.AgentMaxSteps, Artifact: recorder, Skills: skillSession,
 		})
 		if buildErr != nil {
 			return Result{}, fmt.Errorf("create ToolOps Agent: %w", buildErr)

@@ -84,6 +84,8 @@ var transitionRules = map[State]map[EventType]transitionRule{
 	},
 	StateInvestigating: {
 		EventPlanSubmitted: {to: StatePlanned, actors: actors(ActorAgent)},
+		EventSkillLoaded:   {to: StateInvestigating, actors: actors(ActorAgent)},
+		EventSkillUnloaded: {to: StateInvestigating, actors: actors(ActorAgent)},
 	},
 	StatePlanned: {
 		EventPlanApproved:     {to: StateRemediating, actors: actors(ActorWorkflow)},
@@ -111,6 +113,8 @@ var transitionRules = map[State]map[EventType]transitionRule{
 	},
 	StateReinvestigating: {
 		EventPlanSubmitted: {to: StatePlanned, actors: actors(ActorAgent)},
+		EventSkillLoaded:   {to: StateReinvestigating, actors: actors(ActorAgent)},
+		EventSkillUnloaded: {to: StateReinvestigating, actors: actors(ActorAgent)},
 	},
 	StateCompensating: {
 		EventStageSucceeded: {to: StateReinvestigating, actors: actors(ActorWorkflow)},

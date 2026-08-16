@@ -24,6 +24,10 @@ func TestRecorderSummarizesModelsEvidenceAndBlockedCalls(t *testing.T) {
 	}}, nil)
 	recorder.RecordToolCall("call-1", "query_logs", workflow.AgentActionRead, `{}`, `{"data":[{"code":"connection_refused"}]}`, started, nil, false)
 	recorder.RecordToolCall("call-2", "submit_plan", workflow.AgentActionSubmitPlan, `{}`, `{"data":null,"error":"not allowed in state planned"}`, started, nil, true)
+	require.NoError(t, recorder.ValidateEvidenceRefs([]string{"call-1"}))
+	current := recorder.Snapshot()
+	require.NoError(t, recorder.ValidateEvidenceRefs([]string{current.AgentRuns[0].ToolCalls[0].EvidenceRef}))
+	require.ErrorContains(t, recorder.ValidateEvidenceRefs([]string{"call-2"}), "does not identify a successful read")
 	recorder.EndAgentRun(workflow.Snapshot{State: workflow.StatePlanned}, nil)
 	recorder.RecordFinalState(nil, FinalState{WorkflowState: workflow.StatePlanned})
 

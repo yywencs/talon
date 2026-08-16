@@ -9,6 +9,7 @@ import (
 
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/wen/opentalon/internal/platform"
+	"github.com/wen/opentalon/internal/skill"
 	"github.com/wen/opentalon/internal/workflow"
 )
 
@@ -21,7 +22,26 @@ type Set struct {
 }
 
 type options struct {
-	workflow *workflow.IncidentWorkflow
+	workflow     *workflow.IncidentWorkflow
+	skillSession *skill.Session
+}
+
+var discoveryAgentToolNames = []string{
+	"get_services",
+	"get_routes",
+	"get_providers",
+	"query_metrics",
+	"query_logs",
+	"load_skill",
+	"escalate_incident",
+}
+
+var activeSkillCoreToolNames = []string{
+	"get_remediation_capabilities",
+	"get_recovery_policies",
+	"get_operation",
+	"submit_plan",
+	"unload_skill",
 }
 
 // Option 配置 Incident 工具集的可选能力。
@@ -30,6 +50,11 @@ type Option func(*options)
 // WithWorkflow 让工具集增加 submit_plan，并为工具记录 AgentAction 分类。
 func WithWorkflow(value *workflow.IncidentWorkflow) Option {
 	return func(target *options) { target.workflow = value }
+}
+
+// WithSkillSession 为工具集增加由 Harness 控制的 Skill 渐进加载工具。
+func WithSkillSession(value *skill.Session) Option {
+	return func(target *options) { target.skillSession = value }
 }
 
 // New 构建只绑定到指定 Incident 和 Platform 实例的安全工具集。
@@ -70,6 +95,17 @@ func New(ctx context.Context, service platform.ToolOpsPlatform, incidentID strin
 	for _, item := range staticTools {
 		if err := set.add(ctx, item); err != nil {
 			return nil, err
+		}
+	}
+	if config.skillSession != nil {
+		skillTools, skillErr := buildSkillTools(config.skillSession)
+		if skillErr != nil {
+			return nil, skillErr
+		}
+		for _, item := range skillTools {
+			if err := set.add(ctx, item); err != nil {
+				return nil, err
+			}
 		}
 	}
 	for _, capability := range capabilities {
@@ -144,6 +180,69 @@ func (s *Set) ToolsForActions(actions []workflow.AgentAction) []einotool.BaseToo
 	return result
 }
 
+// AgentToolNamesForSkills 返回渐进披露后的工具白名单。未加载 Skill 时只提供
+// 公共调查和 load_skill；至少加载一个 Skill 后才增加 Plan、恢复策略和卸载能力。
+func AgentToolNamesForSkills(skillTools []string, hasActiveSkill bool) []string {
+	capacity := len(discoveryAgentToolNames) + len(skillTools)
+	if hasActiveSkill {
+		capacity += len(activeSkillCoreToolNames)
+	}
+	result := make([]string, 0, capacity)
+	seen := make(map[string]struct{}, cap(result))
+	names := append([]string(nil), discoveryAgentToolNames...)
+	if hasActiveSkill {
+		names = append(names, activeSkillCoreToolNames...)
+	}
+	names = append(names, skillTools...)
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		result = append(result, name)
+	}
+	return result
+}
+
+// ToolsForActionsAndNames 只返回同时通过 Workflow Action 和 Skill 工具白名单的工具。
+// 白名单中的未知工具或非 Agent 工具属于部署配置错误，因此直接拒绝启动 Agent。
+func (s *Set) ToolsForActionsAndNames(actions []workflow.AgentAction, names []string) ([]einotool.BaseTool, error) {
+	if s == nil {
+		return nil, fmt.Errorf("tool set is required")
+	}
+	allowedNames := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if _, exists := s.invokable[name]; !exists {
+			return nil, fmt.Errorf("skill tool %q is not registered for this incident", name)
+		}
+		if _, classified := s.actions[name]; !classified {
+			return nil, fmt.Errorf("skill tool %q is not available to the Agent workflow", name)
+		}
+		allowedNames[name] = struct{}{}
+	}
+	actionSet := make(map[workflow.AgentAction]struct{}, len(actions))
+	for _, action := range actions {
+		actionSet[action] = struct{}{}
+	}
+	result := make([]einotool.BaseTool, 0, len(names))
+	for index, item := range s.tools {
+		name := s.names[index]
+		if _, allowed := allowedNames[name]; !allowed {
+			continue
+		}
+		action, classified := s.actions[name]
+		if _, visible := actionSet[action]; classified && visible {
+			result = append(result, item)
+		}
+	}
+	return result, nil
+}
+
 // AgentAction 返回具体工具对应的 Workflow AgentAction。
 func (s *Set) AgentAction(name string) (workflow.AgentAction, bool) {
 	if s == nil {
@@ -183,6 +282,8 @@ func agentActionForTool(name string) (workflow.AgentAction, bool) {
 		return workflow.AgentActionRead, true
 	case "get_operation":
 		return workflow.AgentActionQueryOperation, true
+	case "load_skill", "unload_skill":
+		return workflow.AgentActionManageSkill, true
 	case "submit_plan":
 		return workflow.AgentActionSubmitPlan, true
 	case "escalate_incident":
