@@ -225,7 +225,8 @@ func TestToolOpsAgentEscalationUpdatesWorkflow(t *testing.T) {
 			return schema.AssistantMessage("", []schema.ToolCall{{
 				ID: "escalate-1",
 				Function: schema.FunctionCall{Name: "escalate_incident", Arguments: `{
-					"reason":"no_safe_remediation_available",
+					"reason_code":"no_safe_remediation_available",
+					"reason":"当前没有安全自动修复能力",
 					"evidence_refs":["credential:revoked"],
 					"idempotency_key":"escalate-001"
 				}`},
@@ -246,6 +247,10 @@ func TestToolOpsAgentEscalationUpdatesWorkflow(t *testing.T) {
 	assert.Equal(t, "escalate-1", result.ToolCallID)
 	assert.Equal(t, workflow.StateEscalated, flow.Snapshot().State)
 	assert.Equal(t, workflow.StateInvestigating, flow.Snapshot().SuspendedState)
+	history := flow.Snapshot().History
+	require.NotEmpty(t, history)
+	assert.Equal(t, "no_safe_remediation_available", history[len(history)-1].Metadata["reason_code"])
+	assert.Equal(t, "当前没有安全自动修复能力", history[len(history)-1].Reason)
 	_, inputs := chatModel.snapshot()
 	require.Len(t, inputs, 1)
 }

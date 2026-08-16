@@ -15,7 +15,7 @@ description: >-
 3. 调用 `get_credential_metadata` 读取凭据 ID、状态和管理方；不得请求或推断密钥内容。
 4. 查询已注册的修复能力，确认 Agent 是否拥有经过授权的安全修复动作。
 5. 仅在存在明确、安全且已授权的修复能力时获取恢复策略并调用 `submit_plan`。
-6. 凭据已撤销、由外部系统管理或不存在安全修复能力时，携带证据调用 `escalate_incident`。
+6. 凭据已撤销、由外部系统管理或不存在安全修复能力时，携带证据调用 `escalate_incident`；没有安全自动修复能力时使用 `reason_code=no_safe_remediation_available`，并在 `reason` 中说明具体事实和人工建议。
 
 ## 证据与停止条件
 

@@ -208,6 +208,9 @@ func (s *Simulator) EscalateIncident(ctx context.Context, request platform.Escal
 		return operation, err
 	}
 	operation := w.newOperationLocked(request.IncidentID, platform.OperationEscalation, w.escalationTool.Name, request.IdempotencyKey)
+	if !request.ReasonCode.Valid() {
+		return w.rejectOperationLocked(operation, "valid escalation reason_code is required", platform.ErrPreconditionFailed)
+	}
 	if strings.TrimSpace(request.Reason) == "" {
 		return w.rejectOperationLocked(operation, "escalation reason is required", platform.ErrPreconditionFailed)
 	}
@@ -216,7 +219,8 @@ func (s *Simulator) EscalateIncident(ctx context.Context, request platform.Escal
 	operation.UpdatedAt = w.now
 	operation.Message = "incident escalation accepted"
 	operation.Result = map[string]any{
-		"reason": request.Reason, "evidence_refs": append([]string(nil), request.EvidenceRefs...),
+		"reason_code": string(request.ReasonCode), "reason": request.Reason,
+		"evidence_refs":           append([]string(nil), request.EvidenceRefs...),
 		"attempted_operation_ids": append([]string(nil), request.AttemptedOperationIDs...),
 	}
 	if destination := asString(behavior["destination"]); destination != "" {

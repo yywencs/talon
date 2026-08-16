@@ -26,11 +26,12 @@ type operationInput struct {
 }
 
 type escalationInput struct {
-	Reason                string         `json:"reason" jsonschema:"required,description=升级人工的明确原因"`
-	EvidenceRefs          []string       `json:"evidence_refs" jsonschema:"required,description=支持判断的日志、Trace、指标或状态引用"`
-	AttemptedOperationIDs []string       `json:"attempted_operation_ids,omitempty" jsonschema:"description=已经尝试过的修复或探测操作ID"`
-	ProtectionState       map[string]any `json:"protection_state,omitempty" jsonschema:"description=当前熔断或降权保护状态"`
-	IdempotencyKey        string         `json:"idempotency_key" jsonschema:"required,description=本次升级请求的唯一幂等键"`
+	ReasonCode            platform.EscalationReasonCode `json:"reason_code" jsonschema:"required,description=停止自治并升级的稳定类别；只能使用 suspected_security_incident、possible_data_corruption、critical_telemetry_missing、no_safe_remediation_available、insufficient_permissions、credential_change_requires_human、rollback_failed、blast_radius_expanding 或 workflow_budget_exhausted"`
+	Reason                string                        `json:"reason" jsonschema:"required,description=升级人工的明确原因"`
+	EvidenceRefs          []string                      `json:"evidence_refs" jsonschema:"required,description=支持判断的日志、Trace、指标或状态引用"`
+	AttemptedOperationIDs []string                      `json:"attempted_operation_ids,omitempty" jsonschema:"description=已经尝试过的修复或探测操作ID"`
+	ProtectionState       map[string]any                `json:"protection_state,omitempty" jsonschema:"description=当前熔断或降权保护状态"`
+	IdempotencyKey        string                        `json:"idempotency_key" jsonschema:"required,description=本次升级请求的唯一幂等键"`
 }
 
 func buildActionTools(service platform.ToolOpsPlatform, incidentID string) ([]einotool.InvokableTool, error) {
@@ -61,7 +62,7 @@ func buildActionTools(service platform.ToolOpsPlatform, incidentID string) ([]ei
 	}
 	escalation, err := toolutils.InferTool("escalate_incident", "当没有安全修复方案、修复超过策略限制、需要更高权限或风险继续扩大时，提交结构化证据并升级人工处理。", func(ctx context.Context, input escalationInput) (response[platform.Operation], error) {
 		result, callErr := service.EscalateIncident(ctx, platform.EscalationRequest{
-			IncidentID: incidentID, Reason: input.Reason, EvidenceRefs: input.EvidenceRefs,
+			IncidentID: incidentID, ReasonCode: input.ReasonCode, Reason: input.Reason, EvidenceRefs: input.EvidenceRefs,
 			AttemptedOperationIDs: input.AttemptedOperationIDs, ProtectionState: input.ProtectionState,
 			IdempotencyKey: input.IdempotencyKey,
 		})

@@ -353,9 +353,9 @@ func workflowToolGuard(instance *workflow.IncidentWorkflow, tools *toolset.Set, 
 					}
 				}
 				if action == workflow.AgentActionEscalate && toolResponseSucceeded(output.Result) {
-					if _, applyErr := instance.Apply(workflow.Event{Type: workflow.EventEscalated, Actor: workflow.ActorAgent}); applyErr != nil {
+					if applyErr := applyEscalation(instance, output.Result); applyErr != nil {
 						recordToolCall(recorder, input, action, output, started, applyErr, false)
-						return nil, fmt.Errorf("apply escalation event: %w", applyErr)
+						return nil, applyErr
 					}
 				}
 				if action == workflow.AgentActionManageSkill && toolResponseSucceeded(output.Result) {
@@ -373,6 +373,33 @@ func workflowToolGuard(instance *workflow.IncidentWorkflow, tools *toolset.Set, 
 			}
 		},
 	}
+}
+
+func applyEscalation(instance *workflow.IncidentWorkflow, result string) error {
+	var decoded struct {
+		Data platform.Operation `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(result), &decoded); err != nil {
+		return fmt.Errorf("decode escalate_incident result: %w", err)
+	}
+	reasonCode, _ := decoded.Data.Result["reason_code"].(string)
+	if !platform.EscalationReasonCode(reasonCode).Valid() {
+		return errors.New("escalate_incident returned an invalid reason_code")
+	}
+	reason, _ := decoded.Data.Result["reason"].(string)
+	metadata := map[string]string{
+		"operation_id": decoded.Data.ID,
+		"reason_code":  reasonCode,
+	}
+	if destination, ok := decoded.Data.Result["destination"].(string); ok && destination != "" {
+		metadata["destination"] = destination
+	}
+	if _, err := instance.Apply(workflow.Event{
+		Type: workflow.EventEscalated, Actor: workflow.ActorAgent, Reason: reason, Metadata: metadata,
+	}); err != nil {
+		return fmt.Errorf("apply escalation event: %w", err)
+	}
+	return nil
 }
 
 func returnAfterTerminalAction(ctx context.Context, instance *workflow.IncidentWorkflow, action workflow.AgentAction, output *compose.ToolOutput) error {

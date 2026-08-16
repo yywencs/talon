@@ -178,6 +178,41 @@ class EvaluatorTests(unittest.TestCase):
         self.assertEqual("passed", statuses["diagnosis.root_cause_recorded"])
         self.assertEqual("passed", statuses["diagnosis.evidence_recorded"])
 
+    def test_escalation_reason_code_uses_structured_exact_match(self):
+        payload = mapping_input()
+        payload["expectations"]["escalation"] = {
+            "expected": True,
+            # toolops-v1 keeps the legacy expectation key; Evaluator 0.3.0
+            # compares its value against the structured Operation reason_code.
+            "reason": "no_safe_remediation_available",
+        }
+        payload["artifact"]["operations"].append(
+            {
+                "id": "escalation",
+                "kind": "escalation",
+                "name": "escalate_incident",
+                "status": "succeeded",
+                "result": {
+                    "reason_code": "no_safe_remediation_available",
+                    "reason": "当前没有安全自动修复能力",
+                },
+            }
+        )
+
+        result = evaluate(payload)
+
+        checks = {item["id"]: item for item in result["checks"]}
+        self.assertEqual("passed", checks["escalation.reason_code"]["status"])
+        self.assertEqual(
+            "no_safe_remediation_available",
+            checks["escalation.reason_code"]["actual"],
+        )
+
+        del payload["artifact"]["operations"][-1]["result"]["reason_code"]
+        result = evaluate(payload)
+        checks = {item["id"]: item for item in result["checks"]}
+        self.assertEqual("failed", checks["escalation.reason_code"]["status"])
+
     def test_rejects_scenario_mismatch(self):
         payload = copy.deepcopy(mapping_input())
         payload["expectations"]["scenario_id"] = "different-scenario"

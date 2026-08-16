@@ -42,10 +42,14 @@
 
 ## 5. Credential 升级原因缺少结构化字段
 
+- **状态**：已修复，并通过 Credential 真实场景冒烟和离线评测验证。
 - **出现情况**：Agent 正确调用了 `escalate_incident`，也提供了文字原因和证据，但
   Evaluator 无法确认它是否满足 `no_safe_remediation_available` 这一期望。
 - **原因**：升级动作目前只保存自由文本 `reason`，没有稳定的 `reason_code`，因此无法
   进行确定性评测。
+- **解决**：`escalate_incident` 现在要求从稳定类别中选择 `reason_code`，同时保留人类可读
+  `reason`。Simulator 将两者写入升级 Operation，Workflow 记录代码，Evaluator 对
+  `reason_code` 做精确匹配，不再从自由文本推断协议语义。
 
 ## 6. 预期升级在 CLI 中仍表现为错误
 

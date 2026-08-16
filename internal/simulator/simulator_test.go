@@ -155,13 +155,23 @@ func TestSimulatorRejectsCredentialMutationAndEscalates(t *testing.T) {
 	require.True(t, errors.Is(err, platform.ErrPreconditionFailed))
 	require.Equal(t, platform.OperationRejected, probe.Status)
 
+	rejectedEscalation, err := simulator.EscalateIncident(ctx, platform.EscalationRequest{
+		IncidentID: item.Scenario.Metadata.ID, Reason: "缺少结构化升级类别",
+		EvidenceRefs: []string{"log:provider_unauthorized"}, IdempotencyKey: "escalate-missing-code",
+	})
+	require.Error(t, err)
+	require.ErrorIs(t, err, platform.ErrPreconditionFailed)
+	require.Equal(t, platform.OperationRejected, rejectedEscalation.Status)
+
 	escalation, err := simulator.EscalateIncident(ctx, platform.EscalationRequest{
-		IncidentID: item.Scenario.Metadata.ID, Reason: "no_safe_remediation_available",
+		IncidentID: item.Scenario.Metadata.ID, ReasonCode: platform.EscalationReasonNoSafeRemediationAvailable,
+		Reason:                "凭据由外部系统管理，当前没有安全自动修复能力",
 		EvidenceRefs:          []string{"log:provider_unauthorized", "credential:credential-doc-a-v7"},
 		AttemptedOperationIDs: []string{operation.ID}, IdempotencyKey: "escalate-001",
 	})
 	require.NoError(t, err)
 	require.Equal(t, "platform-security-oncall", escalation.Result["destination"])
+	require.Equal(t, "no_safe_remediation_available", escalation.Result["reason_code"])
 }
 
 func TestSimulatorUsesFailedProbeEvidenceBeforeRecreatingPool(t *testing.T) {

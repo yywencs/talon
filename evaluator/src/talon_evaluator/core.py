@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-EVALUATOR_VERSION = "0.2.0"
+EVALUATOR_VERSION = "0.3.0"
 INPUT_SCHEMA_VERSION = "talon.evaluation-input/v1"
 RESULT_SCHEMA_VERSION = "talon.evaluation-result/v1"
 ARTIFACT_SCHEMA_VERSION = "talon.run-artifact/v2"
@@ -524,15 +524,16 @@ def _score_escalation(
             bool(escalation_ops),
             "escalation operation presence must match expectations",
         )
-    if expected.get("reason"):
-        actual = _dict(escalation_ops[-1].get("result")).get("reason") if escalation_ops else None
+    expected_reason_code = expected.get("reason_code") or expected.get("reason")
+    if expected_reason_code:
+        actual = _dict(escalation_ops[-1].get("result")).get("reason_code") if escalation_ops else None
         checks.add(
-            "escalation.reason",
+            "escalation.reason_code",
             "escalation",
-            _contains_normalized(actual, expected.get("reason")),
-            expected.get("reason"),
+            actual == expected_reason_code,
+            expected_reason_code,
             actual,
-            "escalation reason must contain the expected reason code",
+            "escalation reason_code must exactly match expectations",
         )
     if expected.get("destination"):
         actual = _dict(escalation_ops[-1].get("result")).get("destination") if escalation_ops else None
