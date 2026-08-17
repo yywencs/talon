@@ -1,0 +1,5 @@
+schema_version: talon-skill/v1
+allowed_tools:
+  - query_logs
+  - query_traces
+  - get_connection_metadata

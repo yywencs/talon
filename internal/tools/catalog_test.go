@@ -14,6 +14,7 @@ import (
 	"github.com/wen/opentalon/internal/platform"
 	"github.com/wen/opentalon/internal/scenario"
 	"github.com/wen/opentalon/internal/simulator"
+	"github.com/wen/opentalon/internal/skill"
 	"github.com/wen/opentalon/internal/workflow"
 )
 
@@ -176,6 +177,61 @@ func TestWorkflowToolsExposeOnlyAllowedAgentActions(t *testing.T) {
 	require.NotContains(t, plannedVisible, "submit_plan")
 	require.Contains(t, plannedVisible, "query_metrics")
 	require.Contains(t, plannedVisible, "escalate_incident")
+}
+
+func TestSkillToolsIntersectWorkflowAndSkillWhitelist(t *testing.T) {
+	instance, item := newTestSimulator(t, "mapping-regression-rollback-001")
+	ctx := context.Background()
+	flow, err := workflow.NewIncidentWorkflow(workflow.Config{IncidentID: item.Scenario.Metadata.ID})
+	require.NoError(t, err)
+	_, err = flow.Apply(workflow.Event{Type: workflow.EventStartInvestigation, Actor: workflow.ActorController})
+	require.NoError(t, err)
+	registry, err := skill.LoadDirectory("../../skills")
+	require.NoError(t, err)
+	session, err := skill.NewSession(registry, 2, nil)
+	require.NoError(t, err)
+
+	set, err := New(ctx, instance, item.Scenario.Metadata.ID, WithWorkflow(flow), WithSkillSession(session))
+	require.NoError(t, err)
+	policy := AgentToolNamesForSkills(nil, false)
+	visibleTools, err := set.ToolsForActionsAndNames(flow.AllowedAgentActions(), policy)
+	require.NoError(t, err)
+	visible := namesOfTools(t, visibleTools)
+	require.Contains(t, visible, "query_metrics")
+	require.Contains(t, visible, "query_logs")
+	require.Contains(t, visible, "load_skill")
+	require.NotContains(t, visible, "submit_plan")
+	require.NotContains(t, visible, "get_change_records")
+
+	_, err = session.Activate("mapping-diagnosis", "mapping evidence", []string{"call-query-logs"})
+	require.NoError(t, err)
+	active := session.Active()
+	policy = AgentToolNamesForSkills(active[0].AllowedTools, true)
+	visibleTools, err = set.ToolsForActionsAndNames(flow.AllowedAgentActions(), policy)
+	require.NoError(t, err)
+	visible = namesOfTools(t, visibleTools)
+	require.Contains(t, visible, "submit_plan")
+	require.Contains(t, visible, "get_change_records")
+	require.Contains(t, visible, "unload_skill")
+	require.NotContains(t, visible, "get_credential_metadata")
+	require.NotContains(t, visible, "get_connection_metadata")
+	require.NotContains(t, visible, "get_tasks")
+	_, err = session.Activate("credential-diagnosis", "authentication evidence", []string{"call-query-logs"})
+	require.NoError(t, err)
+	active = session.Active()
+	combined := append(append([]string(nil), active[0].AllowedTools...), active[1].AllowedTools...)
+	policy = AgentToolNamesForSkills(combined, true)
+	visibleTools, err = set.ToolsForActionsAndNames(flow.AllowedAgentActions(), policy)
+	require.NoError(t, err)
+	visible = namesOfTools(t, visibleTools)
+	require.Contains(t, visible, "get_change_records")
+	require.Contains(t, visible, "get_credential_metadata")
+	require.NotContains(t, visible, "get_connection_metadata")
+
+	_, err = set.ToolsForActionsAndNames(flow.AllowedAgentActions(), []string{"unknown_tool"})
+	require.ErrorContains(t, err, "is not registered")
+	_, err = set.ToolsForActionsAndNames(flow.AllowedAgentActions(), []string{"rollback_mapping"})
+	require.ErrorContains(t, err, "not available to the Agent workflow")
 }
 
 func TestSubmitPlanToolAdvancesWorkflow(t *testing.T) {

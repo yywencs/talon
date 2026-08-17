@@ -6,19 +6,85 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/cloudwego/eino/schema"
+	"github.com/wen/opentalon/internal/platform"
 	"github.com/wen/opentalon/internal/workflow"
 )
 
 const SchemaVersion = "talon.run-artifact/v2"
 
-type Versions struct {
-	AgentVersion   string
-	DatasetVersion string
+// Provenance identifies the code and dataset that produced a run.
+type Provenance struct {
+	CodeVersion    string `json:"code_version"`
+	DatasetVersion string `json:"dataset_version"`
+}
+
+// RunConfig records the inputs that can materially change Agent behavior.
+// Secrets and endpoints must never be stored here.
+type RunConfig struct {
+	ModelProvider string `json:"model_provider,omitempty"`
+	Model         string `json:"model,omitempty"`
+	AgentMaxSteps int    `json:"agent_max_steps"`
+	AutoApprove   bool   `json:"auto_approve"`
+}
+
+// ProviderState is the evaluation-safe subset of a Provider. Endpoint details
+// are deliberately excluded from the durable artifact.
+type ProviderState struct {
+	ID               string                  `json:"id"`
+	Health           platform.ProviderHealth `json:"health"`
+	SchemaCompatible *bool                   `json:"schema_compatible,omitempty"`
+}
+
+// ConfigState excludes Simulator-only attributes that may contain hidden
+// scenario mechanics while retaining the state needed by an evaluator.
+type ConfigState struct {
+	ID           string `json:"id"`
+	Active       bool   `json:"active"`
+	KnownHealthy bool   `json:"known_healthy"`
+}
+
+// ConnectionState excludes extensible attributes while retaining observable
+// connection recovery results.
+type ConnectionState struct {
+	ProviderID              string     `json:"provider_id"`
+	PoolGeneration          int        `json:"pool_generation"`
+	ResolverCacheGeneration int        `json:"resolver_cache_generation"`
+	ResolvedIP              string     `json:"resolved_ip,omitempty"`
+	ActiveConnections       int        `json:"active_connections"`
+	TargetConnections       int        `json:"target_connections"`
+	ConfigFingerprint       string     `json:"config_fingerprint,omitempty"`
+	LastPingAt              *time.Time `json:"last_ping_at,omitempty"`
+}
+
+// TaskState is the evaluation-safe subset of a managed asynchronous task.
+type TaskState struct {
+	ID         string              `json:"id"`
+	Type       string              `json:"type"`
+	Name       string              `json:"name"`
+	Status     platform.TaskStatus `json:"status"`
+	ProviderID string              `json:"provider_id,omitempty"`
+	Attempts   int                 `json:"attempts"`
+	Idempotent bool                `json:"idempotent"`
+	LastError  string              `json:"last_error,omitempty"`
+}
+
+// FinalState is a deliberately reduced view of the managed world at the end
+// of a run. It contains observable outcomes, not timelines or hidden causes.
+type FinalState struct {
+	WorkflowState workflow.State          `json:"workflow_state,omitempty"`
+	VirtualTime   time.Time               `json:"virtual_time,omitempty"`
+	Routes        []platform.Route        `json:"routes"`
+	Providers     []ProviderState         `json:"providers"`
+	Configs       []ConfigState           `json:"configs"`
+	Connections   []ConnectionState       `json:"connections"`
+	Tasks         []TaskState             `json:"tasks"`
+	Traffic       platform.TrafficProfile `json:"traffic"`
 }
 
 type TokenUsage struct {
@@ -103,22 +169,24 @@ type Failure struct {
 }
 
 type RunArtifact struct {
-	ArtifactSchemaVersion string                `json:"artifact_schema_version"`
-	AgentVersion          string                `json:"agent_version"`
-	DatasetVersion        string                `json:"dataset_version"`
-	RunID                 string                `json:"run_id"`
-	ScenarioID            string                `json:"scenario_id"`
-	StartedAt             time.Time             `json:"started_at"`
-	FinishedAt            time.Time             `json:"finished_at"`
-	Duration              time.Duration         `json:"duration"`
-	Outcome               string                `json:"outcome"`
-	StopReason            string                `json:"stop_reason,omitempty"`
-	Failure               *Failure              `json:"failure,omitempty"`
-	AgentRuns             []AgentRun            `json:"agent_runs"`
-	Plans                 []workflow.Plan       `json:"plans"`
-	WorkflowHistory       []workflow.Transition `json:"workflow_history"`
-	BlockedAttempts       []BlockedAttempt      `json:"blocked_attempts"`
-	Summary               Summary               `json:"summary"`
+	SchemaVersion   string                `json:"schema_version"`
+	Provenance      Provenance            `json:"provenance"`
+	RunConfig       RunConfig             `json:"run_config"`
+	RunID           string                `json:"run_id"`
+	ScenarioID      string                `json:"scenario_id"`
+	StartedAt       time.Time             `json:"started_at"`
+	FinishedAt      time.Time             `json:"finished_at"`
+	Duration        time.Duration         `json:"duration"`
+	Outcome         string                `json:"outcome"`
+	StopReason      string                `json:"stop_reason,omitempty"`
+	Failure         *Failure              `json:"failure,omitempty"`
+	AgentRuns       []AgentRun            `json:"agent_runs"`
+	Plans           []workflow.Plan       `json:"plans"`
+	WorkflowHistory []workflow.Transition `json:"workflow_history"`
+	BlockedAttempts []BlockedAttempt      `json:"blocked_attempts"`
+	Operations      []platform.Operation  `json:"operations"`
+	FinalState      FinalState            `json:"final_state"`
+	Summary         Summary               `json:"summary"`
 }
 
 type Recorder struct {
@@ -130,37 +198,21 @@ type Recorder struct {
 	now              func() time.Time
 }
 
-func New(scenarioID string, versions Versions) *Recorder {
+func New(scenarioID string, provenance Provenance, config RunConfig) *Recorder {
 	now := time.Now
-	return &Recorder{artifact: RunArtifact{
-		ArtifactSchemaVersion: SchemaVersion,
-		AgentVersion:          strings.TrimSpace(versions.AgentVersion),
-		DatasetVersion:        strings.TrimSpace(versions.DatasetVersion),
-		RunID:                 newRunID(),
-		ScenarioID:            strings.TrimSpace(scenarioID),
-		StartedAt:             now(),
-		Outcome:               "running",
-		AgentRuns:             []AgentRun{},
-		Plans:                 []workflow.Plan{},
-		WorkflowHistory:       []workflow.Transition{},
-		BlockedAttempts:       []BlockedAttempt{},
-	}, evidence: map[string]struct{}{}, now: now}
+	return &Recorder{artifact: RunArtifact{SchemaVersion: SchemaVersion, Provenance: provenance, RunConfig: config, RunID: newRunID(), ScenarioID: strings.TrimSpace(scenarioID), StartedAt: now(), Outcome: "running", AgentRuns: []AgentRun{}, Plans: []workflow.Plan{}, WorkflowHistory: []workflow.Transition{}, BlockedAttempts: []BlockedAttempt{}, Operations: []platform.Operation{}, FinalState: FinalState{Routes: []platform.Route{}, Providers: []ProviderState{}, Configs: []ConfigState{}, Connections: []ConnectionState{}, Tasks: []TaskState{}}}, evidence: map[string]struct{}{}, now: now}
 }
 
-// UnmarshalJSON 兼容已经持久化的 v1 Artifact；v1 使用 schema_version 字段。
-func (r *RunArtifact) UnmarshalJSON(data []byte) error {
-	type artifactAlias RunArtifact
-	value := struct {
-		*artifactAlias
-		LegacySchemaVersion string `json:"schema_version"`
-	}{artifactAlias: (*artifactAlias)(r)}
-	if err := json.Unmarshal(data, &value); err != nil {
-		return err
+// RecordFinalState records the platform-independent operations and reduced
+// final world state used by offline evaluation.
+func (r *Recorder) RecordFinalState(operations []platform.Operation, state FinalState) {
+	if r == nil {
+		return
 	}
-	if r.ArtifactSchemaVersion == "" {
-		r.ArtifactSchemaVersion = value.LegacySchemaVersion
-	}
-	return nil
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.artifact.Operations = cloneOperations(operations)
+	r.artifact.FinalState = cloneFinalState(state)
 }
 
 func (r *Recorder) BeginAgentRun(instruction string, snapshot workflow.Snapshot) {
@@ -191,7 +243,7 @@ func (r *Recorder) EndAgentRun(snapshot workflow.Snapshot, err error) {
 		run.Plans = clonePlans(snapshot.Plans[r.currentPlanCount:])
 	}
 	r.artifact.Plans = clonePlans(snapshot.Plans)
-	r.artifact.WorkflowHistory = append([]workflow.Transition(nil), snapshot.History...)
+	r.artifact.WorkflowHistory = append([]workflow.Transition{}, snapshot.History...)
 	if err != nil {
 		run.Error = err.Error()
 	}
@@ -270,6 +322,37 @@ func (r *Recorder) RecordUnknownTool(name, arguments, output string, err error) 
 	r.RecordToolCall("", name, "", arguments, output, started, err, true)
 }
 
+// ValidateEvidenceRefs 确认引用对应本次运行中已经成功完成的只读工具调用。
+// Agent 可以引用工具调用 ID，或 Artifact 生成的稳定 evidence_ref。
+func (r *Recorder) ValidateEvidenceRefs(refs []string) error {
+	if r == nil {
+		return fmt.Errorf("run artifact recorder is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	available := make(map[string]struct{})
+	for _, run := range r.artifact.AgentRuns {
+		for _, call := range run.ToolCalls {
+			if call.Status != "succeeded" || call.Action != workflow.AgentActionRead {
+				continue
+			}
+			if call.CallID != "" {
+				available[call.CallID] = struct{}{}
+			}
+			if call.EvidenceRef != "" {
+				available[call.EvidenceRef] = struct{}{}
+			}
+		}
+	}
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if _, exists := available[ref]; !exists {
+			return fmt.Errorf("evidence reference %q does not identify a successful read tool call", ref)
+		}
+	}
+	return nil
+}
+
 func (r *Recorder) Finish(stopReason string, snapshot workflow.Snapshot, err error) RunArtifact {
 	if r == nil {
 		return RunArtifact{}
@@ -284,8 +367,8 @@ func (r *Recorder) Finish(stopReason string, snapshot workflow.Snapshot, err err
 		r.artifact.Outcome = "failed"
 		r.artifact.Failure = &Failure{Stage: stageFor(snapshot.State), Message: err.Error()}
 	}
-	r.artifact.Plans = append([]workflow.Plan(nil), snapshot.Plans...)
-	r.artifact.WorkflowHistory = append([]workflow.Transition(nil), snapshot.History...)
+	r.artifact.Plans = clonePlans(snapshot.Plans)
+	r.artifact.WorkflowHistory = append([]workflow.Transition{}, snapshot.History...)
 	r.rebuildSummaryLocked()
 	return cloneArtifact(r.artifact)
 }
@@ -347,14 +430,81 @@ func cloneArtifact(value RunArtifact) RunArtifact {
 	raw, _ := json.Marshal(value)
 	var result RunArtifact
 	_ = json.Unmarshal(raw, &result)
-	return result
+	return Normalize(result)
+}
+
+// Normalize keeps all collection fields as JSON arrays, including artifacts
+// written by older code paths that persisted nil slices as null.
+func Normalize(value RunArtifact) RunArtifact {
+	if value.AgentRuns == nil {
+		value.AgentRuns = []AgentRun{}
+	}
+	if value.Plans == nil {
+		value.Plans = []workflow.Plan{}
+	}
+	if value.WorkflowHistory == nil {
+		value.WorkflowHistory = []workflow.Transition{}
+	}
+	if value.BlockedAttempts == nil {
+		value.BlockedAttempts = []BlockedAttempt{}
+	}
+	if value.Operations == nil {
+		value.Operations = []platform.Operation{}
+	}
+	for index := range value.AgentRuns {
+		if value.AgentRuns[index].ModelCalls == nil {
+			value.AgentRuns[index].ModelCalls = []ModelCall{}
+		}
+		if value.AgentRuns[index].ToolCalls == nil {
+			value.AgentRuns[index].ToolCalls = []ToolCall{}
+		}
+		if value.AgentRuns[index].Plans == nil {
+			value.AgentRuns[index].Plans = []workflow.Plan{}
+		}
+	}
+	if value.FinalState.Routes == nil {
+		value.FinalState.Routes = []platform.Route{}
+	}
+	if value.FinalState.Providers == nil {
+		value.FinalState.Providers = []ProviderState{}
+	}
+	if value.FinalState.Configs == nil {
+		value.FinalState.Configs = []ConfigState{}
+	}
+	if value.FinalState.Connections == nil {
+		value.FinalState.Connections = []ConnectionState{}
+	}
+	if value.FinalState.Tasks == nil {
+		value.FinalState.Tasks = []TaskState{}
+	}
+	return value
 }
 
 func clonePlans(values []workflow.Plan) []workflow.Plan {
+	if values == nil {
+		return []workflow.Plan{}
+	}
 	raw, _ := json.Marshal(values)
 	var result []workflow.Plan
 	_ = json.Unmarshal(raw, &result)
 	return result
+}
+
+func cloneOperations(values []platform.Operation) []platform.Operation {
+	if values == nil {
+		return []platform.Operation{}
+	}
+	raw, _ := json.Marshal(values)
+	var result []platform.Operation
+	_ = json.Unmarshal(raw, &result)
+	return result
+}
+
+func cloneFinalState(value FinalState) FinalState {
+	raw, _ := json.Marshal(value)
+	var result FinalState
+	_ = json.Unmarshal(raw, &result)
+	return Normalize(RunArtifact{FinalState: result}).FinalState
 }
 
 func newRunID() string {

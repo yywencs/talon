@@ -16,6 +16,7 @@ var (
 // Config 定义新建或从 checkpoint 恢复的 IncidentWorkflow。
 type Config struct {
 	IncidentID   string
+	PlanIDPrefix string
 	InitialState State
 	Now          func() time.Time
 }
@@ -52,6 +53,7 @@ type IncidentWorkflow struct {
 	mu sync.RWMutex
 
 	incidentID     string
+	planIDPrefix   string
 	state          State
 	suspendedState State
 	version        uint64
@@ -82,6 +84,8 @@ var transitionRules = map[State]map[EventType]transitionRule{
 	},
 	StateInvestigating: {
 		EventPlanSubmitted: {to: StatePlanned, actors: actors(ActorAgent)},
+		EventSkillLoaded:   {to: StateInvestigating, actors: actors(ActorAgent)},
+		EventSkillUnloaded: {to: StateInvestigating, actors: actors(ActorAgent)},
 	},
 	StatePlanned: {
 		EventPlanApproved:     {to: StateRemediating, actors: actors(ActorWorkflow)},
@@ -109,6 +113,8 @@ var transitionRules = map[State]map[EventType]transitionRule{
 	},
 	StateReinvestigating: {
 		EventPlanSubmitted: {to: StatePlanned, actors: actors(ActorAgent)},
+		EventSkillLoaded:   {to: StateReinvestigating, actors: actors(ActorAgent)},
+		EventSkillUnloaded: {to: StateReinvestigating, actors: actors(ActorAgent)},
 	},
 	StateCompensating: {
 		EventStageSucceeded: {to: StateReinvestigating, actors: actors(ActorWorkflow)},
@@ -125,6 +131,10 @@ func NewIncidentWorkflow(config Config) (*IncidentWorkflow, error) {
 	if incidentID == "" {
 		return nil, fmt.Errorf("incident ID is required")
 	}
+	planIDPrefix := strings.TrimSpace(config.PlanIDPrefix)
+	if planIDPrefix == "" {
+		planIDPrefix = incidentID
+	}
 	state := config.InitialState
 	if state == "" {
 		state = StateProtected
@@ -136,7 +146,7 @@ func NewIncidentWorkflow(config Config) (*IncidentWorkflow, error) {
 	if now == nil {
 		now = time.Now
 	}
-	return &IncidentWorkflow{incidentID: incidentID, state: state, now: now}, nil
+	return &IncidentWorkflow{incidentID: incidentID, planIDPrefix: planIDPrefix, state: state, now: now}, nil
 }
 
 // Apply 校验 Actor 和当前状态，并原子提交一次状态变化。

@@ -16,33 +16,16 @@ import (
 	"github.com/wen/opentalon/internal/workflow"
 )
 
-func TestLoadConfigFromEnvDefaultsToSQLite(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("OPENTALON_CONFIG_DIR", root)
-	t.Setenv(EnvDatabaseDriver, "")
+func TestLoadPostgresConfigFromEnvRequiresDSN(t *testing.T) {
 	t.Setenv(EnvDatabaseDSN, "")
-	t.Setenv(EnvDatabaseAutoMigrate, "")
-
-	config, err := LoadConfigFromEnv()
-	require.NoError(t, err)
-	assert.Equal(t, DriverSQLite, config.Driver)
-	assert.Equal(t, filepath.Join(root, "talon.db"), config.DSN)
-	assert.True(t, config.AutoMigrate)
-}
-
-func TestLoadConfigFromEnvRequiresPostgresDSN(t *testing.T) {
-	t.Setenv(EnvDatabaseDriver, "postgres")
-	t.Setenv(EnvDatabaseDSN, "")
-	_, err := LoadConfigFromEnv()
+	_, err := LoadPostgresConfigFromEnv()
 	require.ErrorContains(t, err, EnvDatabaseDSN)
 }
 
-func TestLoadConfigFromEnvUsesPostgresWithoutAutomaticMigration(t *testing.T) {
-	t.Setenv(EnvDatabaseDriver, "postgres")
+func TestLoadPostgresConfigFromEnvUsesPostgresWithoutAutomaticMigration(t *testing.T) {
 	t.Setenv(EnvDatabaseDSN, "postgres://talon:secret@localhost:5432/talon?sslmode=disable")
-	t.Setenv(EnvDatabaseAutoMigrate, "")
 
-	config, err := LoadConfigFromEnv()
+	config, err := LoadPostgresConfigFromEnv()
 	require.NoError(t, err)
 	assert.Equal(t, DriverPostgres, config.Driver)
 	assert.False(t, config.AutoMigrate)
@@ -101,9 +84,7 @@ func TestPostgresApprovalStoreContract(t *testing.T) {
 func runArtifactStoreContract(t *testing.T, store runartifact.Store) {
 	t.Helper()
 	ctx := context.Background()
-	recorder := runartifact.New("scenario-artifact-store", runartifact.Versions{
-		AgentVersion: "agent/v1", DatasetVersion: "dataset/v1",
-	})
+	recorder := runartifact.New("scenario-artifact-store", runartifact.Provenance{CodeVersion: "test", DatasetVersion: "toolops-v1"}, runartifact.RunConfig{})
 	running := recorder.Snapshot()
 	require.NoError(t, store.Upsert(ctx, running))
 	persisted, err := store.Get(ctx, running.RunID)
@@ -122,6 +103,13 @@ func runArtifactStoreContract(t *testing.T, store runartifact.Store) {
 	assert.Equal(t, "resolved", persisted.StopReason)
 	require.Len(t, persisted.AgentRuns, 1)
 	assert.NotEmpty(t, persisted.AgentRuns[0].NewEvidenceRefs)
+	listed, err := store.List(ctx, runartifact.VersionFilter{
+		SchemaVersion: runartifact.SchemaVersion, CodeVersion: "test",
+		DatasetVersion: "toolops-v1", Outcome: "completed",
+	})
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	assert.Equal(t, completed.RunID, listed[0].RunID)
 
 	_, err = store.Get(ctx, "00000000-0000-4000-8000-000000000000")
 	assert.ErrorIs(t, err, runartifact.ErrNotFound)

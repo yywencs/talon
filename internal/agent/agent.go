@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/components/model"
+	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	flowagent "github.com/cloudwego/eino/flow/agent"
 	"github.com/cloudwego/eino/flow/agent/react"
@@ -18,6 +19,7 @@ import (
 	"github.com/wen/opentalon/internal/observability"
 	"github.com/wen/opentalon/internal/platform"
 	"github.com/wen/opentalon/internal/runartifact"
+	"github.com/wen/opentalon/internal/skill"
 	toolset "github.com/wen/opentalon/internal/tools"
 	"github.com/wen/opentalon/internal/workflow"
 )
@@ -42,6 +44,7 @@ type Config struct {
 	MaxSteps   int
 	Workflow   *workflow.IncidentWorkflow
 	Artifact   *runartifact.Recorder
+	Skills     *skill.Session
 
 	// AdditionalInstructions 只能补充当前部署环境的调查说明，
 	// 固定的安全边界始终由 Agent 内置提示词和 Platform 共同保证。
@@ -55,6 +58,7 @@ type ToolOpsAgent struct {
 	systemText string
 	tools      *toolset.Set
 	workflow   *workflow.IncidentWorkflow
+	skills     *skill.Session
 	runner     *react.Agent
 }
 
@@ -81,13 +85,27 @@ func NewToolOpsAgent(ctx context.Context, config Config) (*ToolOpsAgent, error) 
 		maxSteps = DefaultMaxSteps
 	}
 
-	tools, err := toolset.New(ctx, config.Platform, incidentID, toolset.WithWorkflow(config.Workflow))
+	toolOptions := []toolset.Option{toolset.WithWorkflow(config.Workflow)}
+	if config.Skills != nil {
+		toolOptions = append(toolOptions, toolset.WithSkillSession(config.Skills))
+	}
+	tools, err := toolset.New(ctx, config.Platform, incidentID, toolOptions...)
 	if err != nil {
 		return nil, fmt.Errorf("build incident tools: %w", err)
 	}
 
-	visibleTools := tools.ToolsForActions(config.Workflow.AllowedAgentActions())
+	visibleTools, err := visibleAgentTools(tools, config.Workflow, config.Skills)
+	if err != nil {
+		return nil, err
+	}
 	persona := systemPrompt(incidentID, config.AdditionalInstructions)
+	if config.Skills != nil {
+		catalog, marshalErr := json.Marshal(config.Skills.Catalog())
+		if marshalErr != nil {
+			return nil, fmt.Errorf("encode Skill Catalog: %w", marshalErr)
+		}
+		persona += "\n\n可安装 Skill Catalog（仅元数据，正文尚未加载）：\n" + string(catalog)
+	}
 	trackedModel := model.ToolCallingChatModel(config.Model)
 	if config.Artifact != nil {
 		trackedModel = &recordingModel{next: config.Model, recorder: config.Artifact}
@@ -97,7 +115,7 @@ func NewToolOpsAgent(ctx context.Context, config Config) (*ToolOpsAgent, error) 
 		ToolsConfig: compose.ToolsNodeConfig{
 			Tools:               visibleTools,
 			ExecuteSequentially: true,
-			ToolCallMiddlewares: []compose.ToolMiddleware{workflowToolGuard(config.Workflow, tools, config.Artifact)},
+			ToolCallMiddlewares: []compose.ToolMiddleware{workflowToolGuard(config.Workflow, tools, config.Skills, config.Artifact)},
 			UnknownToolsHandler: func(_ context.Context, name, input string) (string, error) {
 				result, marshalErr := json.Marshal(map[string]any{
 					"data":  nil,
@@ -120,7 +138,7 @@ func NewToolOpsAgent(ctx context.Context, config Config) (*ToolOpsAgent, error) 
 
 	return &ToolOpsAgent{
 		incidentID: incidentID, systemText: persona, tools: tools,
-		workflow: config.Workflow, runner: runner,
+		workflow: config.Workflow, skills: config.Skills, runner: runner,
 	}, nil
 }
 
@@ -252,7 +270,10 @@ func (a *ToolOpsAgent) Stream(ctx context.Context, messages []*schema.Message, o
 }
 
 func (a *ToolOpsAgent) withWorkflowTools(ctx context.Context, options []flowagent.AgentOption) ([]flowagent.AgentOption, error) {
-	visible := a.tools.ToolsForActions(a.workflow.AllowedAgentActions())
+	visible, err := visibleAgentTools(a.tools, a.workflow, a.skills)
+	if err != nil {
+		return nil, err
+	}
 	policyOptions, err := react.WithTools(ctx, visible...)
 	if err != nil {
 		return nil, fmt.Errorf("build workflow tool options: %w", err)
@@ -265,16 +286,55 @@ func (a *ToolOpsAgent) withWorkflowTools(ctx context.Context, options []flowagen
 	return append(result, policyOptions...), nil
 }
 
+func visibleAgentTools(tools *toolset.Set, instance *workflow.IncidentWorkflow, skills *skill.Session) ([]einotool.BaseTool, error) {
+	if skills == nil {
+		return tools.ToolsForActions(instance.AllowedAgentActions()), nil
+	}
+	names := activeSkillToolNames(skills)
+	visible, err := tools.ToolsForActionsAndNames(instance.AllowedAgentActions(), names)
+	if err != nil {
+		return nil, fmt.Errorf("apply active Skill tool policy: %w", err)
+	}
+	return visible, nil
+}
+
+func activeSkillToolNames(session *skill.Session) []string {
+	active := session.Active()
+	specific := make([]string, 0)
+	for _, definition := range active {
+		specific = append(specific, definition.AllowedTools...)
+	}
+	return toolset.AgentToolNamesForSkills(specific, len(active) > 0)
+}
+
+func skillPolicyAllowsTool(session *skill.Session, name string) bool {
+	for _, allowed := range activeSkillToolNames(session) {
+		if allowed == name {
+			return true
+		}
+	}
+	return false
+}
+
 // workflowToolGuard 在每次工具真正执行前重新读取 Workflow 状态并校验 AgentAction。
 // 模型在一轮 ReAct 开始时拿到的工具列表可能因 submit_plan 或 escalate 等调用而过期，
 // 因此不能只依赖“模型是否看得见工具”；未分类或当前状态已禁止的工具会返回结构化拒绝结果。
 // escalate_incident 成功后，Guard 还负责提交 EventEscalated，使平台操作和状态机保持一致。
-func workflowToolGuard(instance *workflow.IncidentWorkflow, tools *toolset.Set, recorder *runartifact.Recorder) compose.ToolMiddleware {
+// load_skill、unload_skill、submit_plan 或 escalate_incident 成功推进到目标状态后，
+// Guard 直接结束当前 ReAct，避免在同一轮使用过期工具集或额外消耗 Graph 步数。
+func workflowToolGuard(instance *workflow.IncidentWorkflow, tools *toolset.Set, skills *skill.Session, recorder *runartifact.Recorder) compose.ToolMiddleware {
 	return compose.ToolMiddleware{
 		Invokable: func(next compose.InvokableToolEndpoint) compose.InvokableToolEndpoint {
 			return func(ctx context.Context, input *compose.ToolInput) (*compose.ToolOutput, error) {
 				started := time.Now()
 				action, classified := tools.AgentAction(input.Name)
+				if skills != nil {
+					if !skillPolicyAllowsTool(skills, input.Name) {
+						denied, err := deniedToolOutput(fmt.Errorf("tool %q is not allowed by the active Skill", input.Name))
+						recordToolCall(recorder, input, action, denied, started, err, true)
+						return denied, err
+					}
+				}
 				if !classified {
 					denied, err := deniedToolOutput(fmt.Errorf("tool %q is not available to the Agent workflow", input.Name))
 					recordToolCall(recorder, input, action, denied, started, err, true)
@@ -290,17 +350,113 @@ func workflowToolGuard(instance *workflow.IncidentWorkflow, tools *toolset.Set, 
 					recordToolCall(recorder, input, action, output, started, err, false)
 					return nil, err
 				}
-				if action == workflow.AgentActionEscalate && toolResponseSucceeded(output.Result) {
-					if _, applyErr := instance.Apply(workflow.Event{Type: workflow.EventEscalated, Actor: workflow.ActorAgent}); applyErr != nil {
-						recordToolCall(recorder, input, action, output, started, applyErr, false)
-						return nil, fmt.Errorf("apply escalation event: %w", applyErr)
+				if action == workflow.AgentActionRead && input.CallID != "" && toolResponseSucceeded(output.Result) {
+					if attachErr := attachEvidenceReference(output, input.CallID); attachErr != nil {
+						recordToolCall(recorder, input, action, output, started, attachErr, false)
+						return nil, attachErr
 					}
+				}
+				if action == workflow.AgentActionEscalate && toolResponseSucceeded(output.Result) {
+					if applyErr := applyEscalation(instance, output.Result); applyErr != nil {
+						recordToolCall(recorder, input, action, output, started, applyErr, false)
+						return nil, applyErr
+					}
+				}
+				if action == workflow.AgentActionManageSkill && toolResponseSucceeded(output.Result) {
+					if applyErr := applySkillChange(ctx, instance, input.Name, output.Result); applyErr != nil {
+						recordToolCall(recorder, input, action, output, started, applyErr, false)
+						return nil, applyErr
+					}
+				}
+				if returnErr := returnAfterTerminalAction(ctx, instance, action, output); returnErr != nil {
+					recordToolCall(recorder, input, action, output, started, returnErr, false)
+					return nil, returnErr
 				}
 				recordToolCall(recorder, input, action, output, started, nil, false)
 				return output, nil
 			}
 		},
 	}
+}
+
+func applyEscalation(instance *workflow.IncidentWorkflow, result string) error {
+	var decoded struct {
+		Data platform.Operation `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(result), &decoded); err != nil {
+		return fmt.Errorf("decode escalate_incident result: %w", err)
+	}
+	reasonCode, _ := decoded.Data.Result["reason_code"].(string)
+	if !platform.EscalationReasonCode(reasonCode).Valid() {
+		return errors.New("escalate_incident returned an invalid reason_code")
+	}
+	reason, _ := decoded.Data.Result["reason"].(string)
+	metadata := map[string]string{
+		"operation_id": decoded.Data.ID,
+		"reason_code":  reasonCode,
+	}
+	if destination, ok := decoded.Data.Result["destination"].(string); ok && destination != "" {
+		metadata["destination"] = destination
+	}
+	if _, err := instance.Apply(workflow.Event{
+		Type: workflow.EventEscalated, Actor: workflow.ActorAgent, Reason: reason, Metadata: metadata,
+	}); err != nil {
+		return fmt.Errorf("apply escalation event: %w", err)
+	}
+	return nil
+}
+
+func returnAfterTerminalAction(ctx context.Context, instance *workflow.IncidentWorkflow, action workflow.AgentAction, output *compose.ToolOutput) error {
+	if output == nil || !toolResponseSucceeded(output.Result) {
+		return nil
+	}
+	state := instance.Snapshot().State
+	if (action == workflow.AgentActionSubmitPlan && state != workflow.StatePlanned) ||
+		(action == workflow.AgentActionEscalate && state != workflow.StateEscalated) {
+		return nil
+	}
+	if action != workflow.AgentActionSubmitPlan && action != workflow.AgentActionEscalate {
+		return nil
+	}
+	if err := react.SetReturnDirectly(ctx); err != nil {
+		return fmt.Errorf("stop ReAct after successful %s: %w", action, err)
+	}
+	return nil
+}
+
+func applySkillChange(ctx context.Context, instance *workflow.IncidentWorkflow, toolName, result string) error {
+	var decoded struct {
+		Data skill.Change `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(result), &decoded); err != nil {
+		return fmt.Errorf("decode %s result: %w", toolName, err)
+	}
+	eventType := workflow.EventSkillLoaded
+	expectedAction := "loaded"
+	if toolName == "unload_skill" {
+		eventType = workflow.EventSkillUnloaded
+		expectedAction = "unloaded"
+	} else if toolName != "load_skill" {
+		return fmt.Errorf("unknown Skill control tool %q", toolName)
+	}
+	if decoded.Data.Action != expectedAction || strings.TrimSpace(decoded.Data.Name) == "" {
+		return fmt.Errorf("%s returned an invalid Skill change", toolName)
+	}
+	_, err := instance.Apply(workflow.Event{
+		Type: eventType, Actor: workflow.ActorAgent, Reason: decoded.Data.Reason,
+		Metadata: map[string]string{
+			"skill_name":    decoded.Data.Name,
+			"skill_digest":  decoded.Data.Digest,
+			"evidence_refs": strings.Join(decoded.Data.EvidenceRefs, ","),
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("record %s workflow event: %w", toolName, err)
+	}
+	if err := react.SetReturnDirectly(ctx); err != nil {
+		return fmt.Errorf("stop ReAct after successful %s: %w", toolName, err)
+	}
+	return nil
 }
 
 func recordToolCall(recorder *runartifact.Recorder, input *compose.ToolInput, action workflow.AgentAction, output *compose.ToolOutput, started time.Time, err error, denied bool) {
@@ -329,6 +485,32 @@ func toolResponseSucceeded(value string) bool {
 	return json.Unmarshal([]byte(value), &result) == nil && result.Error == ""
 }
 
+// attachEvidenceReference 把 Harness 信任的工具调用 ID 显式放入模型可见的只读结果。
+// 后续 load_skill/unload_skill 必须原样复制该值，避免模型猜测内部 Artifact 引用。
+func attachEvidenceReference(output *compose.ToolOutput, ref string) error {
+	if output == nil {
+		return errors.New("attach evidence reference: nil tool output")
+	}
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(output.Result), &result); err != nil {
+		return fmt.Errorf("attach evidence reference: decode tool result: %w", err)
+	}
+	if result == nil {
+		return errors.New("attach evidence reference: tool result must be a JSON object")
+	}
+	encodedRef, err := json.Marshal(ref)
+	if err != nil {
+		return fmt.Errorf("attach evidence reference: encode reference: %w", err)
+	}
+	result["evidence_ref"] = encodedRef
+	encodedResult, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("attach evidence reference: encode tool result: %w", err)
+	}
+	output.Result = string(encodedResult)
+	return nil
+}
+
 // withSystemMessage 按照 Eino ReAct 的推荐方式，在调用 Generate 或 Stream 前
 // 直接把 persona 作为输入消息传入。若恢复的历史已经带有同一条系统消息，则不重复添加。
 func (a *ToolOpsAgent) withSystemMessage(messages []*schema.Message) []*schema.Message {
@@ -337,7 +519,7 @@ func (a *ToolOpsAgent) withSystemMessage(messages []*schema.Message) []*schema.M
 		if first.Content == current {
 			return messages
 		}
-		if first.Content == a.systemText || strings.HasPrefix(first.Content, a.systemText+"\n\n当前 Workflow 状态：") {
+		if first.Content == a.systemText || strings.HasPrefix(first.Content, a.systemText+"\n\n") {
 			result := append([]*schema.Message(nil), messages...)
 			result[0] = schema.SystemMessage(current)
 			return result
@@ -353,7 +535,19 @@ func (a *ToolOpsAgent) currentSystemText() string {
 		return a.systemText
 	}
 	snapshot := a.workflow.Snapshot()
-	text := fmt.Sprintf("%s\n\n当前 Workflow 状态：%s。只能使用本状态暴露的工具。", a.systemText, snapshot.State)
+	text := a.systemText
+	if a.skills != nil {
+		active := a.skills.Active()
+		if len(active) == 0 {
+			text += "\n\n当前没有加载诊断 Skill。先用公共只读工具收集证据，再从 Catalog 中选择并调用 load_skill。"
+		} else {
+			for _, definition := range active {
+				text += fmt.Sprintf("\n\n当前已加载诊断 Skill：%s。请严格遵循以下指令：\n%s",
+					definition.Name, strings.TrimSpace(definition.Instructions))
+			}
+		}
+	}
+	text = fmt.Sprintf("%s\n\n当前 Workflow 状态：%s。只能使用本状态和 Active Skills 共同暴露的工具。", text, snapshot.State)
 	var failedDryRun *workflow.PlanDryRun
 	for index := len(snapshot.PlanDryRuns) - 1; index >= 0; index-- {
 		if snapshot.PlanDryRuns[index].Failure != nil {

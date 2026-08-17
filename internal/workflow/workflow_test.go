@@ -137,10 +137,25 @@ func TestIncidentWorkflowAllowedAgentActionsAreStable(t *testing.T) {
 
 	assert.Equal(t, []AgentAction{
 		AgentActionEscalate,
+		AgentActionManageSkill,
 		AgentActionQueryOperation,
 		AgentActionRead,
 		AgentActionSubmitPlan,
 	}, workflow.AllowedAgentActions())
+}
+
+func TestSkillEventsAreAuditedWithoutLeavingInvestigation(t *testing.T) {
+	instance := newTestWorkflow(t, nil)
+	applyEvents(t, instance, Event{Type: EventStartInvestigation, Actor: ActorController})
+
+	loaded, err := instance.Apply(Event{Type: EventSkillLoaded, Actor: ActorAgent, Metadata: map[string]string{"skill_name": "mapping-diagnosis"}})
+	require.NoError(t, err)
+	assert.Equal(t, StateInvestigating, loaded.From)
+	assert.Equal(t, StateInvestigating, loaded.To)
+	unloaded, err := instance.Apply(Event{Type: EventSkillUnloaded, Actor: ActorAgent, Metadata: map[string]string{"skill_name": "mapping-diagnosis"}})
+	require.NoError(t, err)
+	assert.Equal(t, StateInvestigating, unloaded.To)
+	assert.Equal(t, uint64(3), instance.Snapshot().Version)
 }
 
 func TestIncidentWorkflowSubmitPlanFreezesDraft(t *testing.T) {
@@ -173,6 +188,21 @@ func TestIncidentWorkflowSubmitPlanFreezesDraft(t *testing.T) {
 	assert.Equal(t, "mapping-v1", snapshot.Plan.Actions[0].Arguments["target_version"])
 	_, err = workflow.SubmitPlan(draft)
 	assert.ErrorIs(t, err, ErrAgentActionDenied)
+}
+
+func TestIncidentWorkflowUsesIndependentPlanIDPrefix(t *testing.T) {
+	instance, err := NewIncidentWorkflow(Config{IncidentID: "scenario-001", PlanIDPrefix: "run-abc"})
+	require.NoError(t, err)
+	applyEvents(t, instance, Event{Type: EventStartInvestigation, Actor: ActorController})
+	submission, err := instance.SubmitPlan(PlanDraft{
+		Summary: "repair", RootCause: "cause", EvidenceRefs: []string{"evidence"},
+		Actions:      []PlannedAction{{ToolName: "repair", Arguments: map[string]any{"id": "value"}}},
+		ProbeRouteID: "route-a", RecoveryPolicyID: "safe",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "scenario-001", instance.Snapshot().IncidentID)
+	assert.Equal(t, "run-abc-plan-2", submission.Plan.ID)
+	assert.Equal(t, "run-abc-plan-2-action-1", submission.Plan.Actions[0].ID)
 }
 
 func TestIncidentWorkflowSubmitPlanValidatesRequiredFields(t *testing.T) {

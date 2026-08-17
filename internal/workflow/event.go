@@ -8,6 +8,10 @@ const (
 	EventStartInvestigation EventType = "start_investigation"
 	// EventPlanSubmitted 表示 Agent 已提交一份结构化 Plan。
 	EventPlanSubmitted EventType = "plan_submitted"
+	// EventSkillLoaded 表示 Agent 基于公开证据按需加载了一个诊断 Skill。
+	EventSkillLoaded EventType = "skill_loaded"
+	// EventSkillUnloaded 表示新证据否定原假设后，Agent 卸载了一个诊断 Skill。
+	EventSkillUnloaded EventType = "skill_unloaded"
 	// EventApprovalRequired 表示 Workflow 判定 Plan 必须等待人工审批。
 	EventApprovalRequired EventType = "approval_required"
 	// EventPlanApproved 表示 Plan 已通过自动 Policy 或人工审批。

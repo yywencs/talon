@@ -12,37 +12,8 @@ import (
 	"github.com/wen/opentalon/internal/workflow"
 )
 
-func TestRunArtifactExportsVersionMetadataAndReadsLegacySchemaVersion(t *testing.T) {
-	artifact := New("incident-001", Versions{
-		AgentVersion: "agent/v3", DatasetVersion: "dataset/2026-08-14",
-	}).Snapshot()
-	payload, err := json.Marshal(artifact)
-	require.NoError(t, err)
-	assert.JSONEq(t, `{
-		"artifact_schema_version":"talon.run-artifact/v2",
-		"agent_version":"agent/v3",
-		"dataset_version":"dataset/2026-08-14",
-		"run_id":"`+artifact.RunID+`",
-		"scenario_id":"incident-001",
-		"started_at":"`+artifact.StartedAt.Format(time.RFC3339Nano)+`",
-		"finished_at":"0001-01-01T00:00:00Z",
-		"duration":0,
-		"outcome":"running",
-		"agent_runs":[],
-		"plans":[],
-		"workflow_history":[],
-		"blocked_attempts":[],
-		"summary":{"agent_runs":0,"model_calls":0,"tool_calls":0,"invalid_tool_calls":0,"blocked_attempts":0,"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"llm_duration":0}
-	}`, string(payload))
-	assert.NotContains(t, string(payload), `"schema_version"`)
-
-	var legacy RunArtifact
-	require.NoError(t, json.Unmarshal([]byte(`{"schema_version":"talon.run-artifact/v1","run_id":"legacy"}`), &legacy))
-	assert.Equal(t, "talon.run-artifact/v1", legacy.ArtifactSchemaVersion)
-}
-
 func TestRecorderSummarizesModelsEvidenceAndBlockedCalls(t *testing.T) {
-	recorder := New("incident-001", Versions{AgentVersion: "agent/v1", DatasetVersion: "dataset/v1"})
+	recorder := New("incident-001", Provenance{CodeVersion: "test-code", DatasetVersion: "test-data"}, RunConfig{Model: "test-model", AgentMaxSteps: 24})
 	recorder.BeginAgentRun("investigate", workflow.Snapshot{State: workflow.StateInvestigating})
 	started := time.Now().Add(-time.Millisecond)
 	recorder.RecordModelCall(started, &schema.Message{ResponseMeta: &schema.ResponseMeta{
@@ -53,9 +24,19 @@ func TestRecorderSummarizesModelsEvidenceAndBlockedCalls(t *testing.T) {
 	}}, nil)
 	recorder.RecordToolCall("call-1", "query_logs", workflow.AgentActionRead, `{}`, `{"data":[{"code":"connection_refused"}]}`, started, nil, false)
 	recorder.RecordToolCall("call-2", "submit_plan", workflow.AgentActionSubmitPlan, `{}`, `{"data":null,"error":"not allowed in state planned"}`, started, nil, true)
+	require.NoError(t, recorder.ValidateEvidenceRefs([]string{"call-1"}))
+	current := recorder.Snapshot()
+	require.NoError(t, recorder.ValidateEvidenceRefs([]string{current.AgentRuns[0].ToolCalls[0].EvidenceRef}))
+	require.ErrorContains(t, recorder.ValidateEvidenceRefs([]string{"call-2"}), "does not identify a successful read")
 	recorder.EndAgentRun(workflow.Snapshot{State: workflow.StatePlanned}, nil)
+	recorder.RecordFinalState(nil, FinalState{WorkflowState: workflow.StatePlanned})
 
 	artifact := recorder.Finish("resolved", workflow.Snapshot{}, nil)
+	assert.Equal(t, SchemaVersion, artifact.SchemaVersion)
+	assert.Equal(t, "test-code", artifact.Provenance.CodeVersion)
+	assert.Equal(t, "test-data", artifact.Provenance.DatasetVersion)
+	assert.Equal(t, "test-model", artifact.RunConfig.Model)
+	assert.Equal(t, workflow.StatePlanned, artifact.FinalState.WorkflowState)
 	require.Len(t, artifact.AgentRuns, 1)
 	assert.Equal(t, 1, artifact.Summary.ModelCalls)
 	assert.Equal(t, 2, artifact.Summary.ToolCalls)
@@ -69,7 +50,7 @@ func TestRecorderSummarizesModelsEvidenceAndBlockedCalls(t *testing.T) {
 }
 
 func TestRecorderDoesNotCountRepeatedEvidenceAsNewAndAttributesFailure(t *testing.T) {
-	recorder := New("incident-001", Versions{AgentVersion: "agent/v1", DatasetVersion: "dataset/v1"})
+	recorder := New("incident-001", Provenance{}, RunConfig{})
 	for round := 0; round < 2; round++ {
 		recorder.BeginAgentRun("investigate", workflow.Snapshot{State: workflow.StateInvestigating})
 		recorder.RecordToolCall("", "query_metrics", workflow.AgentActionRead, `{}`, `{"data":{"sample_count":100}}`, time.Now(), nil, false)
@@ -81,4 +62,15 @@ func TestRecorderDoesNotCountRepeatedEvidenceAsNewAndAttributesFailure(t *testin
 	require.NotNil(t, artifact.Failure)
 	assert.Equal(t, "probing", artifact.Failure.Stage)
 	assert.Equal(t, "failed", artifact.Outcome)
+}
+
+func TestRecorderNormalizesEmptyCollectionsToJSONArrays(t *testing.T) {
+	recorder := New("incident-001", Provenance{CodeVersion: "code", DatasetVersion: "data"}, RunConfig{})
+	artifact := recorder.Finish("escalated", workflow.Snapshot{State: workflow.StateEscalated}, nil)
+	payload, err := json.Marshal(artifact)
+	require.NoError(t, err)
+	assert.NotContains(t, string(payload), `"plans":null`)
+	assert.NotContains(t, string(payload), `"agent_runs":null`)
+	assert.NotContains(t, string(payload), `"operations":null`)
+	assert.NotContains(t, string(payload), `"workflow_history":null`)
 }

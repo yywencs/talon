@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/wen/opentalon/internal/controller"
 	"github.com/wen/opentalon/internal/platform"
+	"github.com/wen/opentalon/internal/runartifact"
 	"github.com/wen/opentalon/internal/storage"
 	"github.com/wen/opentalon/internal/workflow"
 )
@@ -57,9 +58,11 @@ func TestRunCompletesScriptedEndToEndScenario(t *testing.T) {
 	assert.Equal(t, workflow.StateResolved, result.Controller.Snapshot.State)
 	assert.Equal(t, 80, result.World.Routes["route-a"].Weight)
 	assert.Equal(t, 20, result.World.Routes["route-b"].Weight)
-	assert.Equal(t, "talon.run-artifact/v2", result.Artifact.ArtifactSchemaVersion)
-	assert.Equal(t, "talon-toolops-agent/v1", result.Artifact.AgentVersion)
-	assert.Equal(t, "toolops-v1", result.Artifact.DatasetVersion)
+	assert.Equal(t, "talon.run-artifact/v2", result.Artifact.SchemaVersion)
+	assert.Equal(t, "toolops-v1", result.Artifact.Provenance.DatasetVersion)
+	assert.NotEmpty(t, result.Artifact.Provenance.CodeVersion)
+	assert.Equal(t, 24, result.Artifact.RunConfig.AgentMaxSteps)
+	assert.True(t, result.Artifact.RunConfig.AutoApprove)
 	assert.Equal(t, "completed", result.Artifact.Outcome)
 	assert.Equal(t, string(controller.StopResolved), result.Artifact.StopReason)
 	assert.Equal(t, 1, result.Artifact.Summary.AgentRuns)
@@ -67,10 +70,16 @@ func TestRunCompletesScriptedEndToEndScenario(t *testing.T) {
 	require.Len(t, result.Artifact.AgentRuns[0].Plans, 1)
 	assert.Equal(t, "rollback mapping regression", result.Artifact.Plans[0].Summary)
 	assert.NotEmpty(t, result.Artifact.WorkflowHistory)
+	assert.Equal(t, workflow.StateResolved, result.Artifact.FinalState.WorkflowState)
+	require.Len(t, result.Artifact.FinalState.Routes, 2)
+	assert.Equal(t, "mapping-v1", activeArtifactConfig(result.Artifact.FinalState.Configs))
+	assert.NotEmpty(t, result.Artifact.Operations)
 	persisted, err := database.RunArtifacts().Get(context.Background(), result.Artifact.RunID)
 	require.NoError(t, err)
 	assert.Equal(t, result.Artifact, persisted)
 	assert.Contains(t, output.String(), "SIMULATOR AUTO-APPROVE")
+	assert.Contains(t, output.String(), "code_version=")
+	assert.Contains(t, output.String(), "dataset_version=toolops-v1")
 	assert.Contains(t, output.String(), "probing -> recovering")
 	assert.Contains(t, output.String(), "recovering -> resolved")
 	assert.Contains(t, output.String(), "[result] reason=resolved state=resolved")
@@ -121,3 +130,12 @@ func testDatasetRoot(t *testing.T) string {
 }
 
 var _ controller.Investigator = (*planInvestigator)(nil)
+
+func activeArtifactConfig(values []runartifact.ConfigState) string {
+	for _, value := range values {
+		if value.Active {
+			return value.ID
+		}
+	}
+	return ""
+}

@@ -211,13 +211,13 @@ type ToolDefinition struct {
 // Expectations 是仅供 Evaluator 使用的数据，禁止向 Agent 暴露。
 // 不同场景需要校验的执行路径不同，因此各部分保留可扩展结构。
 type Expectations struct {
-	SchemaVersion string         `yaml:"schema_version"`
-	ScenarioID    string         `yaml:"scenario_id"`
-	Controller    map[string]any `yaml:"controller"`
-	Diagnosis     map[string]any `yaml:"diagnosis"`
-	Remediation   map[string]any `yaml:"remediation"`
-	Probe         map[string]any `yaml:"probe"`
-	Recovery      map[string]any `yaml:"recovery"`
-	Escalation    map[string]any `yaml:"escalation"`
-	Experience    map[string]any `yaml:"experience"`
+	SchemaVersion string         `yaml:"schema_version" json:"schema_version"`
+	ScenarioID    string         `yaml:"scenario_id" json:"scenario_id"`
+	Controller    map[string]any `yaml:"controller" json:"controller"`
+	Diagnosis     map[string]any `yaml:"diagnosis" json:"diagnosis"`
+	Remediation   map[string]any `yaml:"remediation" json:"remediation"`
+	Probe         map[string]any `yaml:"probe" json:"probe"`
+	Recovery      map[string]any `yaml:"recovery" json:"recovery"`
+	Escalation    map[string]any `yaml:"escalation" json:"escalation"`
+	Experience    map[string]any `yaml:"experience" json:"experience"`
 }

@@ -318,12 +318,47 @@ type OperationQuery struct {
 	OperationID string `json:"operation_id"`
 }
 
+// EscalationReasonCode 是 Agent 停止自治并请求人工接管的稳定机器可读类别。
+// 具体故障原因和现场上下文仍由 EscalationRequest.Reason 描述。
+type EscalationReasonCode string
+
+const (
+	EscalationReasonSuspectedSecurityIncident     EscalationReasonCode = "suspected_security_incident"
+	EscalationReasonPossibleDataCorruption        EscalationReasonCode = "possible_data_corruption"
+	EscalationReasonCriticalTelemetryMissing      EscalationReasonCode = "critical_telemetry_missing"
+	EscalationReasonNoSafeRemediationAvailable    EscalationReasonCode = "no_safe_remediation_available"
+	EscalationReasonInsufficientPermissions       EscalationReasonCode = "insufficient_permissions"
+	EscalationReasonCredentialChangeRequiresHuman EscalationReasonCode = "credential_change_requires_human"
+	EscalationReasonRollbackFailed                EscalationReasonCode = "rollback_failed"
+	EscalationReasonBlastRadiusExpanding          EscalationReasonCode = "blast_radius_expanding"
+	EscalationReasonWorkflowBudgetExhausted       EscalationReasonCode = "workflow_budget_exhausted"
+)
+
+// Valid 把升级类别限制在 Harness 和评测器共同理解的稳定协议集合中。
+func (code EscalationReasonCode) Valid() bool {
+	switch code {
+	case EscalationReasonSuspectedSecurityIncident,
+		EscalationReasonPossibleDataCorruption,
+		EscalationReasonCriticalTelemetryMissing,
+		EscalationReasonNoSafeRemediationAvailable,
+		EscalationReasonInsufficientPermissions,
+		EscalationReasonCredentialChangeRequiresHuman,
+		EscalationReasonRollbackFailed,
+		EscalationReasonBlastRadiusExpanding,
+		EscalationReasonWorkflowBudgetExhausted:
+		return true
+	default:
+		return false
+	}
+}
+
 // EscalationRequest 将当前事件和结构化上下文交给人工处理。
 type EscalationRequest struct {
-	IncidentID            string         `json:"incident_id"`
-	Reason                string         `json:"reason"`
-	EvidenceRefs          []string       `json:"evidence_refs"`
-	AttemptedOperationIDs []string       `json:"attempted_operation_ids,omitempty"`
-	ProtectionState       map[string]any `json:"protection_state,omitempty"`
-	IdempotencyKey        string         `json:"idempotency_key"`
+	IncidentID            string               `json:"incident_id"`
+	ReasonCode            EscalationReasonCode `json:"reason_code"`
+	Reason                string               `json:"reason"`
+	EvidenceRefs          []string             `json:"evidence_refs"`
+	AttemptedOperationIDs []string             `json:"attempted_operation_ids,omitempty"`
+	ProtectionState       map[string]any       `json:"protection_state,omitempty"`
+	IdempotencyKey        string               `json:"idempotency_key"`
 }

@@ -1,0 +1,6 @@
+schema_version: talon-skill/v1
+allowed_tools:
+  - query_logs
+  - query_traces
+  - get_change_records
+  - get_config_versions
