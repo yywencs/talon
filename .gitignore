@@ -64,6 +64,7 @@ data/interim/
 data/repos/*
 !data/repos/go.mod
 data/results/
+docs/issues/
 
 *.db
 *.sqlite
