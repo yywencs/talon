@@ -200,6 +200,7 @@ func TestSkillToolsIntersectWorkflowAndSkillWhitelist(t *testing.T) {
 	visible := namesOfTools(t, visibleTools)
 	require.Contains(t, visible, "query_metrics")
 	require.Contains(t, visible, "query_logs")
+	require.Contains(t, visible, "query_traces")
 	require.Contains(t, visible, "load_skill")
 	require.NotContains(t, visible, "submit_plan")
 	require.NotContains(t, visible, "get_change_records")
@@ -227,12 +228,29 @@ func TestSkillToolsIntersectWorkflowAndSkillWhitelist(t *testing.T) {
 	visible = namesOfTools(t, visibleTools)
 	require.Contains(t, visible, "get_change_records")
 	require.Contains(t, visible, "get_credential_metadata")
+	require.Contains(t, visible, "query_traces")
 	require.NotContains(t, visible, "get_connection_metadata")
 
 	_, err = set.ToolsForActionsAndNames(flow.AllowedAgentActions(), []string{"unknown_tool"})
 	require.ErrorContains(t, err, "is not registered")
 	_, err = set.ToolsForActionsAndNames(flow.AllowedAgentActions(), []string{"rollback_mapping"})
 	require.ErrorContains(t, err, "not available to the Agent workflow")
+}
+
+func TestAgentToolNamesKeepTraceQueryVisibleForCredentialSkill(t *testing.T) {
+	visible := AgentToolNamesForSkills([]string{"query_logs", "get_credential_metadata"}, true)
+	require.Contains(t, visible, "query_traces")
+	require.Equal(t, 1, countToolName(visible, "query_traces"))
+}
+
+func countToolName(values []string, expected string) int {
+	count := 0
+	for _, value := range values {
+		if value == expected {
+			count++
+		}
+	}
+	return count
 }
 
 func TestSubmitPlanToolAdvancesWorkflow(t *testing.T) {

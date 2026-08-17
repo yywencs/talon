@@ -115,6 +115,7 @@ func TestToolOpsAgentLoadsSkillAndFiltersTools(t *testing.T) {
 	discoveryTools, inputs := chatModel.snapshot()
 	assert.Contains(t, discoveryTools, "load_skill")
 	assert.Contains(t, discoveryTools, "query_logs")
+	assert.Contains(t, discoveryTools, "query_traces")
 	assert.NotContains(t, discoveryTools, "submit_plan")
 	assert.NotContains(t, discoveryTools, "get_change_records")
 	require.Len(t, inputs, 2)

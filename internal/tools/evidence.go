@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -118,10 +119,34 @@ func number(value any) int64 {
 	switch item := value.(type) {
 	case int:
 		return int64(item)
+	case int8:
+		return int64(item)
+	case int16:
+		return int64(item)
+	case int32:
+		return int64(item)
 	case int64:
 		return item
+	case uint:
+		return int64(item)
+	case uint8:
+		return int64(item)
+	case uint16:
+		return int64(item)
+	case uint32:
+		return int64(item)
+	case uint64:
+		if item <= uint64(^uint64(0)>>1) {
+			return int64(item)
+		}
+		return 0
+	case float32:
+		return int64(item)
 	case float64:
 		return int64(item)
+	case json.Number:
+		result, _ := item.Int64()
+		return result
 	case fmt.Stringer:
 		var result int64
 		_, _ = fmt.Sscan(item.String(), &result)

@@ -32,6 +32,7 @@ var discoveryAgentToolNames = []string{
 	"get_providers",
 	"query_metrics",
 	"query_logs",
+	"query_traces",
 	"load_skill",
 	"escalate_incident",
 }
@@ -180,8 +181,9 @@ func (s *Set) ToolsForActions(actions []workflow.AgentAction) []einotool.BaseToo
 	return result
 }
 
-// AgentToolNamesForSkills 返回渐进披露后的工具白名单。未加载 Skill 时只提供
-// 公共调查和 load_skill；至少加载一个 Skill 后才增加 Plan、恢复策略和卸载能力。
+// AgentToolNamesForSkills 返回渐进披露后的工具白名单。基础指标、日志、Trace
+// 和状态查询在 Skill 加载前后始终可见；至少加载一个 Skill 后才增加领域查询、
+// Plan、恢复策略和卸载能力。
 func AgentToolNamesForSkills(skillTools []string, hasActiveSkill bool) []string {
 	capacity := len(discoveryAgentToolNames) + len(skillTools)
 	if hasActiveSkill {
