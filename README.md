@@ -23,6 +23,22 @@ talon-toolops-agent/v1.2.0 (commit a84f21c7d812)
 make build VERSION=v1.2.0 COMMIT=a84f21c7d812
 ```
 
+## 独立迭代 Prompt
+
+Agent Prompt 位于 `prompts/toolops-agent`，每个已发布版本使用独立目录。例如 `v1`、`v2` 和 `v3`。版本目录包含三个文件：
+
+- `system.md`：System Prompt，必须保留 `{{incident_id}}` 占位符。
+- `default-instruction.md`：没有显式任务指令时使用的默认指令。
+- `manifest.json`：版本 ID 和用途说明。
+
+通过 `.env` 指向该目录后，修改 Prompt 无需重新构建二进制，下次启动进程即可生效：
+
+```dotenv
+LLM_PROMPTS_DIR=prompts/toolops-agent/v3
+```
+
+目录未配置时使用编译进二进制的 `v3`。每次运行都会把 manifest 中的 `prompt_version` 和根据实际 Prompt 内容自动计算的 `prompt_digest` 写入 RunArtifact。已发布目录应保持不可变；需要修改时复制为新目录、更新 manifest 的版本 ID，再通过 `LLM_PROMPTS_DIR` 切换。digest 可以识别已发布内容是否被意外修改。
+
 ## 运行完整 ToolOps 链路
 
 先在项目根目录准备 `.env`，至少配置支持 Tool Calling 的模型：

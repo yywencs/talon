@@ -168,10 +168,16 @@ func TestSimulatorRejectsCredentialMutationAndEscalates(t *testing.T) {
 		Reason:                "凭据由外部系统管理，当前没有安全自动修复能力",
 		EvidenceRefs:          []string{"log:provider_unauthorized", "credential:credential-doc-a-v7"},
 		AttemptedOperationIDs: []string{operation.ID}, IdempotencyKey: "escalate-001",
+		Handoff: platform.EscalationHandoff{
+			AffectedService: "document-service", CurrentProtectionState: map[string]any{"route-primary": "open"},
+			AuthenticationEvidence:    []string{"log:provider_unauthorized"},
+			UnavailableFallbackReason: "schema_not_compatible", RecommendedHumanAction: "rotate credential",
+		},
 	})
 	require.NoError(t, err)
 	require.Equal(t, "platform-security-oncall", escalation.Result["destination"])
 	require.Equal(t, "no_safe_remediation_available", escalation.Result["reason_code"])
+	require.NotNil(t, escalation.Result["handoff"])
 }
 
 func TestSimulatorUsesFailedProbeEvidenceBeforeRecreatingPool(t *testing.T) {

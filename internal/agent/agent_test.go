@@ -228,6 +228,11 @@ func TestToolOpsAgentEscalationUpdatesWorkflow(t *testing.T) {
 					"reason_code":"no_safe_remediation_available",
 					"reason":"当前没有安全自动修复能力",
 					"evidence_refs":["credential:revoked"],
+					"handoff":{
+						"affected_service":"image-service",
+						"current_protection_state":{"route-a":"protected"},
+						"recommended_human_action":"人工检查凭证和回退路由"
+					},
 					"idempotency_key":"escalate-001"
 				}`},
 			}})

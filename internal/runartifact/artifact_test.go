@@ -22,7 +22,7 @@ func TestRecorderSummarizesModelsEvidenceAndBlockedCalls(t *testing.T) {
 			PromptTokenDetails:      schema.PromptTokenDetails{CachedTokens: 3},
 			CompletionTokensDetails: schema.CompletionTokensDetails{ReasoningTokens: 2}},
 	}}, nil)
-	recorder.RecordToolCall("call-1", "query_logs", workflow.AgentActionRead, `{}`, `{"data":[{"code":"connection_refused"}]}`, started, nil, false)
+	recorder.RecordToolCall("call-1", "query_logs", workflow.AgentActionRead, `{}`, `{"data":[{"code":"connection_refused"}],"evidence_ids":["log.connection_refused"]}`, started, nil, false)
 	recorder.RecordToolCall("call-2", "submit_plan", workflow.AgentActionSubmitPlan, `{}`, `{"data":null,"error":"not allowed in state planned"}`, started, nil, true)
 	require.NoError(t, recorder.ValidateEvidenceRefs([]string{"call-1"}))
 	current := recorder.Snapshot()
@@ -33,6 +33,7 @@ func TestRecorderSummarizesModelsEvidenceAndBlockedCalls(t *testing.T) {
 
 	artifact := recorder.Finish("resolved", workflow.Snapshot{}, nil)
 	assert.Equal(t, SchemaVersion, artifact.SchemaVersion)
+	assert.ElementsMatch(t, currentCapabilities, artifact.Capabilities)
 	assert.Equal(t, "test-code", artifact.Provenance.CodeVersion)
 	assert.Equal(t, "test-data", artifact.Provenance.DatasetVersion)
 	assert.Equal(t, "test-model", artifact.RunConfig.Model)
@@ -45,7 +46,10 @@ func TestRecorderSummarizesModelsEvidenceAndBlockedCalls(t *testing.T) {
 	assert.Equal(t, 18, artifact.Summary.TotalTokens)
 	assert.Equal(t, 3, artifact.AgentRuns[0].ModelCalls[0].Usage.CachedPromptTokens)
 	assert.True(t, artifact.AgentRuns[0].ToolCalls[0].IsNewEvidence)
+	assert.Equal(t, []string{"log.connection_refused"}, artifact.AgentRuns[0].ToolCalls[0].EvidenceIDs)
 	assert.NotEmpty(t, artifact.AgentRuns[0].NewEvidenceRefs)
+	assert.Contains(t, artifact.Experience.Fields, "symptoms")
+	assert.Contains(t, artifact.Experience.Fields, "applicability")
 	assert.Equal(t, "denied", artifact.AgentRuns[0].ToolCalls[1].Status)
 }
 
@@ -62,6 +66,7 @@ func TestRecorderDoesNotCountRepeatedEvidenceAsNewAndAttributesFailure(t *testin
 	require.NotNil(t, artifact.Failure)
 	assert.Equal(t, "probing", artifact.Failure.Stage)
 	assert.Equal(t, "failed", artifact.Outcome)
+	assert.NotContains(t, artifact.Experience.Fields, "evidence_after_failed_probe")
 }
 
 func TestRecorderNormalizesEmptyCollectionsToJSONArrays(t *testing.T) {
@@ -73,4 +78,5 @@ func TestRecorderNormalizesEmptyCollectionsToJSONArrays(t *testing.T) {
 	assert.NotContains(t, string(payload), `"agent_runs":null`)
 	assert.NotContains(t, string(payload), `"operations":null`)
 	assert.NotContains(t, string(payload), `"workflow_history":null`)
+	assert.NotContains(t, string(payload), `"experience":{"fields":null`)
 }

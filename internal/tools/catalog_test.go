@@ -113,6 +113,7 @@ func TestToolsQueryAndExecuteSimulator(t *testing.T) {
 	require.Empty(t, logsResponse.Error)
 	require.Len(t, logsResponse.Data, 1)
 	require.Equal(t, "invalid_parameter_type", logsResponse.Data[0].Code)
+	require.Equal(t, []string{"log.invalid_parameter_type"}, logsResponse.EvidenceIDs)
 
 	rollback, ok := set.Resolve("rollback_mapping")
 	require.True(t, ok)

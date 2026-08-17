@@ -50,6 +50,37 @@ PYTHONPATH=evaluator/src python3 -m talon_evaluator evaluation-data/batch \
 PYTHONPATH=evaluator/src python3 -m unittest discover -s evaluator/tests -v
 ```
 
+## LLM Judge
+
+确定性规则无法判断的 `diagnosis.root_cause_correctness` 可以通过版本化 LLM Judge
+完成。正式评测建议使用与被测 Agent 不同且能力相当或更强的模型，并固定 Judge
+模型和 Prompt 版本，以便跨代码版本比较。
+
+配置：
+
+```dotenv
+JUDGE_PROVIDER=openai-compatible
+JUDGE_MODEL=your-independent-judge-model
+JUDGE_ENDPOINT=http://localhost:11434/v1
+JUDGE_API_KEY=
+JUDGE_PASS_THRESHOLD=0.8
+JUDGE_TIMEOUT_SECONDS=120
+```
+
+执行完整评测：
+
+```bash
+make eval-full \
+  EVAL_INPUT=evaluation-data/batch \
+  EVAL_OUTPUT=evaluation-data/batch-full-result.json
+```
+
+不带 `--judge` 的原命令仍然只运行确定性规则。Judge 返回值会替换原先的语义
+`skipped` 检查，并在结果的 `judge` 字段记录模型、Judge/Prompt 版本、阈值、Token
+和耗时。模型请求失败或输出不符合 JSON 契约时命令以基础设施错误退出，不会把它
+误算成 Agent 失败。结果还会记录 `agent_model` 和 `same_as_agent_model`，用于识别
+同模型自评；同模型不会被禁止，便于本地调试，但不建议用于正式基线。
+
 ## 结果语义
 
 - `passed`：Artifact 中存在足够事实并满足 expectation。
@@ -60,6 +91,15 @@ PYTHONPATH=evaluator/src python3 -m unittest discover -s evaluator/tests -v
 `incomplete`；全部规则均可判断且通过时才是 `passed`。`score` 只统计已评规则，
 `coverage` 表示可评规则占全部规则的比例。
 
-当前有意跳过自由文本根因等价、语义 Evidence ID 覆盖率、结构化 handoff 和
-Experience 完整性。这些能力应在引入 canonical ID 或版本化 Judge 后实现，不能用
-脆弱的字符串相似度伪造确定性评分。
+Evaluator `0.4.0` 已确定性检查：
+
+- Plan 或 escalation 所引用查询调用的 canonical Evidence ID 是否覆盖 expectations；
+- 失败探针后的新增证据及连接快照变化；
+- escalation 的结构化 handoff 必填字段；
+- RunArtifact 的结构化 Experience 字段完整性；
+- 修复、探针、恢复、升级和禁止操作等原有规则。
+
+Controller 的异常发现时限、流量保护和熔断不再属于 Agent 评测范围，因此不会生成
+对应检查项。当前只保留自由文本根因的语义正确性为 `skipped`；后续应交给版本化
+LLM Judge，不能用脆弱的字符串相似度伪造确定性评分。旧 Artifact 没有新增结构化
+字段时仍会依据 Artifact 的 `capabilities` 保守地标记为 `skipped`，不会误判为失败。

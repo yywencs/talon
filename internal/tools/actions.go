@@ -31,6 +31,7 @@ type escalationInput struct {
 	EvidenceRefs          []string                      `json:"evidence_refs" jsonschema:"required,description=支持判断的日志、Trace、指标或状态引用"`
 	AttemptedOperationIDs []string                      `json:"attempted_operation_ids,omitempty" jsonschema:"description=已经尝试过的修复或探测操作ID"`
 	ProtectionState       map[string]any                `json:"protection_state,omitempty" jsonschema:"description=当前熔断或降权保护状态"`
+	Handoff               platform.EscalationHandoff    `json:"handoff" jsonschema:"required,description=结构化人工交接；必须填写受影响服务、当前保护状态和建议人工动作，鉴权故障还必须填写鉴权证据及无可用回退原因"`
 	IdempotencyKey        string                        `json:"idempotency_key" jsonschema:"required,description=本次升级请求的唯一幂等键"`
 }
 
@@ -60,10 +61,11 @@ func buildActionTools(service platform.ToolOpsPlatform, incidentID string) ([]ei
 	if err != nil {
 		return nil, fmt.Errorf("build get_operation tool: %w", err)
 	}
-	escalation, err := toolutils.InferTool("escalate_incident", "当没有安全修复方案、修复超过策略限制、需要更高权限或风险继续扩大时，提交结构化证据并升级人工处理。", func(ctx context.Context, input escalationInput) (response[platform.Operation], error) {
+	escalation, err := toolutils.InferTool("escalate_incident", "当没有安全修复方案、修复超过策略限制、需要更高权限或风险继续扩大时，提交证据和结构化 handoff 并升级人工处理。", func(ctx context.Context, input escalationInput) (response[platform.Operation], error) {
 		result, callErr := service.EscalateIncident(ctx, platform.EscalationRequest{
 			IncidentID: incidentID, ReasonCode: input.ReasonCode, Reason: input.Reason, EvidenceRefs: input.EvidenceRefs,
 			AttemptedOperationIDs: input.AttemptedOperationIDs, ProtectionState: input.ProtectionState,
+			Handoff:        input.Handoff,
 			IdempotencyKey: input.IdempotencyKey,
 		})
 		return platformResponse(result, callErr), nil

@@ -33,6 +33,7 @@ const defaultScenarioID = "mapping-regression-rollback-001"
 type Config struct {
 	DatasetRoot         string
 	SkillDirectory      string
+	PromptDirectory     string
 	ScenarioID          string
 	Model               model.ToolCallingChatModel
 	InvestigatorFactory func(*workflow.IncidentWorkflow, platform.ToolOpsPlatform) (controller.Investigator, error)
@@ -85,9 +86,19 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 	if !ok {
 		return Result{}, fmt.Errorf("scenario %q was not found", cfg.ScenarioID)
 	}
+	prompts, err := agent.LoadPromptSet(cfg.PromptDirectory)
+	if err != nil {
+		return Result{}, fmt.Errorf("load Agent prompts: %w", err)
+	}
 	provenance := cfg.Provenance
 	if strings.TrimSpace(provenance.DatasetVersion) == "" {
 		provenance.DatasetVersion = dataset.Version
+	}
+	if strings.TrimSpace(provenance.PromptVersion) == "" {
+		provenance.PromptVersion = prompts.Version
+	}
+	if strings.TrimSpace(provenance.PromptDigest) == "" {
+		provenance.PromptDigest = prompts.Digest
 	}
 	provenance = normalizeProvenance(provenance, cfg.DatasetRoot)
 	runConfig := cfg.RunConfig
@@ -124,9 +135,10 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 		return Result{}, fmt.Errorf("persist initial run artifact: %w", err)
 	}
 	initialArtifact := recorder.Snapshot()
-	printer.printf("[artifact] run_id=%s code_version=%s dataset_version=%s schema=%s checkpoint=running\n",
+	printer.printf("[artifact] run_id=%s code_version=%s dataset_version=%s prompt_version=%s prompt_digest=%s schema=%s checkpoint=running\n",
 		initialArtifact.RunID, initialArtifact.Provenance.CodeVersion,
-		initialArtifact.Provenance.DatasetVersion, initialArtifact.SchemaVersion)
+		initialArtifact.Provenance.DatasetVersion, initialArtifact.Provenance.PromptVersion,
+		initialArtifact.Provenance.PromptDigest, initialArtifact.SchemaVersion)
 	service, err = simulator.New(item.Scenario)
 	if err != nil {
 		return Result{}, fmt.Errorf("create scenario simulator: %w", err)
@@ -184,7 +196,7 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 		printer.printf("[skill] catalog=%d active=0 max_active=%d\n", registry.Len(), skill.DefaultMaxActive)
 		toolOpsAgent, buildErr := agent.NewToolOpsAgent(ctx, agent.Config{
 			Model: cfg.Model, Platform: service, IncidentID: item.Scenario.Metadata.ID,
-			Workflow: flow, MaxSteps: cfg.AgentMaxSteps, Artifact: recorder, Skills: skillSession,
+			Workflow: flow, MaxSteps: cfg.AgentMaxSteps, Artifact: recorder, Skills: skillSession, Prompts: &prompts,
 		})
 		if buildErr != nil {
 			return Result{}, fmt.Errorf("create ToolOps Agent: %w", buildErr)
@@ -407,6 +419,8 @@ func normalizeProvenance(value runartifact.Provenance, datasetRoot string) runar
 	if value.DatasetVersion == "." || value.DatasetVersion == string(filepath.Separator) {
 		value.DatasetVersion = "unknown"
 	}
+	value.PromptVersion = strings.TrimSpace(value.PromptVersion)
+	value.PromptDigest = strings.TrimSpace(value.PromptDigest)
 	return value
 }
 

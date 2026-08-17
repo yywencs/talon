@@ -262,8 +262,9 @@ func (s *Set) Resolve(name string) (einotool.InvokableTool, bool) {
 }
 
 type response[T any] struct {
-	Data  T      `json:"data"`
-	Error string `json:"error,omitempty"`
+	Data        T        `json:"data"`
+	EvidenceIDs []string `json:"evidence_ids,omitempty"`
+	Error       string   `json:"error,omitempty"`
 }
 
 func platformResponse[T any](data T, err error) response[T] {

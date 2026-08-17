@@ -360,5 +360,16 @@ type EscalationRequest struct {
 	EvidenceRefs          []string             `json:"evidence_refs"`
 	AttemptedOperationIDs []string             `json:"attempted_operation_ids,omitempty"`
 	ProtectionState       map[string]any       `json:"protection_state,omitempty"`
+	Handoff               EscalationHandoff    `json:"handoff"`
 	IdempotencyKey        string               `json:"idempotency_key"`
+}
+
+// EscalationHandoff contains stable fields that an evaluator can check without
+// interpreting the free-text escalation reason.
+type EscalationHandoff struct {
+	AffectedService           string         `json:"affected_service" jsonschema:"required,description=受影响的服务ID"`
+	CurrentProtectionState    map[string]any `json:"current_protection_state" jsonschema:"required,description=当前熔断或降权状态"`
+	AuthenticationEvidence    []string       `json:"authentication_evidence,omitempty" jsonschema:"description=鉴权故障相关的证据引用"`
+	UnavailableFallbackReason string         `json:"unavailable_fallback_reason,omitempty" jsonschema:"description=不存在安全回退路由的结构化原因"`
+	RecommendedHumanAction    string         `json:"recommended_human_action" jsonschema:"required,description=建议人工执行的下一步"`
 }

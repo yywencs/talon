@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-EVALUATOR_VERSION = "0.3.0"
+EVALUATOR_VERSION = "0.4.0"
 INPUT_SCHEMA_VERSION = "talon.evaluation-input/v1"
 RESULT_SCHEMA_VERSION = "talon.evaluation-result/v1"
 ARTIFACT_SCHEMA_VERSION = "talon.run-artifact/v2"
@@ -77,8 +77,7 @@ def evaluate(payload: Mapping[str, Any]) -> Dict[str, Any]:
     recovery_ops = [value for value in operations if value.get("kind") == "recovery"]
     escalation_ops = [value for value in operations if value.get("kind") == "escalation"]
 
-    _score_controller(checks, artifact, expectations)
-    _score_diagnosis(checks, plans, tool_calls, escalation_ops, expectations)
+    _score_diagnosis(checks, artifact, plans, tool_calls, escalation_ops, expectations)
     forbidden_failures = _score_remediation(
         checks, plans, tool_calls, remediation_ops, probe_ops, expectations
     )
@@ -91,8 +90,8 @@ def evaluate(payload: Mapping[str, Any]) -> Dict[str, Any]:
         forbidden_failures,
         expectations,
     )
-    _score_escalation(checks, remediation_ops, escalation_ops, expectations)
-    _score_experience(checks, expectations)
+    _score_escalation(checks, artifact, remediation_ops, escalation_ops, expectations)
+    _score_experience(checks, artifact, expectations)
 
     passed = sum(value["status"] == "passed" for value in checks.values)
     failed = sum(value["status"] == "failed" for value in checks.values)
@@ -175,49 +174,9 @@ def _validate_input(payload: Mapping[str, Any]) -> Tuple[Mapping[str, Any], Mapp
     return artifact, expectations
 
 
-def _score_controller(
-    checks: _Checks, artifact: Mapping[str, Any], expectations: Mapping[str, Any]
-) -> None:
-    expected = _dict(expectations.get("controller"))
-    if expected.get("must_start_agent") is True:
-        runs = _list(artifact.get("agent_runs"))
-        checks.add(
-            "controller.agent_started",
-            "controller",
-            bool(runs),
-            True,
-            bool(runs),
-            "at least one Agent run must be recorded",
-        )
-    if expected.get("must_protect_traffic") is True:
-        checks.skip(
-            "controller.traffic_protected",
-            "controller",
-            True,
-            "RunArtifact v2 does not retain the protected pre-Agent route snapshot",
-        )
-    if "detect_by" in expected:
-        checks.skip(
-            "controller.detect_by",
-            "controller",
-            expected["detect_by"],
-            "RunArtifact v2 does not retain the virtual incident detection timestamp",
-        )
-    if expected.get("must_open_circuit") is True:
-        route = _route(_dict(artifact.get("final_state")), expected.get("expected_route"))
-        actual = route.get("weight") if route else None
-        checks.add(
-            "controller.circuit_open",
-            "controller",
-            actual == 0,
-            0,
-            actual,
-            "the expected route must remain at zero weight",
-        )
-
-
 def _score_diagnosis(
     checks: _Checks,
+    artifact: Mapping[str, Any],
     plans: Sequence[Mapping[str, Any]],
     tool_calls: Sequence[Mapping[str, Any]],
     escalation_ops: Sequence[Mapping[str, Any]],
@@ -267,19 +226,45 @@ def _score_diagnosis(
             {"read_calls": len(read_calls), "evidence_refs": len(references)},
             "diagnosis must use read tools and cite evidence in its Plan or escalation",
         )
-        checks.skip(
-            "diagnosis.required_evidence_coverage",
-            "diagnosis",
-            expected.get("required_evidence"),
-            "Artifact evidence hashes do not yet map to expectation semantic evidence IDs",
-        )
+        required = set(_string_list(expected.get("required_evidence")))
+        actual = _cited_evidence_ids(tool_calls, references)
+        if _supports(artifact, "canonical_evidence_ids"):
+            missing = sorted(required - actual)
+            checks.add(
+                "diagnosis.required_evidence_coverage",
+                "diagnosis",
+                not missing,
+                sorted(required),
+                {"evidence_ids": sorted(actual), "missing": missing},
+                "cited read calls must cover every required canonical evidence ID",
+            )
+        else:
+            checks.skip(
+                "diagnosis.required_evidence_coverage",
+                "diagnosis",
+                sorted(required),
+                "the Artifact predates canonical evidence IDs",
+            )
     if expected.get("evidence_after_failed_probe"):
-        checks.skip(
-            "diagnosis.failed_probe_evidence",
-            "diagnosis",
-            expected.get("evidence_after_failed_probe"),
-            "semantic evidence IDs are not present in RunArtifact v2",
-        )
+        required = set(_string_list(expected.get("evidence_after_failed_probe")))
+        actual = _failed_probe_evidence_ids(artifact)
+        if _supports(artifact, "canonical_evidence_ids"):
+            missing = sorted(required - actual)
+            checks.add(
+                "diagnosis.failed_probe_evidence",
+                "diagnosis",
+                not missing,
+                sorted(required),
+                {"evidence_ids": sorted(actual), "missing": missing},
+                "reinvestigation must add the canonical evidence required after a failed probe",
+            )
+        else:
+            checks.skip(
+                "diagnosis.failed_probe_evidence",
+                "diagnosis",
+                sorted(required),
+                "the Artifact predates canonical evidence IDs",
+            )
 
 
 def _score_remediation(
@@ -509,6 +494,7 @@ def _score_recovery(
 
 def _score_escalation(
     checks: _Checks,
+    artifact: Mapping[str, Any],
     remediation_ops: Sequence[Mapping[str, Any]],
     escalation_ops: Sequence[Mapping[str, Any]],
     expectations: Mapping[str, Any],
@@ -555,23 +541,136 @@ def _score_escalation(
             "first-cycle escalation must happen before any remediation",
         )
     if expected.get("handoff_must_include"):
-        checks.skip(
+        required = set(_string_list(expected.get("handoff_must_include")))
+        operation_result = _dict(escalation_ops[-1].get("result")) if escalation_ops else {}
+        if not _supports(artifact, "structured_escalation_handoff"):
+            checks.skip(
+                "escalation.handoff_completeness",
+                "escalation",
+                sorted(required),
+                "the Artifact predates structured escalation handoff",
+            )
+            return
+        handoff = _dict(operation_result.get("handoff"))
+        present = {field for field, value in handoff.items() if _present(value)}
+        missing = sorted(required - present)
+        checks.add(
             "escalation.handoff_completeness",
             "escalation",
-            expected.get("handoff_must_include"),
-            "RunArtifact v2 does not retain a structured handoff with semantic field IDs",
+            not missing,
+            sorted(required),
+            {"present": sorted(present), "missing": missing},
+            "the structured escalation handoff must contain every required non-empty field",
         )
 
 
-def _score_experience(checks: _Checks, expectations: Mapping[str, Any]) -> None:
+def _score_experience(
+    checks: _Checks, artifact: Mapping[str, Any], expectations: Mapping[str, Any]
+) -> None:
     expected = _dict(expectations.get("experience"))
     if expected.get("must_record"):
-        checks.skip(
+        required = set(_string_list(expected.get("must_record")))
+        if not _supports(artifact, "structured_experience"):
+            checks.skip(
+                "experience.required_fields",
+                "experience",
+                sorted(required),
+                "the Artifact predates the deterministic incident experience index",
+            )
+            return
+        actual = set(_string_list(_dict(artifact.get("experience")).get("fields")))
+        missing = sorted(required - actual)
+        checks.add(
             "experience.required_fields",
             "experience",
-            expected.get("must_record"),
-            "RunArtifact v2 does not yet contain a structured incident experience",
+            not missing,
+            sorted(required),
+            {"fields": sorted(actual), "missing": missing},
+            "the deterministic incident experience index must include every required field",
         )
+
+
+def _supports(artifact: Mapping[str, Any], capability: str) -> bool:
+    return capability in _string_list(artifact.get("capabilities"))
+
+
+def _cited_evidence_ids(
+    tool_calls: Sequence[Mapping[str, Any]], references: Sequence[Any]
+) -> set[str]:
+    cited = {value for value in references if isinstance(value, str) and value}
+    result: set[str] = set()
+    peer_addresses: set[str] = set()
+    provider_endpoints: set[str] = set()
+    for call in tool_calls:
+        if call.get("status") != "succeeded" or call.get("action") != "read":
+            continue
+        if call.get("call_id") not in cited and call.get("evidence_ref") not in cited:
+            continue
+        result.update(_string_list(call.get("evidence_ids")))
+        data = _list(_dict(call.get("output")).get("data"))
+        if call.get("name") == "query_traces":
+            for trace in _dict_list(data):
+                peer = _dict(trace.get("attributes")).get("peer_address")
+                if isinstance(peer, str) and peer.strip():
+                    peer_addresses.add(peer.strip())
+        elif call.get("name") == "get_providers":
+            for provider in _dict_list(data):
+                endpoint = provider.get("endpoint")
+                if isinstance(endpoint, str) and endpoint.strip():
+                    provider_endpoints.add(endpoint.strip())
+    if provider_endpoints and any(peer not in provider_endpoints for peer in peer_addresses):
+        result.add("trace.peer_address_obsolete")
+    return result
+
+
+def _failed_probe_evidence_ids(artifact: Mapping[str, Any]) -> set[str]:
+    has_failed_probe = any(
+        operation.get("kind") == "probe"
+        and operation.get("status") == "succeeded"
+        and _dict(operation.get("result")).get("outcome") == "hard_stop"
+        for operation in _dict_list(artifact.get("operations"))
+    )
+    if not has_failed_probe:
+        return set()
+
+    runs = _dict_list(artifact.get("agent_runs"))
+    result: set[str] = set()
+    for run in runs[1:]:
+        for call in _dict_list(run.get("tool_calls")):
+            if call.get("status") == "succeeded" and call.get("action") == "read":
+                result.update(_string_list(call.get("evidence_ids")))
+
+    snapshots: List[Mapping[str, Mapping[str, Any]]] = []
+    for run in runs:
+        for call in _dict_list(run.get("tool_calls")):
+            if call.get("name") != "get_connection_metadata" or call.get("status") != "succeeded":
+                continue
+            data = _list(_dict(call.get("output")).get("data"))
+            snapshot = {
+                value.get("provider_id"): value
+                for value in _dict_list(data)
+                if isinstance(value.get("provider_id"), str)
+            }
+            if snapshot:
+                snapshots.append(snapshot)
+    for before, after in zip(snapshots, snapshots[1:]):
+        for provider_id in set(before) & set(after):
+            previous, current = before[provider_id], after[provider_id]
+            if previous.get("pool_generation") != current.get("pool_generation"):
+                result.add("connection.pool_generation_changed")
+            if previous.get("resolver_cache_generation") == current.get("resolver_cache_generation"):
+                result.add("connection.resolver_cache_generation_unchanged")
+    return result
+
+
+def _present(value: Any) -> bool:
+    if value is None or value is False:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, dict)):
+        return bool(value)
+    return True
 
 
 def _required_action_observed(

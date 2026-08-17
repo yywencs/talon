@@ -61,6 +61,8 @@ func TestRunCompletesScriptedEndToEndScenario(t *testing.T) {
 	assert.Equal(t, "talon.run-artifact/v2", result.Artifact.SchemaVersion)
 	assert.Equal(t, "toolops-v1", result.Artifact.Provenance.DatasetVersion)
 	assert.NotEmpty(t, result.Artifact.Provenance.CodeVersion)
+	assert.Equal(t, "toolops-agent/v3", result.Artifact.Provenance.PromptVersion)
+	assert.Len(t, result.Artifact.Provenance.PromptDigest, 64)
 	assert.Equal(t, 24, result.Artifact.RunConfig.AgentMaxSteps)
 	assert.True(t, result.Artifact.RunConfig.AutoApprove)
 	assert.Equal(t, "completed", result.Artifact.Outcome)

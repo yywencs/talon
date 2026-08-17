@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -18,10 +19,24 @@ import (
 
 const SchemaVersion = "talon.run-artifact/v2"
 
+const (
+	CapabilityCanonicalEvidenceIDs        = "canonical_evidence_ids"
+	CapabilityStructuredExperience        = "structured_experience"
+	CapabilityStructuredEscalationHandoff = "structured_escalation_handoff"
+)
+
+var currentCapabilities = []string{
+	CapabilityCanonicalEvidenceIDs,
+	CapabilityStructuredEscalationHandoff,
+	CapabilityStructuredExperience,
+}
+
 // Provenance identifies the code and dataset that produced a run.
 type Provenance struct {
 	CodeVersion    string `json:"code_version"`
 	DatasetVersion string `json:"dataset_version"`
+	PromptVersion  string `json:"prompt_version,omitempty"`
+	PromptDigest   string `json:"prompt_digest,omitempty"`
 }
 
 // RunConfig records the inputs that can materially change Agent behavior.
@@ -125,6 +140,7 @@ type ToolCall struct {
 	FinishedAt    time.Time            `json:"finished_at"`
 	Duration      time.Duration        `json:"duration"`
 	EvidenceRef   string               `json:"evidence_ref,omitempty"`
+	EvidenceIDs   []string             `json:"evidence_ids"`
 	IsNewEvidence bool                 `json:"is_new_evidence,omitempty"`
 }
 
@@ -168,8 +184,17 @@ type Failure struct {
 	Message string `json:"message"`
 }
 
+// IncidentExperience is a deterministic index over facts already retained in
+// the Artifact. Sources point back to Plan, ToolCall, Operation, or provenance
+// identifiers so completeness can be evaluated without interpreting prose.
+type IncidentExperience struct {
+	Fields  []string            `json:"fields"`
+	Sources map[string][]string `json:"sources"`
+}
+
 type RunArtifact struct {
 	SchemaVersion   string                `json:"schema_version"`
+	Capabilities    []string              `json:"capabilities"`
 	Provenance      Provenance            `json:"provenance"`
 	RunConfig       RunConfig             `json:"run_config"`
 	RunID           string                `json:"run_id"`
@@ -186,6 +211,7 @@ type RunArtifact struct {
 	BlockedAttempts []BlockedAttempt      `json:"blocked_attempts"`
 	Operations      []platform.Operation  `json:"operations"`
 	FinalState      FinalState            `json:"final_state"`
+	Experience      IncidentExperience    `json:"experience"`
 	Summary         Summary               `json:"summary"`
 }
 
@@ -200,7 +226,7 @@ type Recorder struct {
 
 func New(scenarioID string, provenance Provenance, config RunConfig) *Recorder {
 	now := time.Now
-	return &Recorder{artifact: RunArtifact{SchemaVersion: SchemaVersion, Provenance: provenance, RunConfig: config, RunID: newRunID(), ScenarioID: strings.TrimSpace(scenarioID), StartedAt: now(), Outcome: "running", AgentRuns: []AgentRun{}, Plans: []workflow.Plan{}, WorkflowHistory: []workflow.Transition{}, BlockedAttempts: []BlockedAttempt{}, Operations: []platform.Operation{}, FinalState: FinalState{Routes: []platform.Route{}, Providers: []ProviderState{}, Configs: []ConfigState{}, Connections: []ConnectionState{}, Tasks: []TaskState{}}}, evidence: map[string]struct{}{}, now: now}
+	return &Recorder{artifact: RunArtifact{SchemaVersion: SchemaVersion, Capabilities: append([]string(nil), currentCapabilities...), Provenance: provenance, RunConfig: config, RunID: newRunID(), ScenarioID: strings.TrimSpace(scenarioID), StartedAt: now(), Outcome: "running", AgentRuns: []AgentRun{}, Plans: []workflow.Plan{}, WorkflowHistory: []workflow.Transition{}, BlockedAttempts: []BlockedAttempt{}, Operations: []platform.Operation{}, FinalState: FinalState{Routes: []platform.Route{}, Providers: []ProviderState{}, Configs: []ConfigState{}, Connections: []ConnectionState{}, Tasks: []TaskState{}}, Experience: IncidentExperience{Fields: []string{}, Sources: map[string][]string{}}}, evidence: map[string]struct{}{}, now: now}
 }
 
 // RecordFinalState records the platform-independent operations and reduced
@@ -310,6 +336,7 @@ func (r *Recorder) RecordToolCall(callID, name string, action workflow.AgentActi
 			r.evidence[call.EvidenceRef] = struct{}{}
 			run.NewEvidenceRefs = append(run.NewEvidenceRefs, call.EvidenceRef)
 		}
+		call.EvidenceIDs = responseEvidenceIDs(output)
 	}
 	run.ToolCalls = append(run.ToolCalls, call)
 	if denied {
@@ -369,6 +396,7 @@ func (r *Recorder) Finish(stopReason string, snapshot workflow.Snapshot, err err
 	}
 	r.artifact.Plans = clonePlans(snapshot.Plans)
 	r.artifact.WorkflowHistory = append([]workflow.Transition{}, snapshot.History...)
+	r.rebuildExperienceLocked()
 	r.rebuildSummaryLocked()
 	return cloneArtifact(r.artifact)
 }
@@ -400,6 +428,104 @@ func (r *Recorder) rebuildSummaryLocked() {
 	r.artifact.Summary = s
 }
 
+func (r *Recorder) rebuildExperienceLocked() {
+	sources := make(map[string]map[string]struct{})
+	postFirstRunEvidence := make([]string, 0)
+	add := func(field string, values ...string) {
+		for _, value := range values {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			if sources[field] == nil {
+				sources[field] = make(map[string]struct{})
+			}
+			sources[field][value] = struct{}{}
+		}
+	}
+	for runIndex, run := range r.artifact.AgentRuns {
+		for _, call := range run.ToolCalls {
+			if call.Action != workflow.AgentActionRead || call.Status != "succeeded" {
+				continue
+			}
+			ref := call.EvidenceRef
+			if ref == "" {
+				ref = call.CallID
+			}
+			add("symptoms", ref)
+			if runIndex > 0 {
+				postFirstRunEvidence = append(postFirstRunEvidence, ref)
+			}
+		}
+	}
+	for index, plan := range r.artifact.Plans {
+		add("evidence", plan.EvidenceRefs...)
+		if strings.TrimSpace(plan.RootCause) != "" {
+			add("root_cause", plan.ID)
+			if index == 0 {
+				add("initial_hypothesis", plan.ID)
+			}
+			if index == len(r.artifact.Plans)-1 {
+				add("final_root_cause", plan.ID)
+			}
+		}
+	}
+	remediations := make([]platform.Operation, 0)
+	remediationsBeforeProbe := make([]platform.Operation, 0)
+	failedProbe := false
+	for _, operation := range r.artifact.Operations {
+		switch operation.Kind {
+		case platform.OperationRemediation:
+			if operation.Status == platform.OperationSucceeded && operation.Result["dry_run"] != true {
+				remediations = append(remediations, operation)
+				remediationsBeforeProbe = append(remediationsBeforeProbe, operation)
+				add("remediation", operation.ID)
+			}
+		case platform.OperationProbe:
+			if operation.Status == platform.OperationSucceeded {
+				add("probe_result", operation.ID)
+			}
+			if outcome, _ := operation.Result["outcome"].(string); outcome == "hard_stop" {
+				failedProbe = true
+				if len(remediationsBeforeProbe) > 0 {
+					add("ineffective_remediation", remediationsBeforeProbe[len(remediationsBeforeProbe)-1].ID)
+				}
+			}
+			remediationsBeforeProbe = remediationsBeforeProbe[:0]
+		case platform.OperationEscalation:
+			if operation.Status != platform.OperationSucceeded {
+				continue
+			}
+			if reason, _ := operation.Result["reason"].(string); strings.TrimSpace(reason) != "" {
+				add("root_cause", operation.ID)
+			}
+			if code, _ := operation.Result["reason_code"].(string); strings.TrimSpace(code) != "" {
+				add("escalation_reason", operation.ID)
+			}
+			add("evidence", stringsFromAny(operation.Result["evidence_refs"])...)
+		}
+	}
+	if failedProbe {
+		add("evidence_after_failed_probe", postFirstRunEvidence...)
+	}
+	if r.artifact.FinalState.WorkflowState == workflow.StateResolved && len(remediations) > 0 {
+		add("effective_remediation", remediations[len(remediations)-1].ID)
+	}
+	add("applicability", r.artifact.ScenarioID, r.artifact.Provenance.DatasetVersion)
+
+	fields := make([]string, 0, len(sources))
+	result := make(map[string][]string, len(sources))
+	for field, values := range sources {
+		fields = append(fields, field)
+		for value := range values {
+			result[field] = append(result[field], value)
+		}
+		sort.Strings(result[field])
+	}
+	sort.Strings(fields)
+	r.artifact.Experience = IncidentExperience{Fields: fields, Sources: result}
+}
+
 func stageFor(state workflow.State) string {
 	if state == "" {
 		return "initialization"
@@ -426,6 +552,47 @@ func responseError(value string) string {
 	}
 	return ""
 }
+
+func responseEvidenceIDs(value string) []string {
+	var response struct {
+		EvidenceIDs []string `json:"evidence_ids"`
+	}
+	if json.Unmarshal([]byte(value), &response) != nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(response.EvidenceIDs))
+	result := make([]string, 0, len(response.EvidenceIDs))
+	for _, id := range response.EvidenceIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		result = append(result, id)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func stringsFromAny(value any) []string {
+	switch values := value.(type) {
+	case []string:
+		return append([]string(nil), values...)
+	case []any:
+		result := make([]string, 0, len(values))
+		for _, item := range values {
+			if text, ok := item.(string); ok {
+				result = append(result, text)
+			}
+		}
+		return result
+	default:
+		return nil
+	}
+}
 func cloneArtifact(value RunArtifact) RunArtifact {
 	raw, _ := json.Marshal(value)
 	var result RunArtifact
@@ -436,6 +603,9 @@ func cloneArtifact(value RunArtifact) RunArtifact {
 // Normalize keeps all collection fields as JSON arrays, including artifacts
 // written by older code paths that persisted nil slices as null.
 func Normalize(value RunArtifact) RunArtifact {
+	if value.Capabilities == nil {
+		value.Capabilities = []string{}
+	}
 	if value.AgentRuns == nil {
 		value.AgentRuns = []AgentRun{}
 	}
@@ -451,12 +621,23 @@ func Normalize(value RunArtifact) RunArtifact {
 	if value.Operations == nil {
 		value.Operations = []platform.Operation{}
 	}
+	if value.Experience.Fields == nil {
+		value.Experience.Fields = []string{}
+	}
+	if value.Experience.Sources == nil {
+		value.Experience.Sources = map[string][]string{}
+	}
 	for index := range value.AgentRuns {
 		if value.AgentRuns[index].ModelCalls == nil {
 			value.AgentRuns[index].ModelCalls = []ModelCall{}
 		}
 		if value.AgentRuns[index].ToolCalls == nil {
 			value.AgentRuns[index].ToolCalls = []ToolCall{}
+		}
+		for callIndex := range value.AgentRuns[index].ToolCalls {
+			if value.AgentRuns[index].ToolCalls[callIndex].EvidenceIDs == nil {
+				value.AgentRuns[index].ToolCalls[callIndex].EvidenceIDs = []string{}
+			}
 		}
 		if value.AgentRuns[index].Plans == nil {
 			value.AgentRuns[index].Plans = []workflow.Plan{}

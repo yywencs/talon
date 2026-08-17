@@ -214,6 +214,10 @@ func (s *Simulator) EscalateIncident(ctx context.Context, request platform.Escal
 	if strings.TrimSpace(request.Reason) == "" {
 		return w.rejectOperationLocked(operation, "escalation reason is required", platform.ErrPreconditionFailed)
 	}
+	if strings.TrimSpace(request.Handoff.AffectedService) == "" || len(request.Handoff.CurrentProtectionState) == 0 ||
+		strings.TrimSpace(request.Handoff.RecommendedHumanAction) == "" {
+		return w.rejectOperationLocked(operation, "structured escalation handoff is required", platform.ErrPreconditionFailed)
+	}
 	behavior := w.actionBehavior[w.escalationTool.Name]
 	operation.Status = platform.OperationSucceeded
 	operation.UpdatedAt = w.now
@@ -222,6 +226,7 @@ func (s *Simulator) EscalateIncident(ctx context.Context, request platform.Escal
 		"reason_code": string(request.ReasonCode), "reason": request.Reason,
 		"evidence_refs":           append([]string(nil), request.EvidenceRefs...),
 		"attempted_operation_ids": append([]string(nil), request.AttemptedOperationIDs...),
+		"handoff":                 request.Handoff,
 	}
 	if destination := asString(behavior["destination"]); destination != "" {
 		operation.Result["destination"] = destination

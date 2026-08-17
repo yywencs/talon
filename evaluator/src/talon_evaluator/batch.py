@@ -3,7 +3,7 @@
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Mapping
+from typing import Any, Callable, Dict, List, Mapping
 
 from .core import EVALUATOR_VERSION, EvaluationInputError, evaluate
 
@@ -11,7 +11,10 @@ EXPORT_SCHEMA_VERSION = "talon.evaluation-export/v2"
 BATCH_RESULT_SCHEMA_VERSION = "talon.evaluation-batch-result/v1"
 
 
-def evaluate_directory(directory: Path) -> Dict[str, Any]:
+def evaluate_directory(
+    directory: Path,
+    evaluate_one: Callable[[Mapping[str, Any]], Dict[str, Any]] = evaluate,
+) -> Dict[str, Any]:
     directory = directory.resolve()
     manifest = _read_json(directory / "manifest.json")
     if not isinstance(manifest, Mapping):
@@ -42,7 +45,7 @@ def evaluate_directory(directory: Path) -> Dict[str, Any]:
                 raise EvaluationInputError(
                     "manifest {} mismatch for {}".format(field, file_name)
                 )
-        result = evaluate(payload)
+        result = evaluate_one(payload)
         evaluated.append(_run_result(artifact, result))
 
     scenario_groups: Dict[str, List[Dict[str, Any]]] = {}
@@ -84,7 +87,7 @@ def _run_result(artifact: Mapping[str, Any], result: Mapping[str, Any]) -> Dict[
     duration_ns = float(duration) if _number(duration) else 0.0
     steps = summary.get("model_calls", 0)
     tokens = summary.get("total_tokens", 0)
-    return {
+    run = {
         "run_id": artifact.get("run_id", ""),
         "scenario_id": artifact.get("scenario_id", ""),
         "runtime_outcome": artifact.get("outcome", ""),
@@ -101,6 +104,15 @@ def _run_result(artifact: Mapping[str, Any], result: Mapping[str, Any]) -> Dict[
         "failure_stage": failure.get("stage", ""),
         "failure_reason": failure.get("message", ""),
     }
+    if isinstance(result.get("judge"), Mapping):
+        run["judge"] = dict(result["judge"])
+        run["judge_checks"] = [
+            dict(item)
+            for item in result.get("checks", [])
+            if isinstance(item, Mapping)
+            and item.get("id") == "diagnosis.root_cause_correctness"
+        ]
+    return run
 
 
 def _aggregate(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -116,6 +128,7 @@ def _aggregate(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
     skipped_checks = sum(int(run["skipped"]) for run in runs)
     evaluated_checks = passed_checks + failed_checks
     total_checks = evaluated_checks + skipped_checks
+    judges = [_mapping(run.get("judge")) for run in runs if run.get("judge")]
     return {
         "runs": count,
         "successful_runs": successful,
@@ -131,6 +144,13 @@ def _aggregate(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
         "failed_checks": failed_checks,
         "skipped_checks": skipped_checks,
         "total_checks": total_checks,
+        "judge_calls": sum(int(value.get("calls", 0)) for value in judges),
+        "judge_total_tokens": sum(
+            int(_mapping(value.get("usage")).get("total_tokens", 0)) for value in judges
+        ),
+        "judge_duration_ms": round(
+            sum(float(value.get("duration_ms", 0.0)) for value in judges), 3
+        ),
     }
 
 

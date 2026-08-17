@@ -45,6 +45,7 @@ type Config struct {
 	Workflow   *workflow.IncidentWorkflow
 	Artifact   *runartifact.Recorder
 	Skills     *skill.Session
+	Prompts    *PromptSet
 
 	// AdditionalInstructions 只能补充当前部署环境的调查说明，
 	// 固定的安全边界始终由 Agent 内置提示词和 Platform 共同保证。
@@ -54,12 +55,13 @@ type Config struct {
 // ToolOpsAgent 使用 Eino ReAct 循环调查 Incident，并调用受控的 ToolOps 工具。
 // 每个实例只绑定一个 Incident，避免模型跨事件查询或执行动作。
 type ToolOpsAgent struct {
-	incidentID string
-	systemText string
-	tools      *toolset.Set
-	workflow   *workflow.IncidentWorkflow
-	skills     *skill.Session
-	runner     *react.Agent
+	incidentID         string
+	systemText         string
+	defaultInstruction string
+	tools              *toolset.Set
+	workflow           *workflow.IncidentWorkflow
+	skills             *skill.Session
+	runner             *react.Agent
 }
 
 // NewToolOpsAgent 创建一个可嵌入后续 IncidentWorkflow 的单 Agent。
@@ -84,6 +86,14 @@ func NewToolOpsAgent(ctx context.Context, config Config) (*ToolOpsAgent, error) 
 	if maxSteps == 0 {
 		maxSteps = DefaultMaxSteps
 	}
+	prompts := config.Prompts
+	if prompts == nil {
+		loaded, loadErr := LoadPromptSet("")
+		if loadErr != nil {
+			return nil, fmt.Errorf("load default Agent prompts: %w", loadErr)
+		}
+		prompts = &loaded
+	}
 
 	toolOptions := []toolset.Option{toolset.WithWorkflow(config.Workflow)}
 	if config.Skills != nil {
@@ -98,7 +108,7 @@ func NewToolOpsAgent(ctx context.Context, config Config) (*ToolOpsAgent, error) 
 	if err != nil {
 		return nil, err
 	}
-	persona := systemPrompt(incidentID, config.AdditionalInstructions)
+	persona := prompts.systemPrompt(incidentID, config.AdditionalInstructions)
 	if config.Skills != nil {
 		catalog, marshalErr := json.Marshal(config.Skills.Catalog())
 		if marshalErr != nil {
@@ -137,7 +147,7 @@ func NewToolOpsAgent(ctx context.Context, config Config) (*ToolOpsAgent, error) 
 	}
 
 	return &ToolOpsAgent{
-		incidentID: incidentID, systemText: persona, tools: tools,
+		incidentID: incidentID, systemText: persona, defaultInstruction: prompts.DefaultInstruction, tools: tools,
 		workflow: config.Workflow, skills: config.Skills, runner: runner,
 	}, nil
 }
@@ -165,7 +175,7 @@ func (a *ToolOpsAgent) Run(ctx context.Context, instruction string, opts ...flow
 	}
 	instruction = strings.TrimSpace(instruction)
 	if instruction == "" {
-		instruction = defaultInstruction
+		instruction = a.defaultInstruction
 	}
 	messages := []*schema.Message{
 		schema.SystemMessage(a.currentSystemText()),

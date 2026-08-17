@@ -17,6 +17,11 @@ def mapping_input():
         "schema_version": "talon.evaluation-input/v1",
         "artifact": {
             "schema_version": "talon.run-artifact/v2",
+            "capabilities": [
+                "canonical_evidence_ids",
+                "structured_escalation_handoff",
+                "structured_experience",
+            ],
             "provenance": {"code_version": "abc123", "dataset_version": "toolops-v1"},
             "run_config": {"agent_max_steps": 24, "auto_approve": True},
             "run_id": "run-001",
@@ -27,7 +32,13 @@ def mapping_input():
             "agent_runs": [
                 {
                     "tool_calls": [
-                        {"name": "query_metrics", "action": "read", "status": "succeeded"}
+                        {
+                            "call_id": "metric:error_rate",
+                            "name": "query_metrics",
+                            "action": "read",
+                            "status": "succeeded",
+                            "evidence_ids": ["metric.error_rate_by_route"],
+                        }
                     ]
                 }
             ],
@@ -81,6 +92,10 @@ def mapping_input():
                 "connections": [],
                 "tasks": [],
             },
+            "experience": {
+                "fields": ["root_cause"],
+                "sources": {"root_cause": ["plan-001"]},
+            },
         },
         "expectations": {
             "schema_version": "toolops-expectation/v1.1",
@@ -126,7 +141,20 @@ class EvaluatorTests(unittest.TestCase):
         self.assertEqual("passed", statuses["remediation.required"])
         self.assertEqual("passed", statuses["probe.outcome"])
         self.assertEqual("passed", statuses["recovery.final_config"])
+        self.assertEqual("passed", statuses["diagnosis.required_evidence_coverage"])
+        self.assertEqual("passed", statuses["experience.required_fields"])
         self.assertEqual("skipped", statuses["diagnosis.root_cause_correctness"])
+        self.assertFalse(any(item["category"] == "controller" for item in result["checks"]))
+
+    def test_legacy_artifact_skips_capability_gated_checks(self):
+        payload = mapping_input()
+        del payload["artifact"]["capabilities"]
+
+        result = evaluate(payload)
+
+        statuses = {item["id"]: item["status"] for item in result["checks"]}
+        self.assertEqual("skipped", statuses["diagnosis.required_evidence_coverage"])
+        self.assertEqual("skipped", statuses["experience.required_fields"])
 
     def test_forbidden_action_fails_run(self):
         payload = mapping_input()
@@ -182,7 +210,7 @@ class EvaluatorTests(unittest.TestCase):
         payload = mapping_input()
         payload["expectations"]["escalation"] = {
             "expected": True,
-            # toolops-v1 keeps the legacy expectation key; Evaluator 0.3.0
+            # toolops-v1 keeps the legacy expectation key; Evaluator 0.4.0
             # compares its value against the structured Operation reason_code.
             "reason": "no_safe_remediation_available",
         }
@@ -212,6 +240,123 @@ class EvaluatorTests(unittest.TestCase):
         result = evaluate(payload)
         checks = {item["id"]: item for item in result["checks"]}
         self.assertEqual("failed", checks["escalation.reason_code"]["status"])
+
+    def test_failed_probe_evidence_uses_ids_and_connection_snapshot_delta(self):
+        payload = mapping_input()
+        payload["artifact"]["operations"][2]["result"]["outcome"] = "hard_stop"
+        payload["expectations"]["diagnosis"]["evidence_after_failed_probe"] = [
+            "log.resolver_cache_hit",
+            "connection.pool_generation_changed",
+            "connection.resolver_cache_generation_unchanged",
+        ]
+        payload["artifact"]["agent_runs"] = [
+            {
+                "tool_calls": [
+                    {
+                        "call_id": "connection-before",
+                        "name": "get_connection_metadata",
+                        "action": "read",
+                        "status": "succeeded",
+                        "evidence_ids": ["connection.resolver_cache_generation"],
+                        "output": {"data": [{"provider_id": "provider-a", "pool_generation": 12, "resolver_cache_generation": 4}]},
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "call_id": "connection-after",
+                        "name": "get_connection_metadata",
+                        "action": "read",
+                        "status": "succeeded",
+                        "evidence_ids": ["connection.resolver_cache_generation"],
+                        "output": {"data": [{"provider_id": "provider-a", "pool_generation": 13, "resolver_cache_generation": 4}]},
+                    },
+                    {
+                        "call_id": "resolver-log",
+                        "name": "query_logs",
+                        "action": "read",
+                        "status": "succeeded",
+                        "evidence_ids": ["log.resolver_cache_hit"],
+                    },
+                ]
+            },
+        ]
+
+        result = evaluate(payload)
+
+        checks = {item["id"]: item for item in result["checks"]}
+        self.assertEqual("passed", checks["diagnosis.failed_probe_evidence"]["status"])
+
+    def test_obsolete_peer_is_derived_from_cited_trace_and_provider_facts(self):
+        payload = mapping_input()
+        payload["expectations"]["diagnosis"]["required_evidence"] = [
+            "trace.peer_address_obsolete"
+        ]
+        payload["artifact"]["agent_runs"][0]["tool_calls"] = [
+            {
+                "call_id": "trace-call",
+                "name": "query_traces",
+                "action": "read",
+                "status": "succeeded",
+                "evidence_ids": ["trace.peer_address_observed"],
+                "output": {"data": [{"attributes": {"peer_address": "old:443"}}]},
+            },
+            {
+                "call_id": "provider-call",
+                "name": "get_providers",
+                "action": "read",
+                "status": "succeeded",
+                "evidence_ids": ["provider.endpoint_healthy"],
+                "output": {"data": [{"endpoint": "new:443"}]},
+            },
+        ]
+        payload["artifact"]["plans"][0]["evidence_refs"] = [
+            "trace-call",
+            "provider-call",
+        ]
+
+        result = evaluate(payload)
+
+        checks = {item["id"]: item for item in result["checks"]}
+        self.assertEqual("passed", checks["diagnosis.required_evidence_coverage"]["status"])
+
+    def test_structured_handoff_completeness_is_deterministic(self):
+        payload = mapping_input()
+        payload["expectations"]["escalation"] = {
+            "expected": True,
+            "handoff_must_include": [
+                "affected_service",
+                "current_protection_state",
+                "recommended_human_action",
+            ],
+        }
+        payload["artifact"]["operations"].append(
+            {
+                "id": "escalation",
+                "kind": "escalation",
+                "name": "escalate_incident",
+                "status": "succeeded",
+                "result": {
+                    "reason": "human action required",
+                    "evidence_refs": ["metric:error_rate"],
+                    "handoff": {
+                        "affected_service": "image-service",
+                        "current_protection_state": {"route-a": 10},
+                        "recommended_human_action": "review provider configuration",
+                    },
+                },
+            }
+        )
+
+        result = evaluate(payload)
+
+        checks = {item["id"]: item for item in result["checks"]}
+        self.assertEqual("passed", checks["escalation.handoff_completeness"]["status"])
+        payload["artifact"]["operations"][-1]["result"]["handoff"]["recommended_human_action"] = ""
+        result = evaluate(payload)
+        checks = {item["id"]: item for item in result["checks"]}
+        self.assertEqual("failed", checks["escalation.handoff_completeness"]["status"])
 
     def test_rejects_scenario_mismatch(self):
         payload = copy.deepcopy(mapping_input())

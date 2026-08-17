@@ -91,6 +91,7 @@ func run(arguments []string) error {
 		DatasetRoot: opts.datasetRoot, ScenarioID: opts.scenarioID,
 		Model: chatModel, Storage: database, Output: os.Stdout,
 		AutoApprove: opts.autoApprove, AgentMaxSteps: opts.maxSteps,
+		PromptDirectory: llmConfig.PromptsDir,
 		Provenance: runartifact.Provenance{CodeVersion: buildinfo.AgentVersion},
 		RunConfig:  runartifact.RunConfig{ModelProvider: llmConfig.Provider, Model: llmConfig.Model},
 	})

@@ -63,7 +63,7 @@ func buildStaticTools(service platform.ToolOpsPlatform, incidentID string) ([]ei
 					return response[platform.MetricResult]{}, err
 				}
 				result, callErr := service.QueryMetrics(ctx, platform.MetricQuery{Scope: input.scope(incidentID), Range: value, Names: input.Names})
-				return platformResponse(result, callErr), nil
+				return evidenceResponse(result, callErr), nil
 			})
 		},
 		func() (einotool.InvokableTool, error) {
@@ -73,7 +73,7 @@ func buildStaticTools(service platform.ToolOpsPlatform, incidentID string) ([]ei
 					return response[[]platform.LogEntry]{}, err
 				}
 				result, callErr := service.QueryLogs(ctx, platform.LogQuery{Scope: input.scope(incidentID), Range: value, Limit: input.Limit})
-				return platformResponse(result, callErr), nil
+				return evidenceResponse(result, callErr), nil
 			})
 		},
 		func() (einotool.InvokableTool, error) {
@@ -83,31 +83,31 @@ func buildStaticTools(service platform.ToolOpsPlatform, incidentID string) ([]ei
 					return response[[]platform.TraceRecord]{}, err
 				}
 				result, callErr := service.QueryTraces(ctx, platform.TraceQuery{Scope: input.scope(incidentID), Range: value, Limit: input.Limit})
-				return platformResponse(result, callErr), nil
+				return evidenceResponse(result, callErr), nil
 			})
 		},
 		func() (einotool.InvokableTool, error) {
 			return toolutils.InferTool("get_services", "获取当前 Incident 涉及的服务、工具、SLO和关联路由目录。", func(ctx context.Context, input stateInput) (response[[]platform.Service], error) {
 				result, callErr := service.GetServices(ctx, platform.StateQuery{Scope: input.scope(incidentID)})
-				return platformResponse(result, callErr), nil
+				return evidenceResponse(result, callErr), nil
 			})
 		},
 		func() (einotool.InvokableTool, error) {
 			return toolutils.InferTool("get_routes", "获取当前路由权重、基线权重、Provider和可用状态。路由权重由控制器管理，Agent只能读取。", func(ctx context.Context, input stateInput) (response[[]platform.Route], error) {
 				result, callErr := service.GetRoutes(ctx, platform.StateQuery{Scope: input.scope(incidentID)})
-				return platformResponse(result, callErr), nil
+				return evidenceResponse(result, callErr), nil
 			})
 		},
 		func() (einotool.InvokableTool, error) {
 			return toolutils.InferTool("get_providers", "获取Provider健康状态、端点和兼容性元数据。不能读取Provider凭证。", func(ctx context.Context, input stateInput) (response[[]platform.Provider], error) {
 				result, callErr := service.GetProviders(ctx, platform.StateQuery{Scope: input.scope(incidentID)})
-				return platformResponse(result, callErr), nil
+				return evidenceResponse(result, callErr), nil
 			})
 		},
 		func() (einotool.InvokableTool, error) {
 			return toolutils.InferTool("get_config_versions", "获取当前配置版本、已知健康版本和激活状态。回滚前必须确认目标版本已知健康。", func(ctx context.Context, input stateInput) (response[[]platform.ConfigVersion], error) {
 				result, callErr := service.GetConfigVersions(ctx, platform.StateQuery{Scope: input.scope(incidentID)})
-				return platformResponse(result, callErr), nil
+				return evidenceResponse(result, callErr), nil
 			})
 		},
 		func() (einotool.InvokableTool, error) {
@@ -117,37 +117,37 @@ func buildStaticTools(service platform.ToolOpsPlatform, incidentID string) ([]ei
 					return response[[]platform.ChangeRecord]{}, err
 				}
 				result, callErr := service.GetChangeRecords(ctx, platform.ChangeQuery{Scope: input.scope(incidentID), Range: value})
-				return platformResponse(result, callErr), nil
+				return evidenceResponse(result, callErr), nil
 			})
 		},
 		func() (einotool.InvokableTool, error) {
 			return toolutils.InferTool("get_credential_metadata", "获取凭证ID、状态和管理方等元数据。此工具永远不会返回密钥或凭证值。", func(ctx context.Context, input stateInput) (response[[]platform.CredentialMetadata], error) {
 				result, callErr := service.GetCredentialMetadata(ctx, platform.StateQuery{Scope: input.scope(incidentID)})
-				return platformResponse(result, callErr), nil
+				return evidenceResponse(result, callErr), nil
 			})
 		},
 		func() (einotool.InvokableTool, error) {
 			return toolutils.InferTool("get_connection_metadata", "获取Provider连接池代次、DNS解析缓存代次、解析IP和连接状态。用于诊断连接失败。", func(ctx context.Context, input stateInput) (response[[]platform.ConnectionMetadata], error) {
 				result, callErr := service.GetConnectionMetadata(ctx, platform.StateQuery{Scope: input.scope(incidentID)})
-				return platformResponse(result, callErr), nil
+				return evidenceResponse(result, callErr), nil
 			})
 		},
 		func() (einotool.InvokableTool, error) {
 			return toolutils.InferTool("get_tasks", "查询当前 Incident 中修复、探测、恢复和升级操作对应的异步任务状态。", func(ctx context.Context, input taskInput) (response[[]platform.ManagedTask], error) {
 				result, callErr := service.GetTasks(ctx, platform.TaskQuery{Scope: input.scope(incidentID), Statuses: input.Statuses})
-				return platformResponse(result, callErr), nil
+				return evidenceResponse(result, callErr), nil
 			})
 		},
 		func() (einotool.InvokableTool, error) {
 			return toolutils.InferTool("get_remediation_capabilities", "获取当前 Incident 可用于制定Plan的修复能力、参数、风险和前置条件。此工具只返回目录，不执行修复。", func(ctx context.Context, input stateInput) (response[[]platform.RemediationCapability], error) {
 				result, callErr := service.GetRemediationCapabilities(ctx, platform.StateQuery{Scope: input.scope(incidentID)})
-				return platformResponse(result, callErr), nil
+				return evidenceResponse(result, callErr), nil
 			})
 		},
 		func() (einotool.InvokableTool, error) {
 			return toolutils.InferTool("get_recovery_policies", "获取 Controller 允许当前 Incident 引用的探测与逐级恢复策略。提交Plan前必须读取，并原样使用返回的策略ID；Agent不能自行生成策略ID或修改流量步长。", func(ctx context.Context, input stateInput) (response[[]platform.RecoveryPolicy], error) {
 				result, callErr := service.GetRecoveryPolicies(ctx, platform.StateQuery{Scope: input.scope(incidentID)})
-				return platformResponse(result, callErr), nil
+				return evidenceResponse(result, callErr), nil
 			})
 		},
 	}
