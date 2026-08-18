@@ -96,18 +96,19 @@ func TestPlanProcessorDryRunFailureRejectsPlan(t *testing.T) {
 	require.NotNil(t, result[0].Failure)
 	assert.Equal(t, workflow.PlanDryRunFailurePreconditionChanged, result[0].Failure.Category)
 	assert.Equal(t, "precondition_failed", result[0].Failure.Code)
-	assert.Equal(t, workflow.PlanDryRunNextReinvestigate, result[0].Failure.NextAction)
+	assert.Equal(t, workflow.PlanDryRunNextNeedsAgent, result[0].Failure.NextAction)
 
 	snapshot := instance.Snapshot()
-	assert.Equal(t, workflow.StateReinvestigating, snapshot.State)
+	assert.Equal(t, workflow.StateInvestigating, snapshot.State)
 	require.Len(t, snapshot.PlanDryRuns, 1)
 	last := snapshot.History[len(snapshot.History)-1]
-	assert.Equal(t, workflow.EventPlanRejected, last.Event)
+	assert.Equal(t, workflow.EventCheckpointNeedsAgent, last.Event)
 	assert.Equal(t, workflow.ActorWorkflow, last.Actor)
-	assert.Equal(t, "operation-dry-run-rejected", last.Metadata["operation_id"])
-	assert.Equal(t, string(platform.OperationRejected), last.Metadata["operation_status"])
-	assert.Equal(t, "precondition_changed", last.Metadata["failure_category"])
-	assert.Equal(t, "reinvestigate", last.Metadata["failure_next_action"])
+	require.NotNil(t, last.Failure)
+	assert.Equal(t, "operation-dry-run-rejected", last.Failure.OperationID)
+	assert.Equal(t, string(platform.OperationRejected), last.Failure.OperationStatus)
+	assert.Equal(t, workflow.FailureCategoryPreconditionChanged, last.Failure.Category)
+	assert.Equal(t, workflow.FailureNextNeedsAgent, last.Failure.NextAction)
 
 	_, err = processor.DryRun(context.Background())
 	assert.ErrorIs(t, err, ErrPlanDryRunFailed)
@@ -160,8 +161,9 @@ func plannedWorkflow(t *testing.T, incidentID string, arguments map[string]any) 
 	_, err = instance.SubmitPlan(workflow.PlanDraft{
 		Summary: "rollback unhealthy mapping", RootCause: "mapping regression",
 		EvidenceRefs: []string{"change:mapping-v2", "log:invalid_parameter_type"},
-		Actions:      []workflow.PlannedAction{{ToolName: "rollback_mapping", Arguments: arguments}},
-		ProbeRouteID: "route-a", RecoveryPolicyID: "default-safe-recovery",
+		Stages: []workflow.PlanStageDraft{{StageID: "rollback", Goal: "rollback mapping",
+			Actions:          []workflow.PlannedAction{{Key: "rollback-mapping", ToolName: "rollback_mapping", Arguments: arguments}},
+			CheckpointPolicy: workflow.CheckpointPolicy{DefaultDecision: workflow.CheckpointSucceeded}}},
 	})
 	require.NoError(t, err)
 	return instance
@@ -196,7 +198,7 @@ func TestPlanProcessorReturnsFailureForTerminalOperationWithoutCallError(t *test
 	assert.Equal(t, workflow.PlanDryRunFailed, result[0].Status)
 	require.NotNil(t, result[0].Failure)
 	assert.Equal(t, workflow.PlanDryRunFailureExecutionFailed, result[0].Failure.Category)
-	assert.Equal(t, workflow.StateReinvestigating, instance.Snapshot().State)
+	assert.Equal(t, workflow.StateInvestigating, instance.Snapshot().State)
 }
 
 func TestPlanProcessorDryRunWrapsPlatformFailure(t *testing.T) {
@@ -236,14 +238,14 @@ func TestAnalyzeDryRunResultClassifiesNextAction(t *testing.T) {
 		retryable  bool
 	}{
 		{
-			name: "missing capability requires replanning", err: platform.ErrNotFound,
+			name: "missing capability needs agent", err: platform.ErrNotFound,
 			status: workflow.PlanDryRunFailed, category: workflow.PlanDryRunFailurePlanInvalid,
-			code: "capability_not_found", nextAction: workflow.PlanDryRunNextReplan,
+			code: "capability_not_found", nextAction: workflow.PlanDryRunNextNeedsAgent,
 		},
 		{
-			name: "unsupported capability requires replanning", err: platform.ErrUnsupported,
+			name: "unsupported capability needs agent", err: platform.ErrUnsupported,
 			status: workflow.PlanDryRunFailed, category: workflow.PlanDryRunFailurePlanInvalid,
-			code: "capability_unsupported", nextAction: workflow.PlanDryRunNextReplan,
+			code: "capability_unsupported", nextAction: workflow.PlanDryRunNextNeedsAgent,
 		},
 		{
 			name: "authorization failure escalates", err: platform.ErrUnauthorized,
@@ -253,7 +255,7 @@ func TestAnalyzeDryRunResultClassifiesNextAction(t *testing.T) {
 		{
 			name: "state conflict requires evidence refresh", err: platform.ErrConflict,
 			status: workflow.PlanDryRunFailed, category: workflow.PlanDryRunFailurePreconditionChanged,
-			code: "state_conflict", nextAction: workflow.PlanDryRunNextReinvestigate,
+			code: "state_conflict", nextAction: workflow.PlanDryRunNextNeedsAgent,
 		},
 		{
 			name: "typed timeout retries", err: context.DeadlineExceeded,
@@ -275,7 +277,7 @@ func TestAnalyzeDryRunResultClassifiesNextAction(t *testing.T) {
 			name:      "operation failure requires evidence refresh",
 			operation: platform.Operation{Status: platform.OperationFailed, Message: "execution failed"},
 			status:    workflow.PlanDryRunFailed, category: workflow.PlanDryRunFailureExecutionFailed,
-			code: "operation_failed", nextAction: workflow.PlanDryRunNextReinvestigate,
+			code: "operation_failed", nextAction: workflow.PlanDryRunNextNeedsAgent,
 		},
 	}
 
@@ -308,5 +310,20 @@ func TestPlanProcessorDryRunAuthorizationFailureEscalates(t *testing.T) {
 	require.Len(t, result, 1)
 	require.NotNil(t, result[0].Failure)
 	assert.Equal(t, workflow.PlanDryRunNextEscalate, result[0].Failure.NextAction)
-	assert.Equal(t, workflow.StateEscalated, instance.Snapshot().State)
+	assert.Equal(t, workflow.StateBlocked, instance.Snapshot().State)
+}
+
+func TestPersistCheckpointSurvivesCanceledRunContext(t *testing.T) {
+	instance, err := workflow.NewIncidentWorkflow(workflow.Config{IncidentID: "persist-after-cancel"})
+	require.NoError(t, err)
+	called := false
+	processor, err := NewPlanProcessor(&recordingPlatform{}, instance, WithWorkflowCheckpoint(func(ctx context.Context, _ workflow.Snapshot) error {
+		called = true
+		return ctx.Err()
+	}))
+	require.NoError(t, err)
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.NoError(t, processor.persistCheckpoint(canceled))
+	assert.True(t, called)
 }

@@ -28,13 +28,28 @@ func (p *planInvestigator) Investigate(context.Context, string) error {
 	_, err := p.flow.SubmitPlan(workflow.PlanDraft{
 		Summary: "rollback mapping regression", RootCause: "mapping-v2 changed size to a string",
 		EvidenceRefs: []string{"metric:error_rate", "log:invalid_parameter_type", "change:mapping-v2"},
-		Actions: []workflow.PlannedAction{{
-			ToolName: "rollback_mapping",
-			Arguments: map[string]any{
-				"tool_id": "generate_image", "target_version": "mapping-v1", "expected_version": "mapping-v2",
-			},
-		}},
-		ProbeRouteID: "route-a", RecoveryPolicyID: "default-safe-recovery",
+		Stages: []workflow.PlanStageDraft{
+			{StageID: "rollback", Goal: "rollback mapping", Actions: []workflow.PlannedAction{{
+				Key: "rollback-mapping", ToolName: "rollback_mapping",
+				Arguments: map[string]any{
+					"tool_id": "generate_image", "target_version": "mapping-v1", "expected_version": "mapping-v2",
+				},
+			}}, CheckpointPolicy: workflow.CheckpointPolicy{DefaultDecision: workflow.CheckpointContinue}},
+			{StageID: "probe", Goal: "verify the repaired route", Actions: []workflow.PlannedAction{{
+				Key: "probe-route", Kind: workflow.ActionKindProbe, ToolName: "request_probe",
+				Arguments: map[string]any{"route_id": "route-a", "policy_id": "default-safe-recovery", "idempotency_key": "probe-mapping"},
+			}}, CheckpointPolicy: workflow.CheckpointPolicy{Rules: []workflow.CheckpointRule{{
+				SourceActionID: "probe-route", OutputPath: "output.outcome", Equals: "healthy",
+				Decision: workflow.CheckpointContinue, NextStageID: "recovery",
+			}}, DefaultDecision: workflow.CheckpointNeedsAgent}},
+			{StageID: "recovery", Goal: "restore baseline traffic", Actions: []workflow.PlannedAction{{
+				Key: "recover-route", Kind: workflow.ActionKindRecovery, ToolName: "request_recovery",
+				Arguments: map[string]any{"route_id": "route-a", "policy_id": "default-safe-recovery", "idempotency_key": "recover-mapping"},
+			}}, CheckpointPolicy: workflow.CheckpointPolicy{Rules: []workflow.CheckpointRule{{
+				SourceActionID: "recover-route", OutputPath: "output.outcome", Equals: "healthy",
+				Decision: workflow.CheckpointSucceeded,
+			}}, DefaultDecision: workflow.CheckpointNeedsAgent}},
+		},
 	})
 	return err
 }
@@ -82,8 +97,8 @@ func TestRunCompletesScriptedEndToEndScenario(t *testing.T) {
 	assert.Contains(t, output.String(), "SIMULATOR AUTO-APPROVE")
 	assert.Contains(t, output.String(), "code_version=")
 	assert.Contains(t, output.String(), "dataset_version=toolops-v1")
-	assert.Contains(t, output.String(), "probing -> recovering")
-	assert.Contains(t, output.String(), "recovering -> resolved")
+	assert.Contains(t, output.String(), "remediating -> checkpoint")
+	assert.Contains(t, output.String(), "checkpoint -> resolved")
 	assert.Contains(t, output.String(), "[result] reason=resolved state=resolved")
 }
 

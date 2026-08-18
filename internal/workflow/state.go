@@ -12,12 +12,11 @@ const (
 	StatePlanned          State = "planned"
 	StateAwaitingApproval State = "awaiting_approval"
 	StateRemediating      State = "remediating"
-	StateProbing          State = "probing"
-	StateRecovering       State = "recovering"
-	StateReinvestigating  State = "reinvestigating"
-	StateCompensating     State = "compensating"
 	StateResolved         State = "resolved"
 	StateEscalated        State = "escalated"
+	StateCheckpoint       State = "checkpoint"
+	StateFailed           State = "failed"
+	StateBlocked          State = "blocked"
 )
 
 var validStates = map[State]struct{}{
@@ -26,12 +25,11 @@ var validStates = map[State]struct{}{
 	StatePlanned:          {},
 	StateAwaitingApproval: {},
 	StateRemediating:      {},
-	StateProbing:          {},
-	StateRecovering:       {},
-	StateReinvestigating:  {},
-	StateCompensating:     {},
 	StateResolved:         {},
 	StateEscalated:        {},
+	StateCheckpoint:       {},
+	StateFailed:           {},
+	StateBlocked:          {},
 }
 
 // Valid 报告状态值是否属于 IncidentWorkflow。
@@ -43,7 +41,7 @@ func (s State) Valid() bool {
 // Terminal 报告状态是否禁止 Workflow 继续自主执行生产写操作。
 // escalated 可以由人工显式恢复，因此它是暂停终态；resolved 是最终终态。
 func (s State) Terminal() bool {
-	return s == StateResolved || s == StateEscalated
+	return s == StateResolved || s == StateEscalated || s == StateFailed || s == StateBlocked
 }
 
 func validateState(state State) error {

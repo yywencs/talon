@@ -126,7 +126,7 @@ func New(ctx context.Context, service platform.ToolOpsPlatform, incidentID strin
 		for _, capability := range capabilities {
 			remediationCapabilities[capability.Name] = capability
 		}
-		planTool, planErr := newSubmitPlanTool(config.workflow, service, incidentID, remediationCapabilities)
+		planTool, planErr := newSubmitPlanTool(config.workflow, remediationCapabilities)
 		if planErr != nil {
 			return nil, planErr
 		}

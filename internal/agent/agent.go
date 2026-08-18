@@ -32,20 +32,24 @@ const (
 	// DefaultMaxSteps 限制一次 Agent 调用最多执行的 Eino Graph 节点数，
 	// 防止模型在查询或工具失败时无限循环。
 	DefaultMaxSteps = 24
-	graphName       = "ToolOpsAgent"
+	// DefaultMaxModelCalls 限制同一 Incident Agent 实例跨多次 Harness 恢复的模型调用总数。
+	DefaultMaxModelCalls = 64
+	graphName            = "ToolOpsAgent"
 )
 
 // Config 定义一个绑定到单个 Incident 的 ToolOpsAgent。
 // Model 和 Platform 由外层注入，因此 Agent 不依赖具体模型供应商或真实平台。
 type Config struct {
-	Model      model.ToolCallingChatModel
-	Platform   platform.ToolOpsPlatform
-	IncidentID string
-	MaxSteps   int
-	Workflow   *workflow.IncidentWorkflow
-	Artifact   *runartifact.Recorder
-	Skills     *skill.Session
-	Prompts    *PromptSet
+	Model         model.ToolCallingChatModel
+	Platform      platform.ToolOpsPlatform
+	IncidentID    string
+	VirtualTime   func() time.Time
+	MaxSteps      int
+	MaxModelCalls int
+	Workflow      *workflow.IncidentWorkflow
+	Artifact      *runartifact.Recorder
+	Skills        *skill.Session
+	Prompts       *PromptSet
 
 	// AdditionalInstructions 只能补充当前部署环境的调查说明，
 	// 固定的安全边界始终由 Agent 内置提示词和 Platform 共同保证。
@@ -63,6 +67,8 @@ type ToolOpsAgent struct {
 	skills             *skill.Session
 	artifact           *runartifact.Recorder
 	maxSteps           int
+	maxModelCalls      int
+	virtualTime        func() time.Time
 	runner             *react.Agent
 }
 
@@ -84,9 +90,20 @@ func NewToolOpsAgent(ctx context.Context, config Config) (*ToolOpsAgent, error) 
 	if config.MaxSteps < 0 {
 		return nil, fmt.Errorf("max steps must not be negative")
 	}
+	if config.MaxModelCalls < 0 {
+		return nil, fmt.Errorf("max model calls must not be negative")
+	}
 	maxSteps := config.MaxSteps
 	if maxSteps == 0 {
 		maxSteps = DefaultMaxSteps
+	}
+	maxModelCalls := config.MaxModelCalls
+	if maxModelCalls == 0 {
+		maxModelCalls = DefaultMaxModelCalls
+	}
+	virtualTime := config.VirtualTime
+	if virtualTime == nil {
+		virtualTime = time.Now
 	}
 	prompts := config.Prompts
 	if prompts == nil {
@@ -123,10 +140,12 @@ func NewToolOpsAgent(ctx context.Context, config Config) (*ToolOpsAgent, error) 
 	}
 	agent := &ToolOpsAgent{
 		incidentID: incidentID, systemText: persona, defaultInstruction: prompts.DefaultInstruction, tools: tools,
-		workflow: config.Workflow, skills: config.Skills, artifact: config.Artifact, maxSteps: maxSteps,
+		workflow: config.Workflow, skills: config.Skills, artifact: config.Artifact, maxSteps: maxSteps, maxModelCalls: maxModelCalls,
+		virtualTime: virtualTime,
 	}
 	trackedModel := model.ToolCallingChatModel(&recordingModel{
 		next: config.Model, recorder: config.Artifact, prepare: agent.prepareModelInput,
+		maxCalls: maxModelCalls, calls: &modelCallCounter{},
 	})
 	runner, err := react.NewAgent(ctx, &react.AgentConfig{
 		ToolCallingModel: trackedModel,

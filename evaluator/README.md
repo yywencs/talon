@@ -91,12 +91,13 @@ make eval-full \
 `incomplete`；全部规则均可判断且通过时才是 `passed`。`score` 只统计已评规则，
 `coverage` 表示可评规则占全部规则的比例。
 
-Evaluator `0.4.0` 已确定性检查：
+Evaluator `0.4.1` 已确定性检查：
 
 - Plan 或 escalation 所引用查询调用的 canonical Evidence ID 是否覆盖 expectations；
 - 失败探针后的新增证据及连接快照变化；
 - escalation 的结构化 handoff 必填字段；
 - RunArtifact 的结构化 Experience 字段完整性；
+- 动态 `Plan.stages[].actions` 中的修复参数和 probe `policy_id`，同时兼容旧 Plan；
 - 修复、探针、恢复、升级和禁止操作等原有规则。
 
 Controller 的异常发现时限、流量保护和熔断不再属于 Agent 评测范围，因此不会生成

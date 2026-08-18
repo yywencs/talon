@@ -23,6 +23,25 @@ description: >-
 - 其他 `expected_*` 字段同样表示乐观并发校验使用的当前值，禁止自行递增。
 - 状态冲突后重新读取连接元数据；不要猜测新值或更换幂等键绕过冲突。
 
+## 分阶段修复与探测
+
+- 把 probe 的 `operation_status=succeeded` 与业务 `output.outcome=healthy` 分开判断；
+  `hard_stop` 表示探测操作成功执行但业务验证失败，禁止进入 recovery。
+- 如果能力目录同时提供低风险刷新和带 `refresh_failed_probe_required` 前置条件的连接池重建，
+  第一周期应提交“刷新 → probe”。首次 probe 为 `hard_stop` 时，Checkpoint 必须使用
+  `needs_agent`，不要直接 `escalate`；该失败探测是重建能力前置条件的一部分。
+- 被 `needs_agent` 唤回后，必须重新读取连接元数据，并使用 `query_logs` 查询失败 probe
+  之后的新连接日志；需要明确记录连接池代次是否改变、DNS 缓存代次是否未变，以及日志中
+  是否出现复用 resolver cache 的新证据。将这些新证据引用到第二周期 Plan。若刷新已成功、
+  probe 已 `hard_stop` 且重建能力可用，则提交“重建连接池/清理 DNS 缓存 → probe”；高风险
+  能力是否审批由 Harness 决定。
+- 上述日志时间窗必须以 `harness_facts.virtual_time` 为基准，禁止使用 `generated_at`、
+  `observed_at` 或现实当前日期。无法从虚拟时间可靠推导起点时省略 `from`/`to`，不要提交
+  返回空结果的时间窗作为 resolver-cache 证据。
+- 只有最近一次 probe 的 `output.outcome=healthy` 才能继续到显式 recovery Stage；probe
+  本身不能直接把 Incident 标记为 `succeeded`。第二周期 probe 仍
+  `hard_stop`、重建能力不可用、审批被拒或执行失败时，才认为没有剩余安全自治路径并升级人工。
+
 ## 证据与停止条件
 
 - 至少保留故障指标、连接错误以及连接元数据三类证据。

@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-EVALUATOR_VERSION = "0.4.0"
+EVALUATOR_VERSION = "0.4.1"
 INPUT_SCHEMA_VERSION = "talon.evaluation-input/v1"
 RESULT_SCHEMA_VERSION = "talon.evaluation-result/v1"
 ARTIFACT_SCHEMA_VERSION = "talon.run-artifact/v2"
@@ -291,9 +291,7 @@ def _score_remediation(
     """检查计划动作、dry-run、禁止行为和实际修复是否符合 expectations。"""
 
     expected = _dict(expectations.get("remediation"))
-    planned_actions = [
-        action for plan in plans for action in _dict_list(plan.get("actions"))
-    ]
+    planned_actions = _plan_actions(plans)
     actual_tools = [value.get("name") for value in remediation_ops]
 
     required = _dict_list(expected.get("required"))
@@ -386,7 +384,8 @@ def _score_probe(
             "final probe outcome must match expectations",
         )
     if expected.get("policy_id"):
-        actual = plans[-1].get("recovery_policy_id") if plans else None
+        policies = _probe_policy_ids(plans)
+        actual = policies[0] if len(policies) == 1 else (policies or None)
         checks.add(
             "probe.policy",
             "probe",
@@ -717,6 +716,34 @@ def _required_action_observed(
         if all(arguments.get(key) == value for key, value in wanted_args.items()):
             return True
     return not wanted_args
+
+
+def _plan_actions(plans: Sequence[Mapping[str, Any]]) -> List[Mapping[str, Any]]:
+    """Flatten legacy Plan.actions and dynamic Plan.stages[].actions."""
+
+    result: List[Mapping[str, Any]] = []
+    for plan in plans:
+        result.extend(_dict_list(plan.get("actions")))
+        for stage in _dict_list(plan.get("stages")):
+            result.extend(_dict_list(stage.get("actions")))
+    return result
+
+
+def _probe_policy_ids(plans: Sequence[Mapping[str, Any]]) -> List[str]:
+    """Return distinct probe policy IDs from either Plan schema generation."""
+
+    result: List[str] = []
+    for plan in plans:
+        legacy = plan.get("recovery_policy_id")
+        if isinstance(legacy, str) and legacy and legacy not in result:
+            result.append(legacy)
+        for action in _plan_actions([plan]):
+            if action.get("tool_name") != "request_probe":
+                continue
+            policy_id = _dict(action.get("arguments")).get("policy_id")
+            if isinstance(policy_id, str) and policy_id and policy_id not in result:
+                result.append(policy_id)
+    return result
 
 
 def _forbidden_observed(

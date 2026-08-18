@@ -44,7 +44,8 @@ func (p *PlanProcessor) EvaluatePolicy(ctx context.Context) ([]workflow.PlanPoli
 	if snapshot.Plan == nil {
 		return nil, fmt.Errorf("planned workflow has no frozen plan")
 	}
-	if len(snapshot.PlanDryRuns) != len(snapshot.Plan.Actions) {
+	actions := workflow.ExecutableActions(snapshot)
+	if len(actions) == 0 || len(snapshot.PlanDryRuns) != len(actions) {
 		return nil, fmt.Errorf("plan policy requires a successful dry run for every action")
 	}
 
@@ -54,8 +55,8 @@ func (p *PlanProcessor) EvaluatePolicy(ctx context.Context) ([]workflow.PlanPoli
 	if err != nil {
 		return nil, fmt.Errorf("get remediation capabilities for policy: %w", err)
 	}
-	decisions := make([]workflow.PlanPolicyDecision, 0, len(snapshot.Plan.Actions))
-	for _, action := range snapshot.Plan.Actions {
+	decisions := make([]workflow.PlanPolicyDecision, 0, len(actions))
+	for _, action := range actions {
 		dryRun := actionDryRun(snapshot.PlanDryRuns, action.ID)
 		if dryRun == nil || dryRun.PlanID != snapshot.Plan.ID || dryRun.ActionDigest != action.Digest ||
 			dryRun.Status != workflow.PlanDryRunSucceeded || strings.TrimSpace(dryRun.OperationID) == "" {
@@ -114,6 +115,9 @@ func (p *PlanProcessor) decideApproval(ctx context.Context, request ApprovalRequ
 	if err != nil {
 		return workflow.PlanApproval{}, fmt.Errorf("record plan approval: %w", err)
 	}
+	if err := p.persistCheckpoint(ctx); err != nil {
+		return result, fmt.Errorf("persist plan approval checkpoint: %w", err)
+	}
 	return result, nil
 }
 
@@ -136,7 +140,7 @@ func (p *PlanProcessor) ensureApprovalRequests(ctx context.Context, snapshot wor
 		if policy.Outcome != workflow.PlanPolicyApprovalRequired {
 			continue
 		}
-		action := plannedAction(snapshot.Plan.Actions, policy.ActionID)
+		action := plannedAction(workflow.ExecutableActions(snapshot), policy.ActionID)
 		if action == nil || action.Digest != policy.ActionDigest {
 			return fmt.Errorf("persist approval request: policy does not match frozen action %q", policy.ActionID)
 		}
@@ -177,6 +181,13 @@ func evaluateCapabilityPolicy(planID string, action workflow.PlannedAction, dryR
 		DryRunOperationID: dryRunOperationID, Risk: "unknown",
 		Outcome: workflow.PlanPolicyRejected, ReasonCode: "capability_not_available",
 		Reason: "planned remediation capability is no longer available",
+	}
+	if action.Kind == workflow.ActionKindProbe || action.Kind == workflow.ActionKindRecovery {
+		decision.Risk = "low"
+		decision.Outcome = workflow.PlanPolicyAutoApproved
+		decision.ReasonCode = "harness_managed_action"
+		decision.Reason = "probe and recovery actions are constrained by a validated harness recovery policy"
+		return decision
 	}
 	var capability *platform.RemediationCapability
 	for index := range capabilities {

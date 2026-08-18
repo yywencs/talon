@@ -57,20 +57,9 @@ var stateAgentActions = map[State]agentActionSet{
 		AgentActionQueryOperation,
 		AgentActionEscalate,
 	),
-	StateProbing: agentActions(
+	StateCheckpoint: agentActions(
 		AgentActionRead,
 		AgentActionRecallEvidence,
-		AgentActionQueryOperation,
-		AgentActionEscalate,
-	),
-	StateRecovering: agentActions(
-		AgentActionRead,
-		AgentActionRecallEvidence,
-		AgentActionQueryOperation,
-		AgentActionEscalate,
-	),
-	StateReinvestigating: investigationActions(),
-	StateCompensating: agentActions(
 		AgentActionQueryOperation,
 		AgentActionEscalate,
 	),
@@ -79,6 +68,14 @@ var stateAgentActions = map[State]agentActionSet{
 		AgentActionRecallEvidence,
 	),
 	StateEscalated: agentActions(
+		AgentActionRead,
+		AgentActionRecallEvidence,
+	),
+	StateFailed: agentActions(
+		AgentActionRead,
+		AgentActionRecallEvidence,
+	),
+	StateBlocked: agentActions(
 		AgentActionRead,
 		AgentActionRecallEvidence,
 	),

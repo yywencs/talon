@@ -67,10 +67,20 @@ ON CONFLICT DO NOTHING`), spec.ActionID, spec.IncidentID, spec.PlanID, spec.Acti
 	if err != nil {
 		return nil, err
 	}
-	if len(records) != len(specs) {
+	requested := make(map[string]struct{}, len(specs))
+	for _, spec := range specs {
+		requested[spec.ActionID] = struct{}{}
+	}
+	selected := make([]execution.Record, 0, len(specs))
+	for _, record := range records {
+		if _, ok := requested[record.ActionID]; ok {
+			selected = append(selected, record)
+		}
+	}
+	if len(selected) != len(specs) {
 		return nil, fmt.Errorf("%w: plan %q has unexpected action execution records", execution.ErrConflict, specs[0].PlanID)
 	}
-	return records, nil
+	return selected, nil
 }
 
 func (s *sqlExecutionStore) ClaimNext(ctx context.Context, claim execution.Claim) (execution.Record, error) {

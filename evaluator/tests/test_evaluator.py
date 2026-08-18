@@ -152,6 +152,69 @@ class EvaluatorTests(unittest.TestCase):
         self.assertEqual("skipped", statuses["diagnosis.root_cause_correctness"])
         self.assertFalse(any(item["category"] == "controller" for item in result["checks"]))
 
+    def test_dynamic_stage_actions_drive_remediation_and_probe_policy_checks(self):
+        payload = mapping_input()
+        plan = payload["artifact"]["plans"][0]
+        legacy_actions = plan.pop("actions")
+        plan.pop("recovery_policy_id")
+        plan["stages"] = [
+            {"stage_id": "repair", "actions": legacy_actions},
+            {
+                "stage_id": "probe",
+                "actions": [
+                    {
+                        "tool_name": "request_probe",
+                        "arguments": {
+                            "route_id": "route-a",
+                            "policy_id": "default-safe-recovery",
+                        },
+                    }
+                ],
+            },
+        ]
+
+        result = evaluate(payload)
+
+        checks = {item["id"]: item for item in result["checks"]}
+        self.assertEqual("passed", checks["remediation.required"]["status"])
+        self.assertEqual("passed", checks["probe.policy"]["status"])
+        self.assertEqual("default-safe-recovery", checks["probe.policy"]["actual"])
+
+    def test_dynamic_probe_policy_check_rejects_mixed_policies(self):
+        payload = mapping_input()
+        plan = payload["artifact"]["plans"][0]
+        plan.pop("actions")
+        plan.pop("recovery_policy_id")
+        plan["stages"] = [
+            {
+                "stage_id": "probe-a",
+                "actions": [
+                    {
+                        "tool_name": "request_probe",
+                        "arguments": {"policy_id": "default-safe-recovery"},
+                    }
+                ],
+            },
+            {
+                "stage_id": "probe-b",
+                "actions": [
+                    {
+                        "tool_name": "request_probe",
+                        "arguments": {"policy_id": "unexpected-policy"},
+                    }
+                ],
+            },
+        ]
+
+        result = evaluate(payload)
+
+        checks = {item["id"]: item for item in result["checks"]}
+        self.assertEqual("failed", checks["probe.policy"]["status"])
+        self.assertEqual(
+            ["default-safe-recovery", "unexpected-policy"],
+            checks["probe.policy"]["actual"],
+        )
+
     def test_legacy_artifact_skips_capability_gated_checks(self):
         payload = mapping_input()
         del payload["artifact"]["capabilities"]
@@ -216,7 +279,7 @@ class EvaluatorTests(unittest.TestCase):
         payload = mapping_input()
         payload["expectations"]["escalation"] = {
             "expected": True,
-            # toolops-v1 keeps the legacy expectation key; Evaluator 0.4.0
+            # toolops-v1 keeps the legacy expectation key; Evaluator 0.4.1
             # compares its value against the structured Operation reason_code.
             "reason": "no_safe_remediation_available",
         }

@@ -154,7 +154,7 @@ func TestPlanPolicyHumanActionRejectionReturnsToReinvestigation(t *testing.T) {
 	approval, err := processor.Reject(context.Background(), approvalRequest(decision, "oncall@example.com", "blast radius is too large"))
 	require.NoError(t, err)
 	assert.Equal(t, workflow.PlanApprovalRejected, approval.Decision)
-	assert.Equal(t, workflow.StateReinvestigating, instance.Snapshot().State)
+	assert.Equal(t, workflow.StateInvestigating, instance.Snapshot().State)
 }
 
 func TestPlanPolicyRejectsUnavailableActionCapability(t *testing.T) {
@@ -165,7 +165,7 @@ func TestPlanPolicyRejectsUnavailableActionCapability(t *testing.T) {
 	require.Len(t, decisions, 1)
 	assert.Equal(t, workflow.PlanPolicyRejected, decisions[0].Outcome)
 	assert.Equal(t, "capability_not_available", decisions[0].ReasonCode)
-	assert.Equal(t, workflow.StateReinvestigating, instance.Snapshot().State)
+	assert.Equal(t, workflow.StateBlocked, instance.Snapshot().State)
 }
 
 func TestPlanPolicyUsesApprovalAsSafeDefaultForUnknownRisk(t *testing.T) {
@@ -250,7 +250,8 @@ func plannedWorkflowWithActions(t *testing.T, incidentID string, actions []workf
 	require.NoError(t, err)
 	_, err = instance.SubmitPlan(workflow.PlanDraft{
 		Summary: "remediate incident", RootCause: "confirmed regression", EvidenceRefs: []string{"trace:001"},
-		Actions: actions, ProbeRouteID: "route-a", RecoveryPolicyID: "default-safe-recovery",
+		Stages: []workflow.PlanStageDraft{{StageID: "remediate", Goal: "remediate incident", Actions: actions,
+			CheckpointPolicy: workflow.CheckpointPolicy{DefaultDecision: workflow.CheckpointSucceeded}}},
 	})
 	require.NoError(t, err)
 	return instance

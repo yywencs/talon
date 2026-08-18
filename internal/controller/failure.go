@@ -24,7 +24,7 @@ func classifyControllerError(stage workflow.FailureStage, code, safeSummary, pla
 		value.NextAction = workflow.FailureNextEscalate
 	case errors.Is(err, platform.ErrConflict), errors.Is(err, platform.ErrPreconditionFailed):
 		value.Category = workflow.FailureCategoryPreconditionChanged
-		value.NextAction = workflow.FailureNextReinvestigate
+		value.NextAction = workflow.FailureNextNeedsAgent
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		value.Category = workflow.FailureCategoryPlatformUnavailable
 		value.NextAction = workflow.FailureNextRetry

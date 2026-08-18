@@ -28,6 +28,7 @@ type PlanProcessor struct {
 	pollInitial      time.Duration
 	pollMaximum      time.Duration
 	operationTimeout time.Duration
+	checkpoint       func(context.Context, workflow.Snapshot) error
 }
 
 // AsyncExecutionConfig 配置异步修复提交、轮询退避和 Operation 总超时。
@@ -86,6 +87,26 @@ func WithAsyncExecution(config AsyncExecutionConfig) PlanProcessorOption {
 	}
 }
 
+// WithWorkflowCheckpoint 在每个确定性执行检查点持久化 Workflow/RunArtifact。
+func WithWorkflowCheckpoint(checkpoint func(context.Context, workflow.Snapshot) error) PlanProcessorOption {
+	return func(processor *PlanProcessor) error {
+		if checkpoint == nil {
+			return fmt.Errorf("workflow checkpoint callback is required")
+		}
+		processor.checkpoint = checkpoint
+		return nil
+	}
+}
+
+func (p *PlanProcessor) persistCheckpoint(ctx context.Context) error {
+	if p == nil || p.checkpoint == nil {
+		return nil
+	}
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return p.checkpoint(persistCtx, p.workflow.Snapshot())
+}
+
 // NewPlanProcessor 创建 Plan 执行编排器。
 func NewPlanProcessor(service platform.ToolOpsPlatform, instance *workflow.IncidentWorkflow, options ...PlanProcessorOption) (*PlanProcessor, error) {
 	if service == nil {
@@ -116,6 +137,9 @@ func (p *PlanProcessor) DryRun(ctx context.Context) ([]workflow.PlanDryRun, erro
 	if p == nil || p.platform == nil || p.workflow == nil {
 		return nil, fmt.Errorf("plan processor is not initialized")
 	}
+	if _, err := p.workflow.ResolveCurrentStage(); err != nil {
+		return p.workflow.Snapshot().PlanDryRuns, errors.Join(ErrPlanDryRunFailed, err)
+	}
 	snapshot := p.workflow.Snapshot()
 	for _, result := range snapshot.PlanDryRuns {
 		if result.Status == workflow.PlanDryRunFailed {
@@ -129,22 +153,28 @@ func (p *PlanProcessor) DryRun(ctx context.Context) ([]workflow.PlanDryRun, erro
 		return nil, fmt.Errorf("planned workflow has no frozen plan")
 	}
 
-	for _, action := range snapshot.Plan.Actions {
+	actions := workflow.ExecutableActions(snapshot)
+	if len(actions) == 0 {
+		return nil, fmt.Errorf("planned workflow has no resolved actions")
+	}
+	for _, action := range actions {
 		if terminalActionDryRun(snapshot.PlanDryRuns, action.ID) {
 			continue
 		}
-		request := remediationDryRunRequest(snapshot.IncidentID, action)
-		operation, callErr := p.platform.ExecuteRemediation(ctx, request)
+		operation, idempotencyKey, callErr := p.dryRunAction(ctx, snapshot.IncidentID, action)
 		status, failure := analyzeDryRunResult(operation, callErr)
 		result := workflow.PlanDryRun{
 			PlanID: snapshot.Plan.ID, ActionID: action.ID, ActionDigest: action.Digest,
-			OperationID: operation.ID, IdempotencyKey: request.IdempotencyKey,
+			OperationID: operation.ID, IdempotencyKey: idempotencyKey,
 			Status: status, OperationStatus: string(operation.Status), Message: operation.Message,
 			Failure: failure, Result: cloneMap(operation.Result),
 		}
 		recorded, recordErr := p.workflow.RecordPlanDryRun(result)
 		if recordErr != nil {
 			return p.workflow.Snapshot().PlanDryRuns, fmt.Errorf("record action %q dry run: %w", action.ID, recordErr)
+		}
+		if persistErr := p.persistCheckpoint(ctx); persistErr != nil {
+			return p.workflow.Snapshot().PlanDryRuns, fmt.Errorf("persist action %q dry run checkpoint: %w", action.ID, persistErr)
 		}
 		if callErr != nil {
 			if recorded.Status == workflow.PlanDryRunFailed {
@@ -157,6 +187,52 @@ func (p *PlanProcessor) DryRun(ctx context.Context) ([]workflow.PlanDryRun, erro
 		}
 	}
 	return p.workflow.Snapshot().PlanDryRuns, nil
+}
+
+func (p *PlanProcessor) dryRunAction(ctx context.Context, incidentID string, action workflow.PlannedAction) (platform.Operation, string, error) {
+	idempotencyKey := action.ID + ":dry-run"
+	if action.Kind == workflow.ActionKindRemediation {
+		request := remediationDryRunRequest(incidentID, action)
+		operation, err := p.platform.ExecuteRemediation(ctx, request)
+		return operation, request.IdempotencyKey, err
+	}
+	if action.Kind != workflow.ActionKindProbe && action.Kind != workflow.ActionKindRecovery {
+		return platform.Operation{}, idempotencyKey, fmt.Errorf("%w: unsupported action kind %q", platform.ErrUnsupported, action.Kind)
+	}
+	routeID, routeOK := nonEmptyString(action.Arguments, "route_id")
+	policyID, policyOK := nonEmptyString(action.Arguments, "policy_id")
+	if !routeOK || !policyOK {
+		return platform.Operation{}, idempotencyKey, fmt.Errorf("%w: %s requires non-empty route_id and policy_id", platform.ErrPreconditionFailed, action.ToolName)
+	}
+	policies, err := p.platform.GetRecoveryPolicies(ctx, platform.StateQuery{Scope: platform.Scope{IncidentID: incidentID, RouteID: routeID}})
+	if err != nil {
+		return platform.Operation{}, idempotencyKey, err
+	}
+	policyFound := false
+	for _, policy := range policies {
+		if strings.TrimSpace(policy.ID) == policyID {
+			policyFound = true
+			break
+		}
+	}
+	if !policyFound {
+		return platform.Operation{}, idempotencyKey, fmt.Errorf("%w: recovery policy %q is not available", platform.ErrNotFound, policyID)
+	}
+	kind := platform.OperationProbe
+	if action.Kind == workflow.ActionKindRecovery {
+		kind = platform.OperationRecovery
+	}
+	return platform.Operation{
+		ID: action.ID + ":dry-run-operation", IncidentID: incidentID, Kind: kind, Name: action.ToolName,
+		Status: platform.OperationSucceeded, IdempotencyKey: idempotencyKey,
+		Result: map[string]any{"route_id": routeID, "policy_id": policyID, "validated": true},
+	}, idempotencyKey, nil
+}
+
+func nonEmptyString(arguments map[string]any, name string) (string, bool) {
+	value, ok := arguments[name].(string)
+	value = strings.TrimSpace(value)
+	return value, ok && value != ""
 }
 
 func remediationDryRunRequest(incidentID string, action workflow.PlannedAction) platform.RemediationRequest {
@@ -189,15 +265,15 @@ func analyzeDryRunResult(operation platform.Operation, err error) (workflow.Plan
 		}
 		switch {
 		case errors.Is(err, platform.ErrNotFound):
-			return failedPlanDryRun(workflow.PlanDryRunFailurePlanInvalid, "capability_not_found", message, workflow.PlanDryRunNextReplan)
+			return failedPlanDryRun(workflow.PlanDryRunFailurePlanInvalid, "capability_not_found", message, workflow.PlanDryRunNextNeedsAgent)
 		case errors.Is(err, platform.ErrUnsupported):
-			return failedPlanDryRun(workflow.PlanDryRunFailurePlanInvalid, "capability_unsupported", message, workflow.PlanDryRunNextReplan)
+			return failedPlanDryRun(workflow.PlanDryRunFailurePlanInvalid, "capability_unsupported", message, workflow.PlanDryRunNextNeedsAgent)
 		case errors.Is(err, platform.ErrUnauthorized):
 			return failedPlanDryRun(workflow.PlanDryRunFailureAuthorizationRequired, "authorization_denied", message, workflow.PlanDryRunNextEscalate)
 		case errors.Is(err, platform.ErrConflict):
-			return failedPlanDryRun(workflow.PlanDryRunFailurePreconditionChanged, "state_conflict", message, workflow.PlanDryRunNextReinvestigate)
+			return failedPlanDryRun(workflow.PlanDryRunFailurePreconditionChanged, "state_conflict", message, workflow.PlanDryRunNextNeedsAgent)
 		case errors.Is(err, platform.ErrPreconditionFailed):
-			return failedPlanDryRun(workflow.PlanDryRunFailurePreconditionChanged, "precondition_failed", message, workflow.PlanDryRunNextReinvestigate)
+			return failedPlanDryRun(workflow.PlanDryRunFailurePreconditionChanged, "precondition_failed", message, workflow.PlanDryRunNextNeedsAgent)
 		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 			return workflow.PlanDryRunIndeterminate, &workflow.PlanDryRunFailure{
 				Category: workflow.PlanDryRunFailurePlatformUnavailable, Code: "platform_unavailable",
@@ -215,9 +291,9 @@ func analyzeDryRunResult(operation platform.Operation, err error) (workflow.Plan
 	case platform.OperationSucceeded:
 		return workflow.PlanDryRunSucceeded, nil
 	case platform.OperationRejected:
-		return failedPlanDryRun(workflow.PlanDryRunFailurePlanInvalid, "operation_rejected", message, workflow.PlanDryRunNextReplan)
+		return failedPlanDryRun(workflow.PlanDryRunFailurePlanInvalid, "operation_rejected", message, workflow.PlanDryRunNextNeedsAgent)
 	case platform.OperationFailed:
-		return failedPlanDryRun(workflow.PlanDryRunFailureExecutionFailed, "operation_failed", message, workflow.PlanDryRunNextReinvestigate)
+		return failedPlanDryRun(workflow.PlanDryRunFailureExecutionFailed, "operation_failed", message, workflow.PlanDryRunNextNeedsAgent)
 	case platform.OperationCancelled:
 		return workflow.PlanDryRunIndeterminate, &workflow.PlanDryRunFailure{
 			Category: workflow.PlanDryRunFailurePlatformUnavailable, Code: "operation_cancelled",

@@ -10,11 +10,10 @@ import (
 type FailureStage string
 
 const (
-	FailureStageDryRun       FailureStage = "dry_run"
-	FailureStageRemediation  FailureStage = "remediation"
-	FailureStageProbe        FailureStage = "probe"
-	FailureStageRecovery     FailureStage = "recovery"
-	FailureStageCompensation FailureStage = "compensation"
+	FailureStageDryRun             FailureStage = "dry_run"
+	FailureStageActionExecution    FailureStage = "action_execution"
+	FailureStageArgumentResolution FailureStage = "argument_resolution"
+	FailureStageCheckpoint         FailureStage = "checkpoint"
 )
 
 // FailureCategory 是跨执行阶段复用的稳定失败分类。
@@ -38,11 +37,10 @@ const (
 type FailureNextAction string
 
 const (
-	FailureNextReplan        FailureNextAction = "replan"
-	FailureNextReinvestigate FailureNextAction = "reinvestigate"
-	FailureNextEscalate      FailureNextAction = "escalate"
-	FailureNextRetry         FailureNextAction = "retry"
-	FailureNextReconcile     FailureNextAction = "reconcile"
+	FailureNextNeedsAgent FailureNextAction = "needs_agent"
+	FailureNextEscalate   FailureNextAction = "escalate"
+	FailureNextRetry      FailureNextAction = "retry"
+	FailureNextReconcile  FailureNextAction = "reconcile"
 )
 
 // StageFailure 是 Dry Run、修复、探测和恢复阶段共用的结构化失败事实。
@@ -105,7 +103,8 @@ func normalizeStageFailure(value StageFailure, now time.Time) (StageFailure, err
 
 func (s FailureStage) valid() bool {
 	switch s {
-	case FailureStageDryRun, FailureStageRemediation, FailureStageProbe, FailureStageRecovery, FailureStageCompensation:
+	case FailureStageDryRun, FailureStageActionExecution,
+		FailureStageArgumentResolution, FailureStageCheckpoint:
 		return true
 	default:
 		return false
@@ -127,7 +126,7 @@ func (c FailureCategory) valid() bool {
 
 func (a FailureNextAction) valid() bool {
 	switch a {
-	case FailureNextReplan, FailureNextReinvestigate, FailureNextEscalate,
+	case FailureNextNeedsAgent, FailureNextEscalate,
 		FailureNextRetry, FailureNextReconcile:
 		return true
 	default:

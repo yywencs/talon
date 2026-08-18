@@ -18,8 +18,8 @@ type scopeInput struct {
 }
 
 type rangeInput struct {
-	From string `json:"from,omitempty" jsonschema:"description=可选的RFC3339查询开始时间，省略表示不限制开始时间"`
-	To   string `json:"to,omitempty" jsonschema:"description=可选的RFC3339查询结束时间，省略表示查询到当前可见数据"`
+	From string `json:"from,omitempty" jsonschema:"description=可选的RFC3339查询开始时间；只能基于 Incident 上下文的 harness_facts.virtual_time，禁止使用 generated_at 或墙上时钟；省略表示不限制开始时间"`
+	To   string `json:"to,omitempty" jsonschema:"description=可选的RFC3339查询结束时间；只能基于 Incident 上下文的 harness_facts.virtual_time；省略表示查询到当前可见数据"`
 }
 
 type metricInput struct {

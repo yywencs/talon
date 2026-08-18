@@ -172,8 +172,8 @@ func TestWorkflowToolsExposeOnlyAllowedAgentActions(t *testing.T) {
 
 	_, err = flow.SubmitPlan(workflow.PlanDraft{
 		Summary: "回滚 Mapping", RootCause: "mapping regression", EvidenceRefs: []string{"change:mapping-v2"},
-		Actions:      []workflow.PlannedAction{{ToolName: "rollback_mapping"}},
-		ProbeRouteID: "route-a", RecoveryPolicyID: "default-safe-recovery",
+		Stages: []workflow.PlanStageDraft{{StageID: "rollback", Goal: "rollback mapping",
+			Actions: []workflow.PlannedAction{{Key: "rollback-mapping", ToolName: "rollback_mapping"}}}},
 	})
 	require.NoError(t, err)
 	plannedVisible := namesOfTools(t, set.ToolsForActions(flow.AllowedAgentActions()))
@@ -284,21 +284,98 @@ func TestSubmitPlanToolAdvancesWorkflow(t *testing.T) {
 	require.NoError(t, err)
 	var invalidResult response[workflow.PlanSubmission]
 	require.NoError(t, json.Unmarshal([]byte(invalid), &invalidResult))
-	require.Contains(t, invalidResult.Error, "not available for this incident")
+	require.Contains(t, invalidResult.Error, "plan stages is required")
+	require.Equal(t, workflow.StateInvestigating, flow.Snapshot().State)
+
+	conflicting, err := submit.InvokableRun(ctx, `{
+		"summary":"验证探测参数",
+		"root_cause":"confirmed",
+		"evidence_refs":["trace:probe"],
+		"stages":[{"stage_id":"probe","goal":"verify","actions":[{"id":"probe-route","tool_name":"request_probe","arguments":{
+			"route_id":"route-a","policy_id":"default-safe-recovery","recovery_policy_id":"default-safe-recovery","idempotency_key":"probe-conflict"
+		}}]}]
+	}`)
+	require.NoError(t, err, "invalid plan input must be returned as a tool result so ReAct can correct it")
+	var conflictingResult response[workflow.PlanSubmission]
+	require.NoError(t, json.Unmarshal([]byte(conflicting), &conflictingResult))
+	require.Contains(t, conflictingResult.Error, "cannot contain both policy_id and recovery_policy_id")
+	require.Equal(t, workflow.StateInvestigating, flow.Snapshot().State)
+
+	wrongCheckpointType, err := submit.InvokableRun(ctx, `{
+		"summary":"验证 Checkpoint 类型",
+		"root_cause":"confirmed",
+		"evidence_refs":["trace:checkpoint"],
+		"stages":[{"stage_id":"rollback","goal":"rollback","actions":[{"id":"rollback-action","tool_name":"rollback_mapping","arguments":{
+			"tool_id":"generate_image","target_version":"mapping-v1","expected_version":"mapping-v2","idempotency_key":"rollback-checkpoint-type"
+		}}],"checkpoint_policy":{"rules":[{
+			"source_action_id":"rollback-action","output_path":"operation_status","equals":true,"decision":"succeeded"
+		}]}}]
+	}`)
+	require.NoError(t, err, "checkpoint type errors must be returned as a tool result so ReAct can correct them")
+	var wrongCheckpointTypeResult response[workflow.PlanSubmission]
+	require.NoError(t, json.Unmarshal([]byte(wrongCheckpointType), &wrongCheckpointTypeResult))
+	require.Contains(t, wrongCheckpointTypeResult.Error, "operation_status requires a non-empty string comparison value")
+	require.Equal(t, workflow.StateInvestigating, flow.Snapshot().State)
+
+	emptyProbeCheckpoint, err := submit.InvokableRun(ctx, `{
+		"summary":"验证空 Probe Checkpoint",
+		"root_cause":"confirmed",
+		"evidence_refs":["trace:probe"],
+		"stages":[
+			{"stage_id":"probe","goal":"verify","actions":[{"id":"probe-route","tool_name":"request_probe","arguments":{
+				"route_id":"route-a","policy_id":"default-safe-recovery","idempotency_key":"probe-empty-checkpoint"
+			}}],"checkpoint_policy":{}},
+			{"stage_id":"recover","goal":"recover","actions":[{"id":"recover-route","tool_name":"request_recovery","arguments":{
+				"route_id":"route-a","policy_id":"default-safe-recovery","idempotency_key":"recover-after-probe"
+			}}],"checkpoint_policy":{"default_decision":"succeeded"}}
+		]
+	}`)
+	require.NoError(t, err, "unsafe probe checkpoint errors must be returned as a tool result so ReAct can correct them")
+	var emptyProbeCheckpointResult response[workflow.PlanSubmission]
+	require.NoError(t, json.Unmarshal([]byte(emptyProbeCheckpoint), &emptyProbeCheckpointResult))
+	require.Contains(t, emptyProbeCheckpointResult.Error, "explicit fail-closed default_decision")
+	require.Equal(t, workflow.StateInvestigating, flow.Snapshot().State)
+
+	directProbeSuccess, err := submit.InvokableRun(ctx, `{
+		"summary":"验证 Probe 不可直接结束 Incident",
+		"root_cause":"confirmed",
+		"evidence_refs":["trace:probe"],
+		"stages":[
+			{"stage_id":"probe","goal":"verify","actions":[{"id":"probe-route","tool_name":"request_probe","arguments":{
+				"route_id":"route-a","policy_id":"default-safe-recovery","idempotency_key":"probe-direct-success"
+			}}],"checkpoint_policy":{"rules":[{
+				"source_action_id":"probe-route","output_path":"output.outcome","equals":"healthy","decision":"succeeded"
+			}],"default_decision":"needs_agent"}},
+			{"stage_id":"recover","goal":"recover","actions":[{"id":"recover-route","tool_name":"request_recovery","arguments":{
+				"route_id":"route-a","policy_id":"default-safe-recovery","idempotency_key":"recover-after-direct-success"
+			}}],"checkpoint_policy":{"default_decision":"succeeded"}}
+		]
+	}`)
+	require.NoError(t, err, "unsafe probe completion must be returned as a tool result so ReAct can correct it")
+	var directProbeSuccessResult response[workflow.PlanSubmission]
+	require.NoError(t, json.Unmarshal([]byte(directProbeSuccess), &directProbeSuccessResult))
+	require.Contains(t, directProbeSuccessResult.Error, "cannot select succeeded for a probe stage")
 	require.Equal(t, workflow.StateInvestigating, flow.Snapshot().State)
 
 	encoded, err := submit.InvokableRun(ctx, `{
 		"summary":"回滚 Mapping 配置",
 		"root_cause":"mapping schema regression",
 		"evidence_refs":["log:invalid_parameter_type","change:mapping-v2"],
-		"actions":[{"tool_name":"rollback_mapping","arguments":{
+		"stages":[{"stage_id":"rollback","goal":"rollback mapping","actions":[{"id":"rollback-mapping","tool_name":"rollback_mapping","arguments":{
 			"tool_id":"generate_image",
 			"target_version":"mapping-v1",
 			"expected_version":"mapping-v2",
 			"idempotency_key":"plan-rollback-001"
-		}}],
-		"probe_route_id":"route-a",
-		"recovery_policy_id":"default-safe-recovery"
+		}}],"checkpoint_policy":{"default_decision":"continue"}},
+		{"stage_id":"probe","goal":"verify repaired route","actions":[{"id":"probe-route","tool_name":"request_probe","arguments":{
+			"route_id":"route-a","recovery_policy_id":"default-safe-recovery","idempotency_key":"plan-probe-001"
+		}}],"checkpoint_policy":{"rules":[
+			{"source_action_id":"probe-route","output_path":"output.outcome","equals":"healthy","decision":"continue","next_stage_id":"recovery"},
+			{"source_action_id":"probe-route","output_path":"output.outcome","equals":"hard_stop","decision":"needs_agent"}
+		],"default_decision":"needs_agent"}},
+		{"stage_id":"recovery","goal":"restore baseline traffic","actions":[{"id":"recover-route","tool_name":"request_recovery","arguments":{
+			"route_id":"route-a","recovery_policy_id":"default-safe-recovery","idempotency_key":"plan-recovery-001"
+		}}],"checkpoint_policy":{"default_decision":"succeeded"}}]
 	}`)
 	require.NoError(t, err)
 	var result response[workflow.PlanSubmission]
@@ -307,8 +384,14 @@ func TestSubmitPlanToolAdvancesWorkflow(t *testing.T) {
 	assertSnapshot := flow.Snapshot()
 	require.Equal(t, workflow.StatePlanned, assertSnapshot.State)
 	require.NotNil(t, assertSnapshot.Plan)
-	require.Len(t, assertSnapshot.Plan.Actions, 1)
-	require.Equal(t, "rollback_mapping", assertSnapshot.Plan.Actions[0].ToolName)
+	require.Len(t, assertSnapshot.Plan.Stages, 3)
+	require.Equal(t, "rollback_mapping", assertSnapshot.Plan.Stages[0].Actions[0].ToolName)
+	require.Equal(t, workflow.ActionKindProbe, assertSnapshot.Plan.Stages[1].Actions[0].Kind)
+	require.Equal(t, workflow.ActionKindRecovery, assertSnapshot.Plan.Stages[2].Actions[0].Kind)
+	require.Equal(t, "default-safe-recovery", assertSnapshot.Plan.Stages[1].Actions[0].Arguments["policy_id"])
+	require.NotContains(t, assertSnapshot.Plan.Stages[1].Actions[0].Arguments, "recovery_policy_id")
+	require.Equal(t, "default-safe-recovery", assertSnapshot.Plan.Stages[2].Actions[0].Arguments["policy_id"])
+	require.NotContains(t, assertSnapshot.Plan.Stages[2].Actions[0].Arguments, "recovery_policy_id")
 }
 
 func toolNames(t *testing.T, set *Set) []string {

@@ -27,6 +27,9 @@ const (
 	CapabilityStructuredExperience        = "structured_experience"
 	CapabilityStructuredEscalationHandoff = "structured_escalation_handoff"
 	CapabilityStructuredStageFailures     = "structured_stage_failures"
+	CapabilityDynamicExecutionStages      = "dynamic_execution_stages"
+	CapabilityTypedActionOutputReferences = "typed_action_output_references"
+	CapabilityDecisionCheckpoints         = "decision_checkpoints"
 )
 
 var currentCapabilities = []string{
@@ -37,6 +40,9 @@ var currentCapabilities = []string{
 	CapabilityStructuredEscalationHandoff,
 	CapabilityStructuredExperience,
 	CapabilityStructuredStageFailures,
+	CapabilityDynamicExecutionStages,
+	CapabilityTypedActionOutputReferences,
+	CapabilityDecisionCheckpoints,
 }
 
 // Provenance identifies the code and dataset that produced a run.
@@ -53,6 +59,7 @@ type RunConfig struct {
 	ModelProvider  string `json:"model_provider,omitempty"`
 	Model          string `json:"model,omitempty"`
 	AgentMaxSteps  int    `json:"agent_max_steps"`
+	MaxModelCalls  int    `json:"max_model_calls"`
 	AutoApprove    bool   `json:"auto_approve"`
 	ContextVersion string `json:"context_version,omitempty"`
 }
@@ -129,6 +136,8 @@ type ModelCall struct {
 	Usage           TokenUsage               `json:"usage"`
 	Error           string                   `json:"error,omitempty"`
 	ContextSnapshot *IncidentContextSnapshot `json:"context_snapshot,omitempty"`
+	ModelProvider   string                   `json:"model_provider,omitempty"`
+	Model           string                   `json:"model,omitempty"`
 }
 
 type RequestedToolCall struct {
@@ -226,27 +235,33 @@ type IncidentExperience struct {
 }
 
 type RunArtifact struct {
-	SchemaVersion   string                  `json:"schema_version"`
-	Capabilities    []string                `json:"capabilities"`
-	Provenance      Provenance              `json:"provenance"`
-	RunConfig       RunConfig               `json:"run_config"`
-	RunID           string                  `json:"run_id"`
-	ScenarioID      string                  `json:"scenario_id"`
-	StartedAt       time.Time               `json:"started_at"`
-	FinishedAt      time.Time               `json:"finished_at"`
-	Duration        time.Duration           `json:"duration"`
-	Outcome         string                  `json:"outcome"`
-	StopReason      string                  `json:"stop_reason,omitempty"`
-	Failure         *Failure                `json:"failure,omitempty"`
-	AgentRuns       []AgentRun              `json:"agent_runs"`
-	Plans           []workflow.Plan         `json:"plans"`
-	WorkflowHistory []workflow.Transition   `json:"workflow_history"`
-	StageFailures   []workflow.StageFailure `json:"stage_failures"`
-	BlockedAttempts []BlockedAttempt        `json:"blocked_attempts"`
-	Operations      []platform.Operation    `json:"operations"`
-	FinalState      FinalState              `json:"final_state"`
-	Experience      IncidentExperience      `json:"experience"`
-	Summary         Summary                 `json:"summary"`
+	SchemaVersion   string                        `json:"schema_version"`
+	Capabilities    []string                      `json:"capabilities"`
+	Provenance      Provenance                    `json:"provenance"`
+	RunConfig       RunConfig                     `json:"run_config"`
+	RunID           string                        `json:"run_id"`
+	ScenarioID      string                        `json:"scenario_id"`
+	StartedAt       time.Time                     `json:"started_at"`
+	FinishedAt      time.Time                     `json:"finished_at"`
+	Duration        time.Duration                 `json:"duration"`
+	Outcome         string                        `json:"outcome"`
+	StopReason      string                        `json:"stop_reason,omitempty"`
+	Failure         *Failure                      `json:"failure,omitempty"`
+	AgentRuns       []AgentRun                    `json:"agent_runs"`
+	Plans           []workflow.Plan               `json:"plans"`
+	WorkflowHistory []workflow.Transition         `json:"workflow_history"`
+	StageFailures   []workflow.StageFailure       `json:"stage_failures"`
+	ResolvedActions []workflow.ResolvedAction     `json:"resolved_actions"`
+	ActionResults   []workflow.ActionResult       `json:"action_results"`
+	PlanDryRuns     []workflow.PlanDryRun         `json:"plan_dry_runs"`
+	PlanPolicies    []workflow.PlanPolicyDecision `json:"plan_policies"`
+	PlanApprovals   []workflow.PlanApproval       `json:"plan_approvals"`
+	Checkpoints     []workflow.DecisionCheckpoint `json:"decision_checkpoints"`
+	BlockedAttempts []BlockedAttempt              `json:"blocked_attempts"`
+	Operations      []platform.Operation          `json:"operations"`
+	FinalState      FinalState                    `json:"final_state"`
+	Experience      IncidentExperience            `json:"experience"`
+	Summary         Summary                       `json:"summary"`
 }
 
 type Recorder struct {
@@ -263,7 +278,7 @@ func New(scenarioID string, provenance Provenance, config RunConfig) *Recorder {
 	if strings.TrimSpace(config.ContextVersion) == "" {
 		config.ContextVersion = IncidentContextSchemaVersion
 	}
-	return &Recorder{artifact: RunArtifact{SchemaVersion: SchemaVersion, Capabilities: append([]string(nil), currentCapabilities...), Provenance: provenance, RunConfig: config, RunID: newRunID(), ScenarioID: strings.TrimSpace(scenarioID), StartedAt: now(), Outcome: "running", AgentRuns: []AgentRun{}, Plans: []workflow.Plan{}, WorkflowHistory: []workflow.Transition{}, StageFailures: []workflow.StageFailure{}, BlockedAttempts: []BlockedAttempt{}, Operations: []platform.Operation{}, FinalState: FinalState{Routes: []platform.Route{}, Providers: []ProviderState{}, Configs: []ConfigState{}, Connections: []ConnectionState{}, Tasks: []TaskState{}}, Experience: IncidentExperience{Fields: []string{}, Sources: map[string][]string{}}}, evidence: map[string]struct{}{}, now: now}
+	return &Recorder{artifact: RunArtifact{SchemaVersion: SchemaVersion, Capabilities: append([]string(nil), currentCapabilities...), Provenance: provenance, RunConfig: config, RunID: newRunID(), ScenarioID: strings.TrimSpace(scenarioID), StartedAt: now(), Outcome: "running", AgentRuns: []AgentRun{}, Plans: []workflow.Plan{}, WorkflowHistory: []workflow.Transition{}, StageFailures: []workflow.StageFailure{}, ResolvedActions: []workflow.ResolvedAction{}, ActionResults: []workflow.ActionResult{}, PlanDryRuns: []workflow.PlanDryRun{}, PlanPolicies: []workflow.PlanPolicyDecision{}, PlanApprovals: []workflow.PlanApproval{}, Checkpoints: []workflow.DecisionCheckpoint{}, BlockedAttempts: []BlockedAttempt{}, Operations: []platform.Operation{}, FinalState: FinalState{Routes: []platform.Route{}, Providers: []ProviderState{}, Configs: []ConfigState{}, Connections: []ConnectionState{}, Tasks: []TaskState{}}, Experience: IncidentExperience{Fields: []string{}, Sources: map[string][]string{}}}, evidence: map[string]struct{}{}, now: now}
 }
 
 func (r *Recorder) RecordContextSnapshot(snapshot IncidentContextSnapshot) error {
@@ -292,6 +307,20 @@ func (r *Recorder) RecordFinalState(operations []platform.Operation, state Final
 	r.artifact.FinalState = cloneFinalState(state)
 }
 
+// RecordWorkflowCheckpoint 把非 Agent 阶段的最新确定性状态同步进运行中的 Artifact。
+// 调用方随后可用 Snapshot + Store.Upsert 形成可恢复的持久化检查点。
+func (r *Recorder) RecordWorkflowCheckpoint(snapshot workflow.Snapshot) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.artifact.Plans = clonePlans(snapshot.Plans)
+	r.artifact.WorkflowHistory = append([]workflow.Transition{}, snapshot.History...)
+	r.artifact.StageFailures = append([]workflow.StageFailure{}, snapshot.Failures...)
+	r.syncDynamicWorkflowLocked(snapshot)
+}
+
 func (r *Recorder) BeginAgentRun(instruction string, snapshot workflow.Snapshot) {
 	if r == nil {
 		return
@@ -302,6 +331,7 @@ func (r *Recorder) BeginAgentRun(instruction string, snapshot workflow.Snapshot)
 	r.artifact.AgentRuns = append(r.artifact.AgentRuns, AgentRun{Sequence: len(r.artifact.AgentRuns) + 1, Instruction: strings.TrimSpace(instruction), InitialState: snapshot.State, StartedAt: n, ModelCalls: []ModelCall{}, ToolCalls: []ToolCall{}, Plans: []workflow.Plan{}})
 	r.currentRun = len(r.artifact.AgentRuns)
 	r.currentPlanCount = len(snapshot.Plans)
+	r.syncDynamicWorkflowLocked(snapshot)
 }
 
 func (r *Recorder) EndAgentRun(snapshot workflow.Snapshot, err error) {
@@ -322,6 +352,7 @@ func (r *Recorder) EndAgentRun(snapshot workflow.Snapshot, err error) {
 	r.artifact.Plans = clonePlans(snapshot.Plans)
 	r.artifact.WorkflowHistory = append([]workflow.Transition{}, snapshot.History...)
 	r.artifact.StageFailures = append([]workflow.StageFailure{}, snapshot.Failures...)
+	r.syncDynamicWorkflowLocked(snapshot)
 	if err != nil {
 		run.Error = err.Error()
 	}
@@ -349,7 +380,8 @@ func (r *Recorder) recordModelCall(start time.Time, message *schema.Message, err
 	}
 	run := &r.artifact.AgentRuns[r.currentRun-1]
 	end := r.now()
-	call := ModelCall{Sequence: len(run.ModelCalls) + 1, StartedAt: start, FinishedAt: end, Duration: end.Sub(start)}
+	call := ModelCall{Sequence: len(run.ModelCalls) + 1, StartedAt: start, FinishedAt: end, Duration: end.Sub(start),
+		ModelProvider: r.artifact.RunConfig.ModelProvider, Model: r.artifact.RunConfig.Model}
 	if snapshot != nil {
 		sealed := SealIncidentContextSnapshot(*snapshot)
 		call.ContextSnapshot = &sealed
@@ -482,16 +514,29 @@ func (r *Recorder) Finish(stopReason string, snapshot workflow.Snapshot, err err
 	r.artifact.Duration = r.artifact.FinishedAt.Sub(r.artifact.StartedAt)
 	r.artifact.StopReason = stopReason
 	r.artifact.Outcome = "completed"
-	if err != nil {
+	if err != nil || snapshot.State == workflow.StateFailed {
 		r.artifact.Outcome = "failed"
+		if err == nil {
+			err = fmt.Errorf("workflow stopped in failed state")
+		}
 		r.artifact.Failure = artifactFailure(snapshot, err)
 	}
 	r.artifact.Plans = clonePlans(snapshot.Plans)
 	r.artifact.WorkflowHistory = append([]workflow.Transition{}, snapshot.History...)
 	r.artifact.StageFailures = append([]workflow.StageFailure{}, snapshot.Failures...)
+	r.syncDynamicWorkflowLocked(snapshot)
 	r.rebuildExperienceLocked()
 	r.rebuildSummaryLocked()
 	return cloneArtifact(r.artifact)
+}
+
+func (r *Recorder) syncDynamicWorkflowLocked(snapshot workflow.Snapshot) {
+	r.artifact.ResolvedActions = append([]workflow.ResolvedAction(nil), snapshot.ResolvedActions...)
+	r.artifact.ActionResults = append([]workflow.ActionResult(nil), snapshot.ActionResults...)
+	r.artifact.PlanDryRuns = append([]workflow.PlanDryRun(nil), snapshot.AllPlanDryRuns...)
+	r.artifact.PlanPolicies = append([]workflow.PlanPolicyDecision(nil), snapshot.AllPlanPolicies...)
+	r.artifact.PlanApprovals = append([]workflow.PlanApproval(nil), snapshot.AllPlanApprovals...)
+	r.artifact.Checkpoints = append([]workflow.DecisionCheckpoint(nil), snapshot.Checkpoints...)
 }
 
 func artifactFailure(snapshot workflow.Snapshot, err error) *Failure {
@@ -736,6 +781,24 @@ func Normalize(value RunArtifact) RunArtifact {
 	}
 	if value.StageFailures == nil {
 		value.StageFailures = []workflow.StageFailure{}
+	}
+	if value.ResolvedActions == nil {
+		value.ResolvedActions = []workflow.ResolvedAction{}
+	}
+	if value.ActionResults == nil {
+		value.ActionResults = []workflow.ActionResult{}
+	}
+	if value.PlanDryRuns == nil {
+		value.PlanDryRuns = []workflow.PlanDryRun{}
+	}
+	if value.PlanPolicies == nil {
+		value.PlanPolicies = []workflow.PlanPolicyDecision{}
+	}
+	if value.PlanApprovals == nil {
+		value.PlanApprovals = []workflow.PlanApproval{}
+	}
+	if value.Checkpoints == nil {
+		value.Checkpoints = []workflow.DecisionCheckpoint{}
 	}
 	if value.BlockedAttempts == nil {
 		value.BlockedAttempts = []BlockedAttempt{}

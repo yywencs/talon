@@ -95,7 +95,7 @@ go run ./cmd/talon --auto-approve=false
 ```bash
 go run ./cmd/talon \
   --scenario connection-recovery-two-cycles-001 \
-  --timeout 5m
+  --timeout 15m
 ```
 
 查看全部参数：

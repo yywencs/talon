@@ -13,7 +13,7 @@ import (
 )
 
 func TestRecorderSummarizesModelsEvidenceAndBlockedCalls(t *testing.T) {
-	recorder := New("incident-001", Provenance{CodeVersion: "test-code", DatasetVersion: "test-data"}, RunConfig{Model: "test-model", AgentMaxSteps: 24})
+	recorder := New("incident-001", Provenance{CodeVersion: "test-code", DatasetVersion: "test-data"}, RunConfig{ModelProvider: "test-provider", Model: "test-model", AgentMaxSteps: 24})
 	recorder.BeginAgentRun("investigate", workflow.Snapshot{State: workflow.StateInvestigating})
 	started := time.Now().Add(-time.Millisecond)
 	recorder.RecordModelCallWithContext(started, &schema.Message{ResponseMeta: &schema.ResponseMeta{
@@ -46,6 +46,8 @@ func TestRecorderSummarizesModelsEvidenceAndBlockedCalls(t *testing.T) {
 	assert.Equal(t, 1, artifact.Summary.BlockedAttempts)
 	assert.Equal(t, 18, artifact.Summary.TotalTokens)
 	assert.Equal(t, 3, artifact.AgentRuns[0].ModelCalls[0].Usage.CachedPromptTokens)
+	assert.Equal(t, "test-provider", artifact.AgentRuns[0].ModelCalls[0].ModelProvider)
+	assert.Equal(t, "test-model", artifact.AgentRuns[0].ModelCalls[0].Model)
 	require.NotNil(t, artifact.AgentRuns[0].ModelCalls[0].ContextSnapshot)
 	assert.Equal(t, "incident-001", artifact.AgentRuns[0].ModelCalls[0].ContextSnapshot.IncidentID)
 	assert.True(t, artifact.AgentRuns[0].ToolCalls[0].IsNewEvidence)
@@ -102,11 +104,11 @@ func TestRecorderDoesNotCountRepeatedEvidenceAsNewAndAttributesFailure(t *testin
 		recorder.RecordToolCall("", "query_metrics", workflow.AgentActionRead, `{}`, `{"data":{"sample_count":100}}`, time.Now(), nil, false)
 		recorder.EndAgentRun(workflow.Snapshot{State: workflow.StateInvestigating}, nil)
 	}
-	artifact := recorder.Finish("", workflow.Snapshot{State: workflow.StateProbing}, errors.New("probe telemetry unavailable"))
+	artifact := recorder.Finish("", workflow.Snapshot{State: workflow.StateCheckpoint}, errors.New("checkpoint telemetry unavailable"))
 	assert.NotEmpty(t, artifact.AgentRuns[0].NewEvidenceRefs)
 	assert.Empty(t, artifact.AgentRuns[1].NewEvidenceRefs)
 	require.NotNil(t, artifact.Failure)
-	assert.Equal(t, "probing", artifact.Failure.Stage)
+	assert.Equal(t, "checkpoint", artifact.Failure.Stage)
 	assert.Equal(t, "failed", artifact.Outcome)
 	assert.NotContains(t, artifact.Experience.Fields, "evidence_after_failed_probe")
 }
@@ -114,10 +116,10 @@ func TestRecorderDoesNotCountRepeatedEvidenceAsNewAndAttributesFailure(t *testin
 func TestRecorderPersistsNormalizedStageFailure(t *testing.T) {
 	recorder := New("incident-001", Provenance{}, RunConfig{})
 	snapshot := workflow.Snapshot{
-		State: workflow.StateProbing,
+		State: workflow.StateCheckpoint,
 		Failures: []workflow.StageFailure{{
-			Stage: workflow.FailureStageProbe, Category: workflow.FailureCategoryInvalidResponse,
-			Code: "invalid_probe_outcome", SafeSummary: "探测平台返回了无法识别的成功结果",
+			Stage: workflow.FailureStageCheckpoint, Category: workflow.FailureCategoryInvalidResponse,
+			Code: "invalid_checkpoint_outcome", SafeSummary: "Checkpoint 返回了无法识别的成功结果",
 			Message: "untrusted raw platform message", NextAction: workflow.FailureNextEscalate,
 			Fallback: false, OperationID: "operation-1",
 		}},
@@ -126,11 +128,44 @@ func TestRecorderPersistsNormalizedStageFailure(t *testing.T) {
 
 	require.Len(t, artifact.StageFailures, 1)
 	require.NotNil(t, artifact.Failure)
-	assert.Equal(t, "probe", artifact.Failure.Stage)
+	assert.Equal(t, "checkpoint", artifact.Failure.Stage)
 	assert.Equal(t, "invalid_response", artifact.Failure.Category)
-	assert.Equal(t, "invalid_probe_outcome", artifact.Failure.Code)
-	assert.Equal(t, "探测平台返回了无法识别的成功结果", artifact.Failure.SafeSummary)
+	assert.Equal(t, "invalid_checkpoint_outcome", artifact.Failure.Code)
+	assert.Equal(t, "Checkpoint 返回了无法识别的成功结果", artifact.Failure.SafeSummary)
 	assert.Equal(t, "escalate", artifact.Failure.NextAction)
+}
+
+func TestRecorderPersistsDynamicStageResolutionAndCheckpointTrail(t *testing.T) {
+	recorder := New("dynamic", Provenance{CodeVersion: "test"}, RunConfig{})
+	snapshot := workflow.Snapshot{
+		State: workflow.StateResolved,
+		ResolvedActions: []workflow.ResolvedAction{{PlanID: "plan", StageID: "probe", ActionID: "probe-action",
+			TemplateDigest: "template", Digest: "resolved", ToolName: "probe_route",
+			OriginalArguments: map[string]any{}, Arguments: map[string]any{"route_id": "route-new"},
+			Sources: []workflow.ResolvedArgumentSource{{Argument: "route_id", SourceResultID: "refresh:result",
+				Reference: workflow.ActionOutputReference{SourceActionID: "refresh", OutputPath: "output.route.id", ExpectedType: workflow.ActionOutputString, Required: true}}}}},
+		ActionResults: []workflow.ActionResult{{ResultID: "refresh:result", PlanID: "plan", StageID: "refresh",
+			ActionID: "refresh", ActionDigest: "digest", OperationID: "operation", OperationStatus: "succeeded",
+			Output: map[string]any{"route": map[string]any{"id": "route-new"}}, EvidenceRef: "action:refresh:evidence"}},
+		AllPlanDryRuns:  []workflow.PlanDryRun{{PlanID: "plan", ActionID: "probe-action", ActionDigest: "resolved", Status: workflow.PlanDryRunSucceeded}},
+		AllPlanPolicies: []workflow.PlanPolicyDecision{{PlanID: "plan", ActionID: "probe-action", ActionDigest: "resolved", Outcome: workflow.PlanPolicyAutoApproved}},
+		Checkpoints: []workflow.DecisionCheckpoint{{CheckpointID: "checkpoint", StageID: "probe", Decision: workflow.CheckpointSucceeded,
+			DecisionReason: "healthy", NewEvidenceRefs: []string{"action:refresh:evidence"}}},
+	}
+	recorder.RecordWorkflowCheckpoint(snapshot)
+	running := recorder.Snapshot()
+	require.Len(t, running.ActionResults, 1)
+	require.Len(t, running.Checkpoints, 1)
+	artifact := recorder.Finish("resolved", snapshot, nil)
+	require.Len(t, artifact.ResolvedActions, 1)
+	assert.Equal(t, "route-new", artifact.ResolvedActions[0].Arguments["route_id"])
+	require.Len(t, artifact.ActionResults, 1)
+	require.Len(t, artifact.PlanDryRuns, 1)
+	require.Len(t, artifact.PlanPolicies, 1)
+	require.Len(t, artifact.Checkpoints, 1)
+	assert.Equal(t, workflow.CheckpointSucceeded, artifact.Checkpoints[0].Decision)
+	assert.Contains(t, artifact.Capabilities, CapabilityDynamicExecutionStages)
+	assert.Contains(t, artifact.Capabilities, CapabilityTypedActionOutputReferences)
 }
 
 func TestRecorderNormalizesEmptyCollectionsToJSONArrays(t *testing.T) {

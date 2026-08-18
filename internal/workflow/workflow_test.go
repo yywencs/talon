@@ -20,9 +20,8 @@ func TestIncidentWorkflowHappyPath(t *testing.T) {
 		{event: Event{Type: EventStartInvestigation, Actor: ActorController}, want: StateInvestigating},
 		{event: Event{Type: EventPlanSubmitted, Actor: ActorAgent}, want: StatePlanned},
 		{event: Event{Type: EventPlanApproved, Actor: ActorWorkflow}, want: StateRemediating},
-		{event: Event{Type: EventStageSucceeded, Actor: ActorWorkflow}, want: StateProbing},
-		{event: Event{Type: EventStageSucceeded, Actor: ActorController}, want: StateRecovering},
-		{event: Event{Type: EventStageSucceeded, Actor: ActorController}, want: StateResolved},
+		{event: Event{Type: EventStageCheckpoint, Actor: ActorWorkflow}, want: StateCheckpoint},
+		{event: Event{Type: EventCheckpointSucceeded, Actor: ActorWorkflow}, want: StateResolved},
 	}
 
 	for _, step := range steps {
@@ -53,24 +52,11 @@ func TestIncidentWorkflowApprovalAndReinvestigation(t *testing.T) {
 
 	_, err := workflow.Apply(Event{Type: EventPlanRejected, Actor: ActorHuman, Reason: "风险范围过大"})
 	require.NoError(t, err)
-	assert.Equal(t, StateReinvestigating, workflow.Snapshot().State)
+	assert.Equal(t, StateInvestigating, workflow.Snapshot().State)
 
 	_, err = workflow.Apply(Event{Type: EventPlanSubmitted, Actor: ActorAgent})
 	require.NoError(t, err)
 	assert.Equal(t, StatePlanned, workflow.Snapshot().State)
-}
-
-func TestIncidentWorkflowCompensationAndEscalation(t *testing.T) {
-	workflow := workflowAtRemediating(t)
-	applyEvents(t, workflow,
-		Event{Type: EventCompensationRequired, Actor: ActorWorkflow},
-		Event{Type: EventStageFailed, Actor: ActorWorkflow, Reason: "rollback failed"},
-	)
-
-	snapshot := workflow.Snapshot()
-	assert.Equal(t, StateEscalated, snapshot.State)
-	assert.Equal(t, StateCompensating, snapshot.History[len(snapshot.History)-1].From)
-	assert.Equal(t, "rollback failed", snapshot.History[len(snapshot.History)-1].Reason)
 }
 
 func TestIncidentWorkflowEscalationRequiresHumanResume(t *testing.T) {
@@ -87,7 +73,7 @@ func TestIncidentWorkflowEscalationRequiresHumanResume(t *testing.T) {
 
 	_, err = workflow.Apply(Event{Type: EventHumanResumed, Actor: ActorHuman})
 	require.NoError(t, err)
-	assert.Equal(t, StateReinvestigating, workflow.Snapshot().State)
+	assert.Equal(t, StateInvestigating, workflow.Snapshot().State)
 	assert.Empty(t, workflow.Snapshot().SuspendedState)
 }
 
@@ -100,7 +86,7 @@ func TestIncidentWorkflowRejectsInvalidTransitionAndActor(t *testing.T) {
 	assert.Equal(t, StateProtected, workflow.Snapshot().State)
 	assert.Zero(t, workflow.Snapshot().Version)
 
-	_, err = workflow.Apply(Event{Type: EventStageSucceeded, Actor: ActorController})
+	_, err = workflow.Apply(Event{Type: EventStageCheckpoint, Actor: ActorController})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrInvalidTransition))
 	assert.Equal(t, StateProtected, workflow.Snapshot().State)
@@ -124,7 +110,7 @@ func TestIncidentWorkflowAgentActionWhitelist(t *testing.T) {
 
 	applyEvents(t, workflow,
 		Event{Type: EventPlanApproved, Actor: ActorWorkflow},
-		Event{Type: EventStageSucceeded, Actor: ActorWorkflow},
+		Event{Type: EventStageCheckpoint, Actor: ActorWorkflow},
 	)
 	require.NoError(t, workflow.AuthorizeAgentAction(AgentActionRead))
 	require.NoError(t, workflow.AuthorizeAgentAction(AgentActionQueryOperation))
@@ -166,11 +152,10 @@ func TestIncidentWorkflowSubmitPlanFreezesDraft(t *testing.T) {
 	draft := PlanDraft{
 		Summary: "回滚错误的 Mapping 配置", RootCause: "mapping schema regression",
 		EvidenceRefs: []string{"log:invalid_parameter_type", "change:mapping-v2"},
-		Actions: []PlannedAction{{
-			ToolName:  "rollback_mapping",
+		Stages: []PlanStageDraft{{StageID: "rollback", Goal: "rollback mapping", Actions: []PlannedAction{{
+			Key: "rollback-mapping", ToolName: "rollback_mapping",
 			Arguments: map[string]any{"target_version": "mapping-v1"},
-		}},
-		ProbeRouteID: "route-a", RecoveryPolicyID: "default-safe-recovery",
+		}}}},
 	}
 
 	submission, err := workflow.SubmitPlan(draft)
@@ -180,13 +165,14 @@ func TestIncidentWorkflowSubmitPlanFreezesDraft(t *testing.T) {
 	assert.Equal(t, fixedNow, submission.Plan.SubmittedAt)
 	assert.Equal(t, submission.Plan.ID, submission.Transition.Metadata["plan_id"])
 
-	draft.Actions[0].Arguments["target_version"] = "mutated"
+	draft.Stages[0].Actions[0].Arguments["target_version"] = "mutated"
 	snapshot := workflow.Snapshot()
 	require.NotNil(t, snapshot.Plan)
-	require.Len(t, snapshot.Plan.Actions, 1)
-	assert.Equal(t, "incident-001-plan-2-action-1", snapshot.Plan.Actions[0].ID)
-	assert.NotEmpty(t, snapshot.Plan.Actions[0].Digest)
-	assert.Equal(t, "mapping-v1", snapshot.Plan.Actions[0].Arguments["target_version"])
+	require.Len(t, snapshot.Plan.Stages, 1)
+	require.Len(t, snapshot.Plan.Stages[0].Actions, 1)
+	assert.Equal(t, "incident-001-plan-2-action-1", snapshot.Plan.Stages[0].Actions[0].ID)
+	assert.NotEmpty(t, snapshot.Plan.Stages[0].Actions[0].Digest)
+	assert.Equal(t, "mapping-v1", snapshot.Plan.Stages[0].Actions[0].Arguments["target_version"])
 	_, err = workflow.SubmitPlan(draft)
 	assert.ErrorIs(t, err, ErrAgentActionDenied)
 }
@@ -197,13 +183,14 @@ func TestIncidentWorkflowUsesIndependentPlanIDPrefix(t *testing.T) {
 	applyEvents(t, instance, Event{Type: EventStartInvestigation, Actor: ActorController})
 	submission, err := instance.SubmitPlan(PlanDraft{
 		Summary: "repair", RootCause: "cause", EvidenceRefs: []string{"evidence"},
-		Actions:      []PlannedAction{{ToolName: "repair", Arguments: map[string]any{"id": "value"}}},
-		ProbeRouteID: "route-a", RecoveryPolicyID: "safe",
+		Stages: []PlanStageDraft{{StageID: "repair", Goal: "repair", Actions: []PlannedAction{{
+			Key: "repair", ToolName: "repair", Arguments: map[string]any{"id": "value"},
+		}}}},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "scenario-001", instance.Snapshot().IncidentID)
 	assert.Equal(t, "run-abc-plan-2", submission.Plan.ID)
-	assert.Equal(t, "run-abc-plan-2-action-1", submission.Plan.Actions[0].ID)
+	assert.Equal(t, "run-abc-plan-2-action-1", submission.Plan.Stages[0].Actions[0].ID)
 }
 
 func TestIncidentWorkflowSubmitPlanValidatesRequiredFields(t *testing.T) {
@@ -219,7 +206,8 @@ func TestIncidentWorkflowSubmitPlanValidatesRequiredFields(t *testing.T) {
 func TestIncidentWorkflowSnapshotRetainsEverySubmittedPlan(t *testing.T) {
 	instance := newTestWorkflow(t, nil)
 	applyEvents(t, instance, Event{Type: EventStartInvestigation, Actor: ActorController})
-	draft := PlanDraft{Summary: "first plan", RootCause: "first hypothesis", EvidenceRefs: []string{"log:first"}, Actions: []PlannedAction{{ToolName: "repair", Arguments: map[string]any{}}}, ProbeRouteID: "route-a", RecoveryPolicyID: "safe"}
+	draft := PlanDraft{Summary: "first plan", RootCause: "first hypothesis", EvidenceRefs: []string{"log:first"},
+		Stages: []PlanStageDraft{{StageID: "repair", Goal: "repair", Actions: []PlannedAction{{Key: "repair", ToolName: "repair", Arguments: map[string]any{}}}}}}
 	first, err := instance.SubmitPlan(draft)
 	require.NoError(t, err)
 	_, err = instance.Apply(Event{Type: EventPlanRejected, Actor: ActorWorkflow, Reason: "probe produced contrary evidence"})
@@ -250,48 +238,11 @@ func TestIncidentWorkflowSnapshotDoesNotShareMetadata(t *testing.T) {
 	assert.Equal(t, "error_rate", workflow.Snapshot().History[0].Metadata["trigger"])
 }
 
-func TestIncidentWorkflowRecordsStructuredFailureWithTransition(t *testing.T) {
-	instance := workflowAtRemediating(t)
-	failure := StageFailure{
-		Stage: FailureStageRemediation, Category: FailureCategoryExecutionFailed,
-		Code: "remediation_operation_failed", SafeSummary: "修复 Operation 执行失败",
-		Message: "raw platform detail", NextAction: FailureNextReinvestigate,
-		PlanID: "plan-1", ActionID: "action-1", OperationID: "operation-1",
-	}
-	transition, err := instance.Apply(Event{
-		Type: EventStageFailed, Actor: ActorWorkflow, Reason: failure.Message, Failure: &failure,
-	})
-	require.NoError(t, err)
-
-	snapshot := instance.Snapshot()
-	require.Len(t, snapshot.Failures, 1)
-	require.NotNil(t, transition.Failure)
-	assert.Equal(t, snapshot.Version, snapshot.Failures[0].WorkflowVersion)
-	assert.Equal(t, FailureCategoryExecutionFailed, snapshot.Failures[0].Category)
-	assert.Equal(t, "remediation_operation_failed", transition.Failure.Code)
-}
-
-func TestIncidentWorkflowFallsBackForUnstructuredStageFailure(t *testing.T) {
-	instance := workflowAtRemediating(t)
-	_, err := instance.Apply(Event{
-		Type: EventStageFailed, Actor: ActorWorkflow, Reason: "new error type",
-		Metadata: map[string]string{"operation_id": "operation-new"},
-	})
-	require.NoError(t, err)
-
-	failures := instance.Snapshot().Failures
-	require.Len(t, failures, 1)
-	assert.Equal(t, FailureCategoryUnclassified, failures[0].Category)
-	assert.Equal(t, "unclassified_error", failures[0].Code)
-	assert.Equal(t, FailureNextReinvestigate, failures[0].NextAction)
-	assert.True(t, failures[0].Fallback)
-}
-
 func TestIncidentWorkflowRejectsInvalidRetrySemantics(t *testing.T) {
 	instance := newTestWorkflow(t, nil)
 	_, err := instance.RecordFailure(StageFailure{
-		Stage: FailureStageProbe, Category: FailureCategoryPlatformUnavailable,
-		Code: "probe_query_failed", SafeSummary: "暂时无法查询探测 Operation",
+		Stage: FailureStageActionExecution, Category: FailureCategoryPlatformUnavailable,
+		Code: "remediation_query_failed", SafeSummary: "暂时无法查询执行 Operation",
 		NextAction: FailureNextRetry, Retryable: false,
 	})
 	require.ErrorContains(t, err, "retry next action requires retryable failure")
@@ -301,8 +252,8 @@ func TestIncidentWorkflowRejectsInvalidRetrySemantics(t *testing.T) {
 func TestIncidentWorkflowRejectsFailureFromWrongStage(t *testing.T) {
 	instance := workflowAtRemediating(t)
 	_, err := instance.RecordFailure(StageFailure{
-		Stage: FailureStageProbe, Category: FailureCategoryPlatformUnavailable,
-		Code: "probe_query_failed", SafeSummary: "暂时无法查询探测 Operation",
+		Stage: FailureStageCheckpoint, Category: FailureCategoryPlatformUnavailable,
+		Code: "checkpoint_query_failed", SafeSummary: "暂时无法查询 Checkpoint Operation",
 		NextAction: FailureNextRetry, Retryable: true,
 	})
 	require.ErrorContains(t, err, "does not match workflow state")

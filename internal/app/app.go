@@ -106,6 +106,9 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 	if runConfig.AgentMaxSteps == 0 {
 		runConfig.AgentMaxSteps = agent.DefaultMaxSteps
 	}
+	if runConfig.MaxModelCalls == 0 {
+		runConfig.MaxModelCalls = agent.DefaultMaxModelCalls
+	}
 	runConfig.AutoApprove = cfg.AutoApprove
 	recorder := runartifact.New(item.Scenario.Metadata.ID, provenance, runConfig)
 	artifactStore := cfg.Storage.RunArtifacts()
@@ -196,7 +199,9 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 		printer.printf("[skill] catalog=%d active=0 max_active=%d\n", registry.Len(), skill.DefaultMaxActive)
 		toolOpsAgent, buildErr := agent.NewToolOpsAgent(ctx, agent.Config{
 			Model: cfg.Model, Platform: service, IncidentID: item.Scenario.Metadata.ID,
-			Workflow: flow, MaxSteps: cfg.AgentMaxSteps, Artifact: recorder, Skills: skillSession, Prompts: &prompts,
+			VirtualTime: func() time.Time { return service.Snapshot().Now },
+			Workflow:    flow, MaxSteps: cfg.AgentMaxSteps, MaxModelCalls: runConfig.MaxModelCalls,
+			Artifact: recorder, Skills: skillSession, Prompts: &prompts,
 		})
 		if buildErr != nil {
 			return Result{}, fmt.Errorf("create ToolOps Agent: %w", buildErr)
@@ -214,6 +219,10 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 		controller.WithAsyncExecution(controller.AsyncExecutionConfig{
 			SubmitTimeout: 5 * time.Second, InitialPollInterval: 20 * time.Millisecond,
 			MaxPollInterval: 100 * time.Millisecond, OperationTimeout: 2 * time.Minute,
+		}),
+		controller.WithWorkflowCheckpoint(func(checkpointCtx context.Context, snapshot workflow.Snapshot) error {
+			recorder.RecordWorkflowCheckpoint(snapshot)
+			return artifactStore.Upsert(checkpointCtx, recorder.Snapshot())
 		}),
 	)
 	if err != nil {
@@ -372,9 +381,12 @@ func printSummary(printer *safePrinter, result Result) {
 	printer.printf("[result] reason=%s state=%s advances=%d transitions=%d\n",
 		result.Controller.Reason, snapshot.State, result.Controller.Advances, len(snapshot.History))
 	if snapshot.Plan != nil {
-		printer.printf("[plan] id=%s root_cause=%s actions=%d probe_route=%s recovery_policy=%s\n",
-			snapshot.Plan.ID, snapshot.Plan.RootCause, len(snapshot.Plan.Actions),
-			snapshot.Plan.ProbeRouteID, snapshot.Plan.RecoveryPolicyID)
+		actionCount := 0
+		for _, stage := range snapshot.Plan.Stages {
+			actionCount += len(stage.Actions)
+		}
+		printer.printf("[plan] id=%s root_cause=%s stages=%d actions=%d\n",
+			snapshot.Plan.ID, snapshot.Plan.RootCause, len(snapshot.Plan.Stages), actionCount)
 	}
 	routeIDs := make([]string, 0, len(result.World.Routes))
 	for id := range result.World.Routes {
@@ -557,7 +569,9 @@ func (r *recordingInvestigator) Investigate(ctx context.Context, instruction str
 	r.recorder.BeginAgentRun(instruction, r.workflow.Snapshot())
 	err = r.next.Investigate(ctx, instruction)
 	r.recorder.EndAgentRun(r.workflow.Snapshot(), err)
-	if persistErr := r.store.Upsert(ctx, r.recorder.Snapshot()); persistErr != nil {
+	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if persistErr := r.store.Upsert(persistCtx, r.recorder.Snapshot()); persistErr != nil {
 		return errors.Join(err, fmt.Errorf("persist Agent run artifact checkpoint: %w", persistErr))
 	}
 	return err

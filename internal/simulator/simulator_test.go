@@ -253,6 +253,28 @@ func TestSimulatorUsesFailedProbeEvidenceBeforeRecreatingPool(t *testing.T) {
 	require.Equal(t, 70, simulator.Snapshot().Routes["route-a"].Weight)
 }
 
+func TestSimulatorRejectsTelemetryRangeAfterVirtualTime(t *testing.T) {
+	item := findTestCase(t, "connection-recovery-two-cycles-001")
+	simulator, err := New(item.Scenario)
+	require.NoError(t, err)
+	ctx := context.Background()
+	require.NoError(t, simulator.Advance(ctx, 5*time.Minute))
+	now := simulator.Snapshot().Now
+
+	logs, err := simulator.QueryLogs(ctx, platform.LogQuery{
+		Scope: platform.Scope{IncidentID: item.Scenario.Metadata.ID},
+		Range: platform.TimeRange{From: now.Add(24 * time.Hour)},
+	})
+	require.ErrorContains(t, err, "after current Incident virtual time 2026-08-10T11:05:00Z")
+	require.Nil(t, logs)
+
+	logs, err = simulator.QueryLogs(ctx, platform.LogQuery{
+		Scope: platform.Scope{IncidentID: item.Scenario.Metadata.ID},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, logs)
+}
+
 func TestSimulatorRecoveryHardStopReturnsToProtectedWeight(t *testing.T) {
 	item := findTestCase(t, "mapping-regression-rollback-001")
 	item.Scenario.ActionBehavior["request_recovery"] = map[string]any{

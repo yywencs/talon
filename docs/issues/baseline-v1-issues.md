@@ -1,5 +1,8 @@
 # Baseline v1 问题记录
 
+动态执行计划改造后的后续问题见
+[动态执行计划评测问题记录](dynamic-execution-plan-issues.md)。
+
 本文记录 `v1.0.0`、`toolops-v1` 第一版 Baseline 中暴露的问题。三个场景各运行
 3 次，共 9 次；成功 3 次，4 次运行因 `exceeds max steps` 失败。
 

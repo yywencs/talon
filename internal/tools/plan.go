@@ -12,77 +12,113 @@ import (
 )
 
 // submitPlanInput 是模型调用 submit_plan 时必须提供的结构化参数。
-// 它同时描述根因证据、修复动作序列以及后续探测和恢复策略，避免 Agent
-// 只提交一段无法被 Workflow 校验和执行的自然语言计划。
+// 它用线性短 Stage 描述可验证动作和阶段间数据依赖。
 type submitPlanActionInput struct {
-	ToolName  string         `json:"tool_name" jsonschema:"required,description=准备执行的已注册修复工具名称"`
-	Arguments map[string]any `json:"arguments" jsonschema:"required,description=该修复工具的完整参数"`
+	ID                 string                                    `json:"id,omitempty" jsonschema:"description=Stage 间引用使用的稳定动作标识"`
+	ToolName           string                                    `json:"tool_name" jsonschema:"required,description=准备执行的已注册 remediation 名称或 request_probe、request_recovery；request_probe/request_recovery 的参数名固定为 route_id、policy_id、idempotency_key"`
+	Arguments          map[string]any                            `json:"arguments" jsonschema:"required,description=当前已经确定的动作参数；probe/recovery 必须使用 policy_id，不要使用 recovery_policy_id"`
+	ArgumentReferences map[string]workflow.ActionOutputReference `json:"argument_references,omitempty" jsonschema:"description=参数名到前序 Action 结构化输出的类型化引用"`
+}
+
+type submitPlanStageInput struct {
+	StageID          string                    `json:"stage_id" jsonschema:"required,description=线性 Stage 的稳定标识"`
+	Goal             string                    `json:"goal" jsonschema:"required,description=当前阶段的单一目标"`
+	Actions          []submitPlanActionInput   `json:"actions" jsonschema:"required,description=本阶段按顺序执行的动作"`
+	SuccessCriteria  []string                  `json:"success_criteria,omitempty"`
+	CheckpointPolicy workflow.CheckpointPolicy `json:"checkpoint_policy" jsonschema:"required,description=确定性阶段检查规则；request_probe Stage 仅允许 output.outcome=healthy 时 continue 到显式 recovery Stage，不能直接 succeeded，并使用 fail-closed 默认决策"`
 }
 
 type submitPlanInput struct {
-	Summary          string                  `json:"summary" jsonschema:"required,description=计划摘要和预期结果"`
-	RootCause        string                  `json:"root_cause" jsonschema:"required,description=由证据支持的根因判断"`
-	EvidenceRefs     []string                `json:"evidence_refs" jsonschema:"required,description=支持根因和修复选择的证据引用"`
-	Actions          []submitPlanActionInput `json:"actions" jsonschema:"required,description=按执行顺序排列的一个或多个具体修复动作"`
-	ProbeRouteID     string                  `json:"probe_route_id" jsonschema:"required,description=修复成功后需要探测的路由ID"`
-	RecoveryPolicyID string                  `json:"recovery_policy_id" jsonschema:"required,description=必须原样引用get_recovery_policies返回的确定性策略ID，不得自行生成"`
+	Summary      string                 `json:"summary" jsonschema:"required,description=计划摘要和预期结果"`
+	RootCause    string                 `json:"root_cause" jsonschema:"required,description=由证据支持的根因判断"`
+	EvidenceRefs []string               `json:"evidence_refs" jsonschema:"required,description=支持根因和修复选择的证据引用"`
+	Stages       []submitPlanStageInput `json:"stages" jsonschema:"required,description=按执行顺序排列的线性短 Stage"`
 }
 
 // newSubmitPlanTool 创建提交修复计划的 Eino 工具。
 // remediations 是当前 Incident 允许使用的修复能力快照；工具只负责校验并冻结计划，
 // 不会在提交过程中执行修复。计划提交成功后，Workflow 会从 investigating 转为 planned。
-func newSubmitPlanTool(instance *workflow.IncidentWorkflow, service platform.ToolOpsPlatform, incidentID string, remediations map[string]platform.RemediationCapability) (einotool.InvokableTool, error) {
+func newSubmitPlanTool(instance *workflow.IncidentWorkflow, remediations map[string]platform.RemediationCapability) (einotool.InvokableTool, error) {
 	tool, err := toolutils.InferTool(
 		"submit_plan",
-		"证据足够后提交一份冻结的结构化修复计划。提交前必须调用get_recovery_policies并引用其返回的策略ID。该工具只保存计划并推进到planned，不会直接执行修复；无安全修复方案时应升级人工。",
-		func(ctx context.Context, input submitPlanInput) (response[workflow.PlanSubmission], error) {
-			if len(input.Actions) == 0 {
-				return response[workflow.PlanSubmission]{}, fmt.Errorf("plan actions is required")
+		"证据足够后提交一份冻结的结构化执行计划。必须使用线性 stages 表达短 Stage、类型化输出引用和确定性 Checkpoint；Stage action 可使用已注册 remediation、request_probe 或 request_recovery。request_probe 健康只能 continue 到显式 request_recovery Stage，不能直接 succeeded。request_probe 和 request_recovery 的 arguments 必须是 route_id、policy_id、idempotency_key（策略字段名是 policy_id，不是 recovery_policy_id）。该工具只保存计划并推进到planned，不会直接执行动作；无安全方案时应升级人工。",
+		func(_ context.Context, input submitPlanInput) (response[workflow.PlanSubmission], error) {
+			if len(input.Stages) == 0 {
+				return platformResponse(workflow.PlanSubmission{}, fmt.Errorf("plan stages is required")), nil
 			}
-			actions := make([]workflow.PlannedAction, 0, len(input.Actions))
-			for index, action := range input.Actions {
-				// 每个修复工具都必须来自平台为当前 Incident 提供的能力目录。
-				capability, allowed := remediations[action.ToolName]
-				if !allowed {
-					return response[workflow.PlanSubmission]{}, fmt.Errorf("action %d remediation tool %q is not available for this incident", index, action.ToolName)
-				}
-				if err := validateRemediationArguments(capability, action.Arguments); err != nil {
-					return response[workflow.PlanSubmission]{}, fmt.Errorf("validate planned action %d: %w", index, err)
-				}
-				for _, name := range capability.Arguments {
-					if _, exists := action.Arguments[name]; !exists {
-						return response[workflow.PlanSubmission]{}, fmt.Errorf("planned action %d argument %q is required", index, name)
+			convertActions := func(values []submitPlanActionInput) ([]workflow.PlannedAction, error) {
+				actions := make([]workflow.PlannedAction, 0, len(values))
+				for index, action := range values {
+					arguments, references, normalizeErr := normalizeManagedActionArguments(action.ToolName, action.Arguments, action.ArgumentReferences)
+					if normalizeErr != nil {
+						return nil, fmt.Errorf("planned action %d: %w", index, normalizeErr)
 					}
+					action.Arguments, action.ArgumentReferences = arguments, references
+					capability, allowed := remediations[action.ToolName]
+					kind := workflow.ActionKindRemediation
+					if !allowed {
+						switch action.ToolName {
+						case "request_probe":
+							kind = workflow.ActionKindProbe
+						case "request_recovery":
+							kind = workflow.ActionKindRecovery
+						default:
+							return nil, fmt.Errorf("action %d capability %q is not available for this incident", index, action.ToolName)
+						}
+						capability = platform.RemediationCapability{Name: action.ToolName, Risk: "low", Arguments: []string{"route_id", "policy_id", "idempotency_key"}}
+					}
+					if err := validateRemediationArguments(capability, action.Arguments); err != nil {
+						return nil, fmt.Errorf("validate planned action %d: %w", index, err)
+					}
+					allowedArguments := make(map[string]struct{}, len(capability.Arguments))
+					for _, name := range capability.Arguments {
+						allowedArguments[name] = struct{}{}
+					}
+					for name, reference := range action.ArgumentReferences {
+						if _, allowed := allowedArguments[name]; !allowed {
+							return nil, fmt.Errorf("planned action %d reference target %q is not allowed for remediation %q", index, name, capability.Name)
+						}
+						expected := workflow.ActionOutputString
+						if name == "expected_pool_generation" {
+							expected = workflow.ActionOutputInteger
+						}
+						if reference.ExpectedType != expected {
+							return nil, fmt.Errorf("planned action %d reference target %q requires expected_type %q", index, name, expected)
+						}
+					}
+					for _, name := range capability.Arguments {
+						_, literal := action.Arguments[name]
+						reference, referenced := action.ArgumentReferences[name]
+						if !literal && !referenced {
+							return nil, fmt.Errorf("planned action %d argument %q is required", index, name)
+						}
+						if referenced && !reference.Required {
+							return nil, fmt.Errorf("planned action %d required argument %q must use a required output reference", index, name)
+						}
+					}
+					// 每个 Action 使用独立幂等键，避免部分重试时重复执行其他动作。
+					if key, ok := action.Arguments["idempotency_key"].(string); !ok || strings.TrimSpace(key) == "" {
+						return nil, fmt.Errorf("planned action %d idempotency_key must be a non-empty string", index)
+					}
+					actions = append(actions, workflow.PlannedAction{ID: action.ID, Key: action.ID, Kind: kind, ToolName: action.ToolName,
+						Arguments: action.Arguments, ArgumentReferences: action.ArgumentReferences})
 				}
-				// 每个 Action 使用独立幂等键，避免部分重试时重复执行其他动作。
-				if key, ok := action.Arguments["idempotency_key"].(string); !ok || strings.TrimSpace(key) == "" {
-					return response[workflow.PlanSubmission]{}, fmt.Errorf("planned action %d idempotency_key must be a non-empty string", index)
+				return actions, nil
+			}
+			stages := make([]workflow.PlanStageDraft, 0, len(input.Stages))
+			for _, stage := range input.Stages {
+				stageActions, stageErr := convertActions(stage.Actions)
+				if stageErr != nil {
+					return platformResponse(workflow.PlanSubmission{}, fmt.Errorf("stage %q: %w", stage.StageID, stageErr)), nil
 				}
-				actions = append(actions, workflow.PlannedAction{ToolName: action.ToolName, Arguments: action.Arguments})
-			}
-			// 恢复策略必须来自 Platform 的只读策略目录，不能让模型凭空构造一个 ID。
-			policies, policyErr := service.GetRecoveryPolicies(ctx, platform.StateQuery{
-				Scope: platform.Scope{IncidentID: incidentID},
-			})
-			if policyErr != nil {
-				return platformResponse(workflow.PlanSubmission{}, fmt.Errorf("get recovery policies: %w", policyErr)), nil
-			}
-			policyID := strings.TrimSpace(input.RecoveryPolicyID)
-			policyAllowed := false
-			for _, policy := range policies {
-				if policy.ID == policyID {
-					policyAllowed = true
-					break
-				}
-			}
-			if !policyAllowed {
-				return platformResponse(workflow.PlanSubmission{}, fmt.Errorf("recovery policy %q is not available for this incident; call get_recovery_policies and use an exact returned ID", policyID)), nil
+				stages = append(stages, workflow.PlanStageDraft{StageID: stage.StageID, Goal: stage.Goal,
+					Actions: stageActions, SuccessCriteria: stage.SuccessCriteria, CheckpointPolicy: stage.CheckpointPolicy,
+					CreatedBy: string(workflow.ActorAgent)})
 			}
 			// SubmitPlan 会再次校验 Workflow 权限，并原子地冻结计划和推进状态。
 			result, submitErr := instance.SubmitPlan(workflow.PlanDraft{
 				Summary: input.Summary, RootCause: input.RootCause, EvidenceRefs: input.EvidenceRefs,
-				Actions:      actions,
-				ProbeRouteID: input.ProbeRouteID, RecoveryPolicyID: input.RecoveryPolicyID,
+				Stages: stages,
 			})
 			return platformResponse(result, submitErr), nil
 		},
@@ -91,4 +127,35 @@ func newSubmitPlanTool(instance *workflow.IncidentWorkflow, service platform.Too
 		return nil, fmt.Errorf("build submit_plan tool: %w", err)
 	}
 	return tool, nil
+}
+
+// normalizeManagedActionArguments 接受一次受控的旧字段别名，并立即规范化为平台协议中的 policy_id。
+// 归一化只发生在 Stage Action 内，不恢复已经删除的顶层 recovery_policy_id Plan 字段。
+func normalizeManagedActionArguments(toolName string, arguments map[string]any, references map[string]workflow.ActionOutputReference) (map[string]any, map[string]workflow.ActionOutputReference, error) {
+	resultArguments := make(map[string]any, len(arguments))
+	for name, value := range arguments {
+		resultArguments[name] = value
+	}
+	resultReferences := make(map[string]workflow.ActionOutputReference, len(references))
+	for name, value := range references {
+		resultReferences[name] = value
+	}
+	if toolName != "request_probe" && toolName != "request_recovery" {
+		return resultArguments, resultReferences, nil
+	}
+	if alias, exists := resultArguments["recovery_policy_id"]; exists {
+		if _, canonical := resultArguments["policy_id"]; canonical {
+			return nil, nil, fmt.Errorf("arguments cannot contain both policy_id and recovery_policy_id")
+		}
+		resultArguments["policy_id"] = alias
+		delete(resultArguments, "recovery_policy_id")
+	}
+	if alias, exists := resultReferences["recovery_policy_id"]; exists {
+		if _, canonical := resultReferences["policy_id"]; canonical {
+			return nil, nil, fmt.Errorf("argument_references cannot contain both policy_id and recovery_policy_id")
+		}
+		resultReferences["policy_id"] = alias
+		delete(resultReferences, "recovery_policy_id")
+	}
+	return resultArguments, resultReferences, nil
 }

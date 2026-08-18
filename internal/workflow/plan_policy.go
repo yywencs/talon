@@ -50,7 +50,7 @@ type PlanApproval struct {
 
 // RecordPlanPolicyDecisions 原子保存当前 Plan 所有 Action 的 Policy 结果。
 // 全部自动通过才进入 remediating；存在待审批 Action 时进入 awaiting_approval；
-// 任一 Action 被 Policy 拒绝时，整份 Plan 返回 reinvestigating。
+// 任一 Action 被 Policy 拒绝时，Workflow 返回 investigating 交给 Agent 决策。
 func (w *IncidentWorkflow) RecordPlanPolicyDecisions(decisions []PlanPolicyDecision) ([]PlanPolicyDecision, error) {
 	if w == nil {
 		return nil, fmt.Errorf("workflow is not initialized")
@@ -74,7 +74,8 @@ func (w *IncidentWorkflow) RecordPlanPolicyDecisions(decisions []PlanPolicyDecis
 	if w.state != StatePlanned {
 		return nil, fmt.Errorf("%w: plan policy is not allowed in state %q", ErrInvalidTransition, w.state)
 	}
-	if w.plan == nil || len(decisions) != len(w.plan.Actions) {
+	actions := w.executableActionsLocked()
+	if w.plan == nil || len(decisions) != len(actions) {
 		return nil, fmt.Errorf("plan policy must contain exactly one decision for every frozen action")
 	}
 
@@ -88,7 +89,7 @@ func (w *IncidentWorkflow) RecordPlanPolicyDecisions(decisions []PlanPolicyDecis
 		}
 		byAction[decision.ActionID] = decision
 	}
-	for _, action := range w.plan.Actions {
+	for _, action := range actions {
 		decision, ok := byAction[action.ID]
 		if !ok || decision.ActionDigest != action.Digest {
 			return nil, fmt.Errorf("plan policy does not match frozen action %q", action.ID)
@@ -107,6 +108,7 @@ func (w *IncidentWorkflow) RecordPlanPolicyDecisions(decisions []PlanPolicyDecis
 		decisions[index].EvaluatedAt = evaluatedAt
 	}
 	w.planPolicies = clonePlanPolicyDecisions(decisions)
+	w.allPlanPolicies = append(w.allPlanPolicies, clonePlanPolicyDecisions(decisions)...)
 
 	outcome := PlanPolicyAutoApproved
 	for _, decision := range decisions {
@@ -130,8 +132,16 @@ func (w *IncidentWorkflow) RecordPlanPolicyDecisions(decisions []PlanPolicyDecis
 		event.Type = EventApprovalRequired
 		event.Reason = "one or more plan actions require human approval"
 	case PlanPolicyRejected:
-		event.Type = EventPlanRejected
 		event.Reason = "one or more plan actions were rejected by policy"
+		if stage := w.currentStageLocked(); stage != nil {
+			checkpoint := w.newCheckpointLocked(stage.StageID, "policy", CheckpointBlocked, event.Reason, "")
+			w.checkpoints = append(w.checkpoints, checkpoint)
+			event.Type = EventCheckpointBlocked
+			event.Metadata["stage_id"] = stage.StageID
+			event.Metadata["checkpoint_id"] = checkpoint.CheckpointID
+		} else {
+			event.Type = EventPlanRejected
+		}
 	}
 	if _, err := w.applyLocked(event); err != nil {
 		return nil, err
@@ -164,7 +174,7 @@ func (w *IncidentWorkflow) RecordPlanApproval(approval PlanApproval) (PlanApprov
 	if w.plan == nil || w.plan.ID != approval.PlanID {
 		return PlanApproval{}, fmt.Errorf("plan approval does not match the current frozen plan")
 	}
-	action := findPlannedAction(w.plan.Actions, approval.ActionID)
+	action := findPlannedAction(w.executableActionsLocked(), approval.ActionID)
 	if action == nil || action.Digest != approval.ActionDigest {
 		return PlanApproval{}, fmt.Errorf("plan approval does not match a frozen action")
 	}
@@ -175,6 +185,7 @@ func (w *IncidentWorkflow) RecordPlanApproval(approval PlanApproval) (PlanApprov
 
 	approval.DecidedAt = w.now()
 	w.planApprovals = append(w.planApprovals, *clonePlanApprovalPointer(&approval))
+	w.allPlanApprovals = append(w.allPlanApprovals, *clonePlanApprovalPointer(&approval))
 	metadata := map[string]string{
 		"plan_id": approval.PlanID, "action_id": approval.ActionID, "action_digest": approval.ActionDigest,
 		"approval_decision": string(approval.Decision), "approver": approval.Approver,

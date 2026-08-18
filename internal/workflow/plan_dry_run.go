@@ -38,10 +38,9 @@ const (
 type PlanDryRunNextAction string
 
 const (
-	PlanDryRunNextReplan        PlanDryRunNextAction = "replan"
-	PlanDryRunNextReinvestigate PlanDryRunNextAction = "reinvestigate"
-	PlanDryRunNextEscalate      PlanDryRunNextAction = "escalate"
-	PlanDryRunNextRetry         PlanDryRunNextAction = "retry"
+	PlanDryRunNextNeedsAgent PlanDryRunNextAction = "needs_agent"
+	PlanDryRunNextEscalate   PlanDryRunNextAction = "escalate"
+	PlanDryRunNextRetry      PlanDryRunNextAction = "retry"
 )
 
 // PlanDryRunFailure 保存供 Workflow、Agent 和审计使用的结构化失败原因。
@@ -70,7 +69,7 @@ type PlanDryRun struct {
 }
 
 // RecordPlanDryRun 原子保存当前 Plan 的 Dry Run 结果。
-// 成功、等待或可重试检查保持 planned；确定性失败按 NextAction 重新规划、调查或升级。
+// 成功、等待或可重试检查保持 planned；确定性失败按 NextAction 唤回 Agent 或升级。
 func (w *IncidentWorkflow) RecordPlanDryRun(result PlanDryRun) (PlanDryRun, error) {
 	if w == nil {
 		return PlanDryRun{}, fmt.Errorf("workflow is not initialized")
@@ -119,13 +118,14 @@ func (w *IncidentWorkflow) RecordPlanDryRun(result PlanDryRun) (PlanDryRun, erro
 	if w.plan == nil || w.plan.ID != result.PlanID {
 		return PlanDryRun{}, fmt.Errorf("plan dry run does not match the current frozen plan")
 	}
-	action := findPlannedAction(w.plan.Actions, result.ActionID)
+	action := findPlannedAction(w.executableActionsLocked(), result.ActionID)
 	if action == nil || action.Digest != result.ActionDigest {
 		return PlanDryRun{}, fmt.Errorf("plan dry run does not match a frozen action")
 	}
 
 	result.RecordedAt = w.now()
 	w.planDryRuns = upsertPlanDryRun(w.planDryRuns, result)
+	w.allPlanDryRuns = upsertPlanDryRun(w.allPlanDryRuns, result)
 	if result.Failure != nil {
 		reason := result.Failure.Message
 		if reason == "" {
@@ -152,13 +152,32 @@ func (w *IncidentWorkflow) RecordPlanDryRun(result PlanDryRun) (PlanDryRun, erro
 		}
 		failure := normalizedDryRunFailure(result)
 		switch result.Failure.NextAction {
-		case PlanDryRunNextReplan, PlanDryRunNextReinvestigate:
+		case PlanDryRunNextNeedsAgent:
+			if stage := w.currentStageLocked(); stage != nil {
+				decision, eventType, checkpointReason := w.needsAgentDecisionLocked(dryRunSafeSummary(failure.Category))
+				checkpoint := w.newCheckpointLocked(stage.StageID, "dry_run", decision, checkpointReason, "")
+				w.checkpoints = append(w.checkpoints, checkpoint)
+				if _, err := w.applyLocked(Event{Type: eventType, Actor: ActorWorkflow, Reason: reason,
+					Metadata: map[string]string{"plan_id": result.PlanID, "stage_id": stage.StageID, "checkpoint_id": checkpoint.CheckpointID}, Failure: &failure}); err != nil {
+					return PlanDryRun{}, err
+				}
+				break
+			}
 			if _, err := w.applyLocked(Event{
 				Type: EventPlanRejected, Actor: ActorWorkflow, Reason: reason, Metadata: metadata, Failure: &failure,
 			}); err != nil {
 				return PlanDryRun{}, err
 			}
 		case PlanDryRunNextEscalate:
+			if stage := w.currentStageLocked(); stage != nil {
+				checkpoint := w.newCheckpointLocked(stage.StageID, "dry_run", CheckpointBlocked, dryRunSafeSummary(failure.Category), "")
+				w.checkpoints = append(w.checkpoints, checkpoint)
+				if _, err := w.applyLocked(Event{Type: EventCheckpointBlocked, Actor: ActorWorkflow, Reason: reason,
+					Metadata: map[string]string{"plan_id": result.PlanID, "stage_id": stage.StageID, "checkpoint_id": checkpoint.CheckpointID}, Failure: &failure}); err != nil {
+					return PlanDryRun{}, err
+				}
+				break
+			}
 			if _, err := w.applyLocked(Event{
 				Type: EventEscalated, Actor: ActorWorkflow, Reason: reason, Metadata: metadata, Failure: &failure,
 			}); err != nil {
@@ -189,10 +208,9 @@ func normalizedDryRunFailure(result PlanDryRun) StageFailure {
 		PlanDryRunFailureUnclassified:          FailureCategoryUnclassified,
 	}[failure.Category]
 	next := map[PlanDryRunNextAction]FailureNextAction{
-		PlanDryRunNextReplan:        FailureNextReplan,
-		PlanDryRunNextReinvestigate: FailureNextReinvestigate,
-		PlanDryRunNextEscalate:      FailureNextEscalate,
-		PlanDryRunNextRetry:         FailureNextRetry,
+		PlanDryRunNextNeedsAgent: FailureNextNeedsAgent,
+		PlanDryRunNextEscalate:   FailureNextEscalate,
+		PlanDryRunNextRetry:      FailureNextRetry,
 	}[failure.NextAction]
 	return StageFailure{
 		Stage: FailureStageDryRun, Category: category, Code: failure.Code,
@@ -209,7 +227,7 @@ func dryRunSafeSummary(category FailureCategory) string {
 	case FailureCategoryPlanInvalid:
 		return "Plan 的动作或参数未通过 Dry Run 校验"
 	case FailureCategoryPreconditionChanged:
-		return "执行前置条件已发生变化，需要重新调查"
+		return "执行前置条件已发生变化，需要 Agent 重新决策"
 	case FailureCategoryAuthorizationRequired:
 		return "Dry Run 所需操作未获得授权"
 	case FailureCategoryExecutionFailed:
@@ -262,10 +280,10 @@ func validatePlanDryRunFailure(status PlanDryRunStatus, failure *PlanDryRunFailu
 		return fmt.Errorf("failed plan dry run cannot use retry next action")
 	}
 	expectedAction := map[PlanDryRunFailureCategory]PlanDryRunNextAction{
-		PlanDryRunFailurePlanInvalid:           PlanDryRunNextReplan,
-		PlanDryRunFailurePreconditionChanged:   PlanDryRunNextReinvestigate,
+		PlanDryRunFailurePlanInvalid:           PlanDryRunNextNeedsAgent,
+		PlanDryRunFailurePreconditionChanged:   PlanDryRunNextNeedsAgent,
 		PlanDryRunFailureAuthorizationRequired: PlanDryRunNextEscalate,
-		PlanDryRunFailureExecutionFailed:       PlanDryRunNextReinvestigate,
+		PlanDryRunFailureExecutionFailed:       PlanDryRunNextNeedsAgent,
 		PlanDryRunFailurePlatformUnavailable:   PlanDryRunNextRetry,
 		PlanDryRunFailureInvalidResponse:       PlanDryRunNextEscalate,
 		PlanDryRunFailureUnclassified:          PlanDryRunNextEscalate,
@@ -293,7 +311,7 @@ func (c PlanDryRunFailureCategory) valid() bool {
 
 func (a PlanDryRunNextAction) valid() bool {
 	switch a {
-	case PlanDryRunNextReplan, PlanDryRunNextReinvestigate, PlanDryRunNextEscalate, PlanDryRunNextRetry:
+	case PlanDryRunNextNeedsAgent, PlanDryRunNextEscalate, PlanDryRunNextRetry:
 		return true
 	default:
 		return false

@@ -18,25 +18,19 @@ import (
 
 type idempotentExecutionPlatform struct {
 	platform.ToolOpsPlatform
-	mu                  sync.Mutex
-	capabilities        []platform.RemediationCapability
-	operations          map[string]platform.Operation
-	executeCalls        int
-	sideEffects         int
-	failFirstCall       bool
-	async               bool
-	stayPending         bool
-	blockSubmit         bool
-	executionStatus     platform.OperationStatus
-	executionTools      []string
-	probeOutcome        string
-	probeAsync          bool
-	probeStayPending    bool
-	probeCalls          int
-	recoveryOutcome     string
-	recoveryAsync       bool
-	recoveryStayPending bool
-	recoveryCalls       int
+	mu               sync.Mutex
+	capabilities     []platform.RemediationCapability
+	operations       map[string]platform.Operation
+	executeCalls     int
+	sideEffects      int
+	failFirstCall    bool
+	async            bool
+	stayPending      bool
+	blockSubmit      bool
+	executionStatus  platform.OperationStatus
+	executionTools   []string
+	executionResults map[string]map[string]any
+	requests         []platform.RemediationRequest
 }
 
 func (p *idempotentExecutionPlatform) GetRemediationCapabilities(context.Context, platform.StateQuery) ([]platform.RemediationCapability, error) {
@@ -50,6 +44,7 @@ func (p *idempotentExecutionPlatform) ExecuteRemediation(ctx context.Context, re
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.requests = append(p.requests, request)
 	if request.DryRun {
 		return platform.Operation{
 			ID: "dry-run-" + request.ToolName, IncidentID: request.IncidentID,
@@ -73,64 +68,12 @@ func (p *idempotentExecutionPlatform) ExecuteRemediation(ctx context.Context, re
 	operation := platform.Operation{
 		ID: "execute-" + request.ToolName, IncidentID: request.IncidentID,
 		Kind: platform.OperationRemediation, Name: request.ToolName,
-		Status: status, IdempotencyKey: request.IdempotencyKey,
+		Status: status, IdempotencyKey: request.IdempotencyKey, Result: cloneMap(p.executionResults[request.ToolName]),
 	}
 	p.operations[request.IdempotencyKey] = operation
 	if p.failFirstCall && p.executeCalls == 1 {
 		return platform.Operation{}, errors.New("response lost after platform accepted operation")
 	}
-	return operation, nil
-}
-
-func (p *idempotentExecutionPlatform) RequestProbe(_ context.Context, request platform.ProbeRequest) (platform.Operation, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.probeCalls++
-	if existing, ok := p.operations[request.IdempotencyKey]; ok {
-		return existing, nil
-	}
-	outcome := p.probeOutcome
-	if outcome == "" {
-		outcome = "healthy"
-	}
-	status := platform.OperationSucceeded
-	result := map[string]any{"outcome": outcome}
-	if p.probeAsync {
-		status = platform.OperationPending
-		result = map[string]any{"outcome": "pending"}
-	}
-	operation := platform.Operation{
-		ID: "probe-" + request.RouteID, IncidentID: request.IncidentID,
-		Kind: platform.OperationProbe, Name: "request_probe", Status: status,
-		IdempotencyKey: request.IdempotencyKey, Result: result,
-	}
-	p.operations[request.IdempotencyKey] = operation
-	return operation, nil
-}
-
-func (p *idempotentExecutionPlatform) RequestRecovery(_ context.Context, request platform.RecoveryRequest) (platform.Operation, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.recoveryCalls++
-	if existing, ok := p.operations[request.IdempotencyKey]; ok {
-		return existing, nil
-	}
-	outcome := p.recoveryOutcome
-	if outcome == "" {
-		outcome = "healthy"
-	}
-	status := platform.OperationSucceeded
-	result := map[string]any{"outcome": outcome, "route_id": request.RouteID}
-	if p.recoveryAsync {
-		status = platform.OperationPending
-		result["outcome"] = "pending"
-	}
-	operation := platform.Operation{
-		ID: "recovery-" + request.RouteID, IncidentID: request.IncidentID,
-		Kind: platform.OperationRecovery, Name: "request_recovery", Status: status,
-		IdempotencyKey: request.IdempotencyKey, Result: result,
-	}
-	p.operations[request.IdempotencyKey] = operation
 	return operation, nil
 }
 
@@ -141,24 +84,6 @@ func (p *idempotentExecutionPlatform) GetOperation(_ context.Context, query plat
 		if operation.ID == query.OperationID {
 			if operation.Kind == platform.OperationRemediation && p.async && !p.stayPending && operation.Status == platform.OperationPending {
 				operation.Status = platform.OperationSucceeded
-				p.operations[key] = operation
-			}
-			if operation.Kind == platform.OperationProbe && p.probeAsync && !p.probeStayPending && operation.Status == platform.OperationPending {
-				outcome := p.probeOutcome
-				if outcome == "" {
-					outcome = "healthy"
-				}
-				operation.Status = platform.OperationSucceeded
-				operation.Result = map[string]any{"outcome": outcome}
-				p.operations[key] = operation
-			}
-			if operation.Kind == platform.OperationRecovery && p.recoveryAsync && !p.recoveryStayPending && operation.Status == platform.OperationPending {
-				outcome := p.recoveryOutcome
-				if outcome == "" {
-					outcome = "healthy"
-				}
-				operation.Status = platform.OperationSucceeded
-				operation.Result["outcome"] = outcome
 				p.operations[key] = operation
 			}
 			return operation, nil
@@ -185,7 +110,7 @@ func TestActionExecutorRunsPlanActionsStrictlyInOrder(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, execution.StatusSucceeded, second.Status)
 	assert.Equal(t, 2, second.Sequence)
-	assert.Equal(t, workflow.StateProbing, instance.Snapshot().State)
+	assert.Equal(t, workflow.StateCheckpoint, instance.Snapshot().State)
 	assert.Equal(t, []string{"first_fix", "second_fix"}, service.executionTools)
 	assert.Equal(t, 2, service.sideEffects)
 }
@@ -208,7 +133,7 @@ func TestActionExecutorReconcilesPendingOperationWithoutResubmission(t *testing.
 	finished, err := processor.ExecuteNext(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, execution.StatusSucceeded, finished.Status)
-	assert.Equal(t, workflow.StateProbing, instance.Snapshot().State)
+	assert.Equal(t, workflow.StateCheckpoint, instance.Snapshot().State)
 	assert.Equal(t, 1, service.executeCalls)
 	assert.Equal(t, 1, service.sideEffects)
 }
@@ -234,7 +159,7 @@ func TestActionExecutorLeaseTakeoverRetriesRequestButSideEffectOccursOnce(t *tes
 	finished, err := processorB.ExecuteNext(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, execution.StatusSucceeded, finished.Status)
-	assert.Equal(t, workflow.StateProbing, instance.Snapshot().State)
+	assert.Equal(t, workflow.StateCheckpoint, instance.Snapshot().State)
 	assert.Equal(t, 2, service.executeCalls, "请求因不确定结果被重试")
 	assert.Equal(t, 1, service.sideEffects, "稳定幂等键保证副作用只发生一次")
 	assert.Equal(t, finished.ActionID+":execute", finished.IdempotencyKey)
@@ -251,7 +176,7 @@ func TestActionWorkerPollsOperationUntilSucceeded(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, worker.Run(context.Background()))
-	assert.Equal(t, workflow.StateProbing, instance.Snapshot().State)
+	assert.Equal(t, workflow.StateCheckpoint, instance.Snapshot().State)
 	assert.Equal(t, 1, service.executeCalls)
 	assert.Equal(t, 1, service.sideEffects)
 }
@@ -270,7 +195,7 @@ func TestActionWorkerFailsOperationAfterDeadline(t *testing.T) {
 
 	err = worker.Run(context.Background())
 	assert.ErrorIs(t, err, ErrOperationTimedOut)
-	assert.Equal(t, workflow.StateReinvestigating, instance.Snapshot().State)
+	assert.Equal(t, workflow.StateInvestigating, instance.Snapshot().State)
 	records, listErr := database.Executions().ListPlan(context.Background(), instance.Snapshot().Plan.ID)
 	require.NoError(t, listErr)
 	require.Len(t, records, 1)
@@ -297,7 +222,7 @@ func TestActionExecutorSubmissionTimeoutBecomesRetryableUnknown(t *testing.T) {
 	failures := instance.Snapshot().Failures
 	require.NotEmpty(t, failures)
 	latest := failures[len(failures)-1]
-	assert.Equal(t, workflow.FailureStageRemediation, latest.Stage)
+	assert.Equal(t, workflow.FailureStageActionExecution, latest.Stage)
 	assert.Equal(t, workflow.FailureCategoryResultUnknown, latest.Category)
 	assert.Equal(t, workflow.FailureNextReconcile, latest.NextAction)
 	assert.False(t, latest.Retryable)
@@ -308,7 +233,8 @@ func executionPlatform(tools ...string) *idempotentExecutionPlatform {
 	for index, tool := range tools {
 		capabilities[index] = platform.RemediationCapability{Name: tool, Risk: "low"}
 	}
-	return &idempotentExecutionPlatform{capabilities: capabilities, operations: make(map[string]platform.Operation)}
+	return &idempotentExecutionPlatform{capabilities: capabilities, operations: make(map[string]platform.Operation),
+		executionResults: make(map[string]map[string]any)}
 }
 
 func remediatingProcessor(t *testing.T, service *idempotentExecutionPlatform, workerID string, lease time.Duration, actions []workflow.PlannedAction) (*PlanProcessor, *workflow.IncidentWorkflow, *storage.Storage) {
@@ -320,7 +246,8 @@ func remediatingProcessor(t *testing.T, service *idempotentExecutionPlatform, wo
 	require.NoError(t, err)
 	_, err = instance.SubmitPlan(workflow.PlanDraft{
 		Summary: "execute fixes", RootCause: "confirmed failure", EvidenceRefs: []string{"trace:execution"},
-		Actions: actions, ProbeRouteID: "route-a", RecoveryPolicyID: "safe-recovery",
+		Stages: []workflow.PlanStageDraft{{StageID: "execute", Goal: "execute fixes", Actions: actions,
+			CheckpointPolicy: workflow.CheckpointPolicy{DefaultDecision: workflow.CheckpointSucceeded}}},
 	})
 	require.NoError(t, err)
 	database, err := storage.OpenSQLite(ctx, filepath.Join(t.TempDir(), "talon.db"))

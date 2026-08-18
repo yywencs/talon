@@ -7,6 +7,7 @@
 /evaluation-data/
 /docs/*
 !/docs/sql/
+!/docs/issues/
 
 .DS_Store
 *.swp
@@ -64,7 +65,8 @@ data/interim/
 data/repos/*
 !data/repos/go.mod
 data/results/
-docs/issues/
+docs/issues/*
+!docs/issues/*.md
 
 *.db
 *.sqlite

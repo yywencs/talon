@@ -14,18 +14,21 @@ const IncidentContextSchemaVersion = "talon.incident-context/v1"
 // IncidentContextSnapshot 表示每轮 Agent 运行前生成的、大小受限且模型可见的状态快照。
 // 同一份快照也会持久化到 RunArtifact，供运行回放和评测使用。
 type IncidentContextSnapshot struct {
-	SchemaVersion string                    `json:"schema_version"`
-	Digest        string                    `json:"digest"`
-	GeneratedAt   time.Time                 `json:"generated_at"`
-	IncidentID    string                    `json:"incident_id"`
-	Objective     string                    `json:"objective"`
-	Workflow      IncidentContextWorkflow   `json:"workflow"`
-	ActiveSkills  []IncidentContextSkill    `json:"active_skills"`
-	Budget        IncidentContextBudget     `json:"budget"`
-	Evidence      []IncidentContextEvidence `json:"evidence"`
-	Plans         []IncidentContextPlan     `json:"plans"`
-	LatestFailure *IncidentContextFailure   `json:"latest_failure,omitempty"`
-	Constraints   []string                  `json:"constraints"`
+	SchemaVersion    string                        `json:"schema_version"`
+	Digest           string                        `json:"digest"`
+	GeneratedAt      time.Time                     `json:"generated_at"`
+	VirtualTime      time.Time                     `json:"virtual_time,omitempty"`
+	IncidentID       string                        `json:"incident_id"`
+	Objective        string                        `json:"objective"`
+	Workflow         IncidentContextWorkflow       `json:"workflow"`
+	ActiveSkills     []IncidentContextSkill        `json:"active_skills"`
+	Budget           IncidentContextBudget         `json:"budget"`
+	Evidence         []IncidentContextEvidence     `json:"evidence"`
+	Plans            []IncidentContextPlan         `json:"plans"`
+	ActionResults    []IncidentContextActionResult `json:"action_results,omitempty"`
+	LatestCheckpoint *IncidentContextCheckpoint    `json:"latest_checkpoint,omitempty"`
+	LatestFailure    *IncidentContextFailure       `json:"latest_failure,omitempty"`
+	Constraints      []string                      `json:"constraints"`
 }
 
 // IncidentContextWorkflow 描述当前工作流状态，以及该状态下 Agent 可以请求的操作。
@@ -44,14 +47,16 @@ type IncidentContextSkill struct {
 
 // IncidentContextBudget 汇总当前 Agent 运行前的资源用量及本轮适用的限制。
 type IncidentContextBudget struct {
-	AgentRunSequence int        `json:"agent_run_sequence"`
-	AgentRunsUsed    int        `json:"agent_runs_used"`
-	ModelCallsUsed   int        `json:"model_calls_used"`
-	ToolCallsUsed    int        `json:"tool_calls_used"`
-	TotalTokensUsed  int        `json:"total_tokens_used"`
-	MaxStepsThisRun  int        `json:"max_steps_this_run"`
-	DeadlineAt       *time.Time `json:"deadline_at,omitempty"`
-	RemainingMillis  int64      `json:"remaining_ms,omitempty"`
+	AgentRunSequence    int        `json:"agent_run_sequence"`
+	AgentRunsUsed       int        `json:"agent_runs_used"`
+	ModelCallsUsed      int        `json:"model_calls_used"`
+	ToolCallsUsed       int        `json:"tool_calls_used"`
+	TotalTokensUsed     int        `json:"total_tokens_used"`
+	MaxStepsThisRun     int        `json:"max_steps_this_run"`
+	MaxModelCalls       int        `json:"max_model_calls,omitempty"`
+	ModelCallsRemaining int        `json:"model_calls_remaining,omitempty"`
+	DeadlineAt          *time.Time `json:"deadline_at,omitempty"`
+	RemainingMillis     int64      `json:"remaining_ms,omitempty"`
 }
 
 // IncidentContextEvidence 指向成功的只读工具调用所产生的证据。
@@ -72,6 +77,26 @@ type IncidentContextPlan struct {
 	EvidenceRefs []string `json:"evidence_refs"`
 	Actions      []string `json:"actions"`
 	Outcome      string   `json:"outcome"`
+}
+
+// IncidentContextActionResult 是模型可见的、大小受限的 Harness 工具观察。
+// Output 仍被明确标记为外部数据，不具备指令权限。
+type IncidentContextActionResult struct {
+	EvidenceRef     string         `json:"evidence_ref"`
+	StageID         string         `json:"stage_id"`
+	ActionID        string         `json:"action_id"`
+	OperationID     string         `json:"operation_id"`
+	OperationStatus string         `json:"operation_status"`
+	Output          map[string]any `json:"output"`
+	ObservedAt      time.Time      `json:"observed_at"`
+}
+
+type IncidentContextCheckpoint struct {
+	CheckpointID   string `json:"checkpoint_id"`
+	StageID        string `json:"stage_id"`
+	Decision       string `json:"decision"`
+	DecisionReason string `json:"decision_reason"`
+	NextStageID    string `json:"next_stage_id,omitempty"`
 }
 
 // IncidentContextFailure 保存经过规范化的失败信息，用于指导下一轮调查，
@@ -113,6 +138,14 @@ func SealIncidentContextSnapshot(value IncidentContextSnapshot) IncidentContextS
 	}
 	if value.Plans == nil {
 		value.Plans = []IncidentContextPlan{}
+	}
+	if value.ActionResults == nil {
+		value.ActionResults = []IncidentContextActionResult{}
+	}
+	for index := range value.ActionResults {
+		if value.ActionResults[index].Output == nil {
+			value.ActionResults[index].Output = map[string]any{}
+		}
 	}
 	for index := range value.Plans {
 		if value.Plans[index].EvidenceRefs == nil {

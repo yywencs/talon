@@ -32,9 +32,10 @@ type StopReason string
 
 const (
 	StopAwaitingApproval StopReason = "awaiting_approval"
-	StopCompensating     StopReason = "compensating"
 	StopResolved         StopReason = "resolved"
 	StopEscalated        StopReason = "escalated"
+	StopFailed           StopReason = "failed"
+	StopBlocked          StopReason = "blocked"
 )
 
 // IncidentControllerConfig 绑定同一个 Incident 的 Agent、Workflow 和确定性执行器。
@@ -53,16 +54,14 @@ type IncidentRunResult struct {
 	Snapshot workflow.Snapshot `json:"snapshot"`
 }
 
-// IncidentController 根据 Workflow 状态串联 Agent、Plan 校验、ActionWorker、流量探测和逐级恢复。
+// IncidentController 根据 Workflow 状态串联 Agent、Plan 校验、ActionWorker 和 Checkpoint。
 // 它不替代状态机，也不绕过各阶段既有的 Policy 与持久化边界。
 type IncidentController struct {
-	workflow          *workflow.IncidentWorkflow
-	investigator      Investigator
-	planProcessor     *PlanProcessor
-	actionWorker      *ActionWorker
-	probeProcessor    *ProbeProcessor
-	recoveryProcessor *RecoveryProcessor
-	maxAdvances       int
+	workflow      *workflow.IncidentWorkflow
+	investigator  Investigator
+	planProcessor *PlanProcessor
+	actionWorker  *ActionWorker
+	maxAdvances   int
 }
 
 // NewIncidentController 创建单 Incident 的顶层编排器。
@@ -85,14 +84,6 @@ func NewIncidentController(config IncidentControllerConfig) (*IncidentController
 	if err != nil {
 		return nil, fmt.Errorf("build action worker: %w", err)
 	}
-	probeProcessor, err := newProbeProcessor(config.PlanProcessor)
-	if err != nil {
-		return nil, fmt.Errorf("build probe processor: %w", err)
-	}
-	recoveryProcessor, err := newRecoveryProcessor(config.PlanProcessor)
-	if err != nil {
-		return nil, fmt.Errorf("build recovery processor: %w", err)
-	}
 	maxAdvances := config.MaxAdvances
 	if maxAdvances == 0 {
 		maxAdvances = defaultMaxControllerAdvances
@@ -103,7 +94,6 @@ func NewIncidentController(config IncidentControllerConfig) (*IncidentController
 	return &IncidentController{
 		workflow: config.Workflow, investigator: config.Investigator,
 		planProcessor: config.PlanProcessor, actionWorker: worker,
-		probeProcessor: probeProcessor, recoveryProcessor: recoveryProcessor,
 		maxAdvances: maxAdvances,
 	}, nil
 }
@@ -111,7 +101,7 @@ func NewIncidentController(config IncidentControllerConfig) (*IncidentController
 // Run 从当前 checkpoint 持续推进，直到完成、升级人工，或到达需要外部组件接管的阶段。
 func (c *IncidentController) Run(ctx context.Context) (IncidentRunResult, error) {
 	if c == nil || c.workflow == nil || c.investigator == nil || c.planProcessor == nil ||
-		c.actionWorker == nil || c.probeProcessor == nil || c.recoveryProcessor == nil {
+		c.actionWorker == nil {
 		return IncidentRunResult{}, fmt.Errorf("incident controller is not initialized")
 	}
 	for advances := 0; advances < c.maxAdvances; advances++ {
@@ -129,7 +119,7 @@ func (c *IncidentController) Run(ctx context.Context) (IncidentRunResult, error)
 				return c.result("", advances), fmt.Errorf("start incident investigation: %w", err)
 			}
 
-		case workflow.StateInvestigating, workflow.StateReinvestigating:
+		case workflow.StateInvestigating:
 			if err := c.investigator.Investigate(ctx, investigationInstruction(before)); err != nil {
 				return c.result("", advances), fmt.Errorf("run incident investigation: %w", err)
 			}
@@ -156,41 +146,50 @@ func (c *IncidentController) Run(ctx context.Context) (IncidentRunResult, error)
 			})
 			if err != nil {
 				after := c.workflow.Snapshot()
-				if after.State == workflow.StateReinvestigating || after.State == workflow.StateEscalated {
+				if after.State == workflow.StateInvestigating || after.State == workflow.StateEscalated ||
+					after.State == workflow.StateFailed || after.State == workflow.StateBlocked {
 					continue
 				}
 				return c.result("", advances), fmt.Errorf("run plan actions: %w", err)
 			}
 
 		case workflow.StateAwaitingApproval:
+			if err := c.planProcessor.persistCheckpoint(ctx); err != nil {
+				return c.result("", advances), fmt.Errorf("persist awaiting approval checkpoint: %w", err)
+			}
 			return c.result(StopAwaitingApproval, advances), nil
-		case workflow.StateProbing:
-			if _, err := observability.RunCallback(ctx, "toolops.probe.run", before, c.probeProcessor.Run); err != nil {
-				after := c.workflow.Snapshot()
-				if after.State == workflow.StateReinvestigating || after.State == workflow.StateEscalated {
-					continue
-				}
-				return c.result("", advances), fmt.Errorf("run traffic probe: %w", err)
-			}
-		case workflow.StateRecovering:
-			if _, err := observability.RunCallback(ctx, "toolops.recovery.run", before, c.recoveryProcessor.Run); err != nil {
-				after := c.workflow.Snapshot()
-				if after.State == workflow.StateReinvestigating || after.State == workflow.StateEscalated {
-					continue
-				}
-				return c.result("", advances), fmt.Errorf("run gradual recovery: %w", err)
-			}
-		case workflow.StateCompensating:
-			return c.result(StopCompensating, advances), nil
 		case workflow.StateResolved:
+			if err := c.planProcessor.persistCheckpoint(ctx); err != nil {
+				return c.result("", advances), fmt.Errorf("persist resolved checkpoint: %w", err)
+			}
 			return c.result(StopResolved, advances), nil
 		case workflow.StateEscalated:
+			if err := c.planProcessor.persistCheckpoint(ctx); err != nil {
+				return c.result("", advances), fmt.Errorf("persist escalated checkpoint: %w", err)
+			}
 			return c.result(StopEscalated, advances), nil
+		case workflow.StateCheckpoint:
+			if _, err := c.workflow.EvaluateCheckpoint(); err != nil {
+				return c.result("", advances), fmt.Errorf("evaluate decision checkpoint: %w", err)
+			}
+		case workflow.StateFailed:
+			if err := c.planProcessor.persistCheckpoint(ctx); err != nil {
+				return c.result("", advances), fmt.Errorf("persist failed checkpoint: %w", err)
+			}
+			return c.result(StopFailed, advances), nil
+		case workflow.StateBlocked:
+			if err := c.planProcessor.persistCheckpoint(ctx); err != nil {
+				return c.result("", advances), fmt.Errorf("persist blocked checkpoint: %w", err)
+			}
+			return c.result(StopBlocked, advances), nil
 		default:
 			return c.result("", advances), fmt.Errorf("unsupported workflow state %q", before.State)
 		}
 
 		after := c.workflow.Snapshot()
+		if err := c.planProcessor.persistCheckpoint(ctx); err != nil {
+			return c.result("", advances+1), fmt.Errorf("persist workflow checkpoint: %w", err)
+		}
 		if after.Version == before.Version && after.State == before.State {
 			return c.result("", advances+1), fmt.Errorf("%w in state %q", ErrControllerNoProgress, before.State)
 		}
@@ -203,7 +202,8 @@ func (c *IncidentController) result(reason StopReason, advances int) IncidentRun
 }
 
 func allPlanDryRunsSucceeded(snapshot workflow.Snapshot) bool {
-	if snapshot.Plan == nil || len(snapshot.PlanDryRuns) != len(snapshot.Plan.Actions) {
+	actions := workflow.ExecutableActions(snapshot)
+	if snapshot.Plan == nil || len(actions) == 0 || len(snapshot.PlanDryRuns) != len(actions) {
 		return false
 	}
 	for _, result := range snapshot.PlanDryRuns {
@@ -215,12 +215,21 @@ func allPlanDryRunsSucceeded(snapshot workflow.Snapshot) bool {
 }
 
 func investigationInstruction(snapshot workflow.Snapshot) string {
-	if snapshot.State != workflow.StateReinvestigating {
+	if len(snapshot.Checkpoints) == 0 || snapshot.Checkpoints[len(snapshot.Checkpoints)-1].Decision != workflow.CheckpointNeedsAgent {
 		return "调查当前 Incident，收集足够证据后提交安全的结构化 Plan；无法安全处理时升级人工。"
 	}
-	reason := "上一阶段执行失败"
-	metadata := map[string]string(nil)
-	if len(snapshot.Failures) > 0 {
+	checkpoint := snapshot.Checkpoints[len(snapshot.Checkpoints)-1]
+	planID := ""
+	if snapshot.Plan != nil {
+		planID = snapshot.Plan.ID
+	}
+	reason := strings.TrimSpace(checkpoint.DecisionReason)
+	metadata := map[string]string{
+		"stage": checkpoint.StageID, "code": string(checkpoint.Decision), "plan_id": planID,
+		"evidence_refs": strings.Join(checkpoint.NewEvidenceRefs, ","),
+	}
+	failed := checkpoint.Trigger == "stage_failed" || checkpoint.Trigger == "dry_run" || checkpoint.Trigger == "argument_resolution"
+	if failed && len(snapshot.Failures) > 0 {
 		failure := snapshot.Failures[len(snapshot.Failures)-1]
 		if strings.TrimSpace(failure.SafeSummary) != "" {
 			reason = strings.TrimSpace(failure.SafeSummary)
@@ -231,12 +240,15 @@ func investigationInstruction(snapshot workflow.Snapshot) string {
 			"action_id": failure.ActionID, "plan_id": failure.PlanID,
 		}
 	}
-	contextText := reinvestigationContext(metadata)
-	return fmt.Sprintf("重新调查当前 Incident。上一阶段失败原因：%s。%s获取新证据并修订根因假设，不要无新证据重复相同修复；随后提交新 Plan 或升级人工。", reason, contextText)
+	contextText := agentResumeContext(metadata)
+	if failed {
+		return fmt.Sprintf("继续处理当前 Incident。上一执行阶段未成功：%s。%s基于当前证据决定下一步；不要无新证据重复相同动作，随后提交新的短 Stage Plan 或升级人工。", reason, contextText)
+	}
+	return fmt.Sprintf("继续处理当前 Incident。上一 Stage 已完成，Checkpoint 需要 Agent 结合新观察做语义判断：%s。%s基于当前证据提交新的短 Stage Plan、确认完成，或升级人工。", reason, contextText)
 }
 
-func reinvestigationContext(metadata map[string]string) string {
-	keys := []string{"stage", "category", "code", "next_action", "operation_id", "action_id", "plan_id"}
+func agentResumeContext(metadata map[string]string) string {
+	keys := []string{"stage", "category", "code", "next_action", "operation_id", "action_id", "plan_id", "evidence_refs"}
 	values := make([]string, 0, len(keys))
 	for _, key := range keys {
 		if value := strings.TrimSpace(metadata[key]); value != "" {

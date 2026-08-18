@@ -17,7 +17,7 @@ func (s *Simulator) QueryMetrics(ctx context.Context, query platform.MetricQuery
 	if !snapshotMatchesIncident(snapshot, query.Scope) {
 		return platform.MetricResult{Complete: true}, nil
 	}
-	if err := validateTimeRange(query.Range); err != nil {
+	if err := validateVisibleTimeRange(query.Range, snapshot.Now); err != nil {
 		return platform.MetricResult{}, err
 	}
 	names := make(map[platform.MetricName]struct{}, len(query.Names))
@@ -44,10 +44,10 @@ func (s *Simulator) QueryLogs(ctx context.Context, query platform.LogQuery) ([]p
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
-	if err := validateTimeRange(query.Range); err != nil {
+	snapshot := s.Snapshot()
+	if err := validateVisibleTimeRange(query.Range, snapshot.Now); err != nil {
 		return nil, err
 	}
-	snapshot := s.Snapshot()
 	if !snapshotMatchesIncident(snapshot, query.Scope) {
 		return nil, nil
 	}
@@ -68,10 +68,10 @@ func (s *Simulator) QueryTraces(ctx context.Context, query platform.TraceQuery) 
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
-	if err := validateTimeRange(query.Range); err != nil {
+	snapshot := s.Snapshot()
+	if err := validateVisibleTimeRange(query.Range, snapshot.Now); err != nil {
 		return nil, err
 	}
-	snapshot := s.Snapshot()
 	if !snapshotMatchesIncident(snapshot, query.Scope) {
 		return nil, nil
 	}
@@ -171,10 +171,10 @@ func (s *Simulator) GetChangeRecords(ctx context.Context, query platform.ChangeQ
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
-	if err := validateTimeRange(query.Range); err != nil {
+	snapshot := s.Snapshot()
+	if err := validateVisibleTimeRange(query.Range, snapshot.Now); err != nil {
 		return nil, err
 	}
-	snapshot := s.Snapshot()
 	if !snapshotMatchesIncident(snapshot, query.Scope) {
 		return nil, nil
 	}
@@ -322,6 +322,16 @@ func validateTimeRange(value platform.TimeRange) error {
 	}
 	if value.From.After(value.To) {
 		return fmt.Errorf("time range from must not be after to")
+	}
+	return nil
+}
+
+func validateVisibleTimeRange(value platform.TimeRange, virtualTime time.Time) error {
+	if err := validateTimeRange(value); err != nil {
+		return err
+	}
+	if !value.From.IsZero() && !virtualTime.IsZero() && value.From.After(virtualTime) {
+		return fmt.Errorf("time range from %s is after current Incident virtual time %s; retry with from at or before virtual time, or omit from", value.From.Format(time.RFC3339), virtualTime.Format(time.RFC3339))
 	}
 	return nil
 }

@@ -78,13 +78,18 @@ func runPreflight(ctx context.Context, store runartifact.Store, opts options) er
 	if _, err := scenario.LoadDataset(filepath.Join(opts.dataRoot, opts.datasetVersion)); err != nil {
 		return fmt.Errorf("validate evaluation dataset: %w", err)
 	}
-	artifacts, err := store.List(ctx, runartifact.VersionFilter{
-		SchemaVersion:  runartifact.SchemaVersion,
-		CodeVersion:    opts.codeVersion,
-		DatasetVersion: opts.datasetVersion,
-	})
-	if err != nil {
-		return fmt.Errorf("check existing run artifacts: %w", err)
+	artifacts := make([]runartifact.RunArtifact, 0)
+	for _, outcome := range []string{"running", "completed", "failed"} {
+		selected, err := store.List(ctx, runartifact.VersionFilter{
+			SchemaVersion:  runartifact.SchemaVersion,
+			CodeVersion:    opts.codeVersion,
+			DatasetVersion: opts.datasetVersion,
+			Outcome:        outcome,
+		})
+		if err != nil {
+			return fmt.Errorf("check existing %s run artifacts: %w", outcome, err)
+		}
+		artifacts = append(artifacts, selected...)
 	}
 	if len(artifacts) != 0 {
 		return fmt.Errorf(

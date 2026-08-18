@@ -16,14 +16,16 @@ const (
 	EventApprovalRequired EventType = "approval_required"
 	// EventPlanApproved 表示 Plan 已通过自动 Policy 或人工审批。
 	EventPlanApproved EventType = "plan_approved"
-	// EventPlanRejected 表示 Plan 被 Policy 或人工拒绝，需要重新调查。
+	// EventPlanRejected 表示 Plan 被 Policy 或人工拒绝，需要 Agent 基于当前证据重新决策。
 	EventPlanRejected EventType = "plan_rejected"
-	// EventStageSucceeded 表示当前修复、探测、恢复或补偿阶段已成功完成。
-	EventStageSucceeded EventType = "stage_succeeded"
-	// EventStageFailed 表示当前阶段失败或被停止，失败原因记录在 Reason/Metadata 中。
-	EventStageFailed EventType = "stage_failed"
-	// EventCompensationRequired 表示当前状态不能直接重试，必须先执行补偿动作。
-	EventCompensationRequired EventType = "compensation_required"
+	// EventStageCheckpoint 表示动态 Stage 已执行完成，必须先做确定性决策。
+	EventStageCheckpoint      EventType = "stage_checkpoint"
+	EventCheckpointContinue   EventType = "checkpoint_continue"
+	EventCheckpointNeedsAgent EventType = "checkpoint_needs_agent"
+	EventCheckpointSucceeded  EventType = "checkpoint_succeeded"
+	EventCheckpointFailed     EventType = "checkpoint_failed"
+	EventCheckpointEscalated  EventType = "checkpoint_escalated"
+	EventCheckpointBlocked    EventType = "checkpoint_blocked"
 	// EventEscalated 表示事件停止自治并交由人工处理。
 	EventEscalated EventType = "escalated"
 	// EventHumanResumed 表示人工明确授权 Workflow 恢复调查。
