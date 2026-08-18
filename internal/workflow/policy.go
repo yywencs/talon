@@ -15,6 +15,9 @@ type AgentAction string
 const (
 	// AgentActionRead 代表当前状态允许的只读证据、状态或审计查询。
 	AgentActionRead AgentAction = "read"
+	// AgentActionRecallEvidence 代表按引用回看当前 Incident 已保存的历史证据。
+	// 回看不会产生新证据，也不能扩大 Agent 的 Incident 数据边界。
+	AgentActionRecallEvidence AgentAction = "recall_evidence"
 	// AgentActionSubmitPlan 代表 Agent 提交结构化 Plan，不代表直接执行修复。
 	AgentActionSubmitPlan AgentAction = "submit_plan"
 	// AgentActionQueryOperation 代表查询当前修复、探测或恢复 Operation 的状态。
@@ -42,10 +45,12 @@ var stateAgentActions = map[State]agentActionSet{
 	StateInvestigating: investigationActions(),
 	StatePlanned: agentActions(
 		AgentActionRead,
+		AgentActionRecallEvidence,
 		AgentActionEscalate,
 	),
 	StateAwaitingApproval: agentActions(
 		AgentActionRead,
+		AgentActionRecallEvidence,
 		AgentActionEscalate,
 	),
 	StateRemediating: agentActions(
@@ -54,11 +59,13 @@ var stateAgentActions = map[State]agentActionSet{
 	),
 	StateProbing: agentActions(
 		AgentActionRead,
+		AgentActionRecallEvidence,
 		AgentActionQueryOperation,
 		AgentActionEscalate,
 	),
 	StateRecovering: agentActions(
 		AgentActionRead,
+		AgentActionRecallEvidence,
 		AgentActionQueryOperation,
 		AgentActionEscalate,
 	),
@@ -69,15 +76,18 @@ var stateAgentActions = map[State]agentActionSet{
 	),
 	StateResolved: agentActions(
 		AgentActionRead,
+		AgentActionRecallEvidence,
 	),
 	StateEscalated: agentActions(
 		AgentActionRead,
+		AgentActionRecallEvidence,
 	),
 }
 
 func investigationActions() agentActionSet {
 	return agentActions(
 		AgentActionRead,
+		AgentActionRecallEvidence,
 		AgentActionManageSkill,
 		AgentActionQueryOperation,
 		AgentActionSubmitPlan,

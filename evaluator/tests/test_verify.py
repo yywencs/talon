@@ -40,15 +40,45 @@ class VerifyExportTests(unittest.TestCase):
                     1,
                 )
 
+    def test_rejects_inconsistent_stage_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self._write_export(directory, ["scenario-a"], repeat=1)
+            path = directory / "run-1.json"
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["artifact"]["stage_failures"] = [
+                {
+                    "stage": "probe",
+                    "category": "platform_unavailable",
+                    "code": "probe_query_failed",
+                    "safe_summary": "暂时无法查询探测 Operation",
+                    "next_action": "retry",
+                    "retryable": False,
+                }
+            ]
+            self._write_json(path, payload)
+
+            with self.assertRaisesRegex(VerificationError, "retry semantics"):
+                verify_export(
+                    directory,
+                    "talon-toolops-agent/eval-test",
+                    "toolops-v1",
+                    ["scenario-a"],
+                    1,
+                )
+
     def _write_export(self, directory, scenarios, repeat, capabilities=None):
         """生成只包含门禁所需字段的临时版本化导出目录。"""
 
         if capabilities is None:
             capabilities = [
                 "canonical_evidence_ids",
+                "evidence_lookup",
                 "incident_context_snapshot",
+                "per_model_context_snapshot",
                 "structured_escalation_handoff",
                 "structured_experience",
+                "structured_stage_failures",
             ]
         runs = []
         index = 0
@@ -82,6 +112,7 @@ class VerifyExportTests(unittest.TestCase):
                                 "prompt_digest": "abc123",
                             },
                             "run_config": {"context_version": "talon.incident-context/v1"},
+                            "stage_failures": [],
                             "agent_runs": [
                                 {
                                     "context_snapshot": {
@@ -89,7 +120,17 @@ class VerifyExportTests(unittest.TestCase):
                                         "digest": "sha256:" + "a" * 64,
                                         "incident_id": scenario_id,
                                         "objective": "investigate incident",
-                                    }
+                                    },
+                                    "model_calls": [
+                                        {
+                                            "context_snapshot": {
+                                                "schema_version": "talon.incident-context/v1",
+                                                "digest": "sha256:" + "b" * 64,
+                                                "incident_id": scenario_id,
+                                                "objective": "investigate incident",
+                                            }
+                                        }
+                                    ],
                                 }
                             ],
                         },

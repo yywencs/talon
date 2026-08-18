@@ -140,6 +140,7 @@ func TestIncidentWorkflowAllowedAgentActionsAreStable(t *testing.T) {
 		AgentActionManageSkill,
 		AgentActionQueryOperation,
 		AgentActionRead,
+		AgentActionRecallEvidence,
 		AgentActionSubmitPlan,
 	}, workflow.AllowedAgentActions())
 }
@@ -247,6 +248,65 @@ func TestIncidentWorkflowSnapshotDoesNotShareMetadata(t *testing.T) {
 	assert.Equal(t, "error_rate", first.History[0].Metadata["trigger"])
 	first.History[0].Metadata["trigger"] = "mutated snapshot"
 	assert.Equal(t, "error_rate", workflow.Snapshot().History[0].Metadata["trigger"])
+}
+
+func TestIncidentWorkflowRecordsStructuredFailureWithTransition(t *testing.T) {
+	instance := workflowAtRemediating(t)
+	failure := StageFailure{
+		Stage: FailureStageRemediation, Category: FailureCategoryExecutionFailed,
+		Code: "remediation_operation_failed", SafeSummary: "修复 Operation 执行失败",
+		Message: "raw platform detail", NextAction: FailureNextReinvestigate,
+		PlanID: "plan-1", ActionID: "action-1", OperationID: "operation-1",
+	}
+	transition, err := instance.Apply(Event{
+		Type: EventStageFailed, Actor: ActorWorkflow, Reason: failure.Message, Failure: &failure,
+	})
+	require.NoError(t, err)
+
+	snapshot := instance.Snapshot()
+	require.Len(t, snapshot.Failures, 1)
+	require.NotNil(t, transition.Failure)
+	assert.Equal(t, snapshot.Version, snapshot.Failures[0].WorkflowVersion)
+	assert.Equal(t, FailureCategoryExecutionFailed, snapshot.Failures[0].Category)
+	assert.Equal(t, "remediation_operation_failed", transition.Failure.Code)
+}
+
+func TestIncidentWorkflowFallsBackForUnstructuredStageFailure(t *testing.T) {
+	instance := workflowAtRemediating(t)
+	_, err := instance.Apply(Event{
+		Type: EventStageFailed, Actor: ActorWorkflow, Reason: "new error type",
+		Metadata: map[string]string{"operation_id": "operation-new"},
+	})
+	require.NoError(t, err)
+
+	failures := instance.Snapshot().Failures
+	require.Len(t, failures, 1)
+	assert.Equal(t, FailureCategoryUnclassified, failures[0].Category)
+	assert.Equal(t, "unclassified_error", failures[0].Code)
+	assert.Equal(t, FailureNextReinvestigate, failures[0].NextAction)
+	assert.True(t, failures[0].Fallback)
+}
+
+func TestIncidentWorkflowRejectsInvalidRetrySemantics(t *testing.T) {
+	instance := newTestWorkflow(t, nil)
+	_, err := instance.RecordFailure(StageFailure{
+		Stage: FailureStageProbe, Category: FailureCategoryPlatformUnavailable,
+		Code: "probe_query_failed", SafeSummary: "暂时无法查询探测 Operation",
+		NextAction: FailureNextRetry, Retryable: false,
+	})
+	require.ErrorContains(t, err, "retry next action requires retryable failure")
+	assert.Empty(t, instance.Snapshot().Failures)
+}
+
+func TestIncidentWorkflowRejectsFailureFromWrongStage(t *testing.T) {
+	instance := workflowAtRemediating(t)
+	_, err := instance.RecordFailure(StageFailure{
+		Stage: FailureStageProbe, Category: FailureCategoryPlatformUnavailable,
+		Code: "probe_query_failed", SafeSummary: "暂时无法查询探测 Operation",
+		NextAction: FailureNextRetry, Retryable: true,
+	})
+	require.ErrorContains(t, err, "does not match workflow state")
+	assert.Empty(t, instance.Snapshot().Failures)
 }
 
 func TestEveryWorkflowStateHasAgentActionPolicy(t *testing.T) {

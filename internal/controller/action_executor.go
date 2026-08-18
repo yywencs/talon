@@ -93,27 +93,39 @@ func (p *PlanProcessor) ExecuteNext(ctx context.Context) (execution.Record, erro
 			if validateErr := validatePlatformOperation(operation, snapshot.IncidentID, *action, claimed.IdempotencyKey); validateErr != nil {
 				unknown, storeErr := p.executionStore.MarkUnknown(persistCtx, claimed.ActionID, p.workerID,
 					operation.ID, string(operation.Status), validateErr.Error(), p.pollSchedule(claimed))
+				failure := unknownResultFailure(workflow.FailureStageRemediation, "remediation_operation_mismatch",
+					"修复平台返回的 Operation 与冻结 Action 不匹配，需要先对账", snapshot.Plan.ID, claimed.ActionID,
+					operation, errors.Join(callErr, validateErr))
+				recordErr := p.recordFailure(failure)
 				if storeErr != nil {
-					return claimed, errors.Join(callErr, validateErr, storeErr)
+					return claimed, errors.Join(callErr, validateErr, storeErr, recordErr)
 				}
-				return unknown, errors.Join(ErrActionExecutionUnknown, callErr, validateErr)
+				return unknown, errors.Join(ErrActionExecutionUnknown, callErr, validateErr, recordErr)
 			}
 			return p.finishAction(persistCtx, snapshot, claimed, operation, callErr)
 		}
 		unknown, storeErr := p.executionStore.MarkUnknown(persistCtx, claimed.ActionID, p.workerID,
 			operation.ID, string(operation.Status), callErr.Error(), p.pollSchedule(claimed))
+		failure := unknownResultFailure(workflow.FailureStageRemediation, "remediation_result_unknown",
+			"修复调用结果未知，需要查询原 Operation 后再决定后续动作", snapshot.Plan.ID, claimed.ActionID,
+			operation, callErr)
+		recordErr := p.recordFailure(failure)
 		if storeErr != nil {
-			return claimed, errors.Join(callErr, fmt.Errorf("persist unknown action result: %w", storeErr))
+			return claimed, errors.Join(callErr, fmt.Errorf("persist unknown action result: %w", storeErr), recordErr)
 		}
-		return unknown, errors.Join(ErrActionExecutionUnknown, callErr)
+		return unknown, errors.Join(ErrActionExecutionUnknown, callErr, recordErr)
 	}
 	if err := validatePlatformOperation(operation, snapshot.IncidentID, *action, claimed.IdempotencyKey); err != nil {
 		unknown, storeErr := p.executionStore.MarkUnknown(persistCtx, claimed.ActionID, p.workerID,
 			operation.ID, string(operation.Status), err.Error(), p.pollSchedule(claimed))
+		failure := unknownResultFailure(workflow.FailureStageRemediation, "remediation_operation_mismatch",
+			"修复平台返回的 Operation 与冻结 Action 不匹配，需要先对账", snapshot.Plan.ID, claimed.ActionID,
+			operation, err)
+		recordErr := p.recordFailure(failure)
 		if storeErr != nil {
-			return claimed, errors.Join(err, storeErr)
+			return claimed, errors.Join(err, storeErr, recordErr)
 		}
-		return unknown, errors.Join(ErrActionExecutionUnknown, err)
+		return unknown, errors.Join(ErrActionExecutionUnknown, err, recordErr)
 	}
 
 	// 平台非终态只记录 Operation，终态则完成当前 Action 并汇总整个执行阶段。
@@ -130,10 +142,14 @@ func (p *PlanProcessor) ExecuteNext(ctx context.Context) (execution.Record, erro
 	default:
 		unknown, err := p.executionStore.MarkUnknown(persistCtx, claimed.ActionID, p.workerID,
 			operation.ID, string(operation.Status), "platform returned unknown operation status", p.pollSchedule(claimed))
+		failure := unknownResultFailure(workflow.FailureStageRemediation, "unknown_remediation_status",
+			"修复平台返回了无法识别的 Operation 状态，需要先对账", snapshot.Plan.ID, claimed.ActionID,
+			operation, errors.New("platform returned unknown operation status"))
+		recordErr := p.recordFailure(failure)
 		if err != nil {
-			return claimed, err
+			return claimed, errors.Join(err, recordErr)
 		}
-		return unknown, ErrActionExecutionUnknown
+		return unknown, errors.Join(ErrActionExecutionUnknown, recordErr)
 	}
 }
 
@@ -284,10 +300,15 @@ func (p *PlanProcessor) reconcileExecutionStage(snapshot workflow.Snapshot, reco
 			if p.workflow.Snapshot().State != workflow.StateRemediating {
 				return true, nil
 			}
+			failure := remediationFailure(record)
 			_, err := p.workflow.Apply(workflow.Event{
 				Type: workflow.EventStageFailed, Actor: workflow.ActorWorkflow,
-				Reason:   record.LastError,
-				Metadata: map[string]string{"plan_id": record.PlanID, "action_id": record.ActionID, "operation_id": record.OperationID},
+				Reason: record.LastError,
+				Metadata: map[string]string{
+					"plan_id": record.PlanID, "action_id": record.ActionID, "operation_id": record.OperationID,
+					"operation_status": record.OperationStatus,
+				},
+				Failure: &failure,
 			})
 			return true, err
 		}
@@ -307,6 +328,45 @@ func (p *PlanProcessor) reconcileExecutionStage(snapshot workflow.Snapshot, reco
 		Metadata: map[string]string{"plan_id": snapshot.Plan.ID},
 	})
 	return true, err
+}
+
+func (p *PlanProcessor) recordFailure(failure workflow.StageFailure) error {
+	_, err := p.workflow.RecordFailure(failure)
+	return err
+}
+
+func remediationFailure(record execution.Record) workflow.StageFailure {
+	value := workflow.StageFailure{
+		Stage: workflow.FailureStageRemediation, Message: record.LastError,
+		PlanID: record.PlanID, ActionID: record.ActionID, OperationID: record.OperationID,
+		OperationStatus: record.OperationStatus, NextAction: workflow.FailureNextReinvestigate,
+	}
+	switch platform.OperationStatus(record.OperationStatus) {
+	case platform.OperationFailed:
+		value.Category = workflow.FailureCategoryExecutionFailed
+		value.Code = "remediation_operation_failed"
+		value.SafeSummary = "修复 Operation 执行失败"
+	case platform.OperationRejected:
+		value.Category = workflow.FailureCategoryPreconditionChanged
+		value.Code = "remediation_operation_rejected"
+		value.SafeSummary = "修复 Operation 被平台拒绝，需要重新调查当前状态"
+	case platform.OperationCancelled:
+		value.Category = workflow.FailureCategoryResultUnknown
+		value.Code = "remediation_operation_cancelled"
+		value.SafeSummary = "修复 Operation 被取消，需要确认当前资源状态"
+	default:
+		if record.OperationStatus == "timed_out" {
+			value.Category = workflow.FailureCategoryTimedOut
+			value.Code = "remediation_operation_timed_out"
+			value.SafeSummary = "修复 Operation 超过执行时限"
+		} else {
+			value.Category = workflow.FailureCategoryUnclassified
+			value.Code = "unclassified_remediation_error"
+			value.SafeSummary = "修复阶段发生了未分类错误"
+			value.Fallback = true
+		}
+	}
+	return value
 }
 
 // validateExecutablePlan 确认每个冻结 Action 都有匹配的成功 Dry Run、可执行 Policy 和必要的持久化审批。

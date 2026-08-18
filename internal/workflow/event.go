@@ -30,11 +30,12 @@ const (
 	EventHumanResumed EventType = "human_resumed"
 )
 
-// Event 是提交给状态机的不可变事实。Reason 和 Metadata 用于审计，
-// 不能改变转换规则或扩大 Actor 权限。
+// Event 是提交给状态机的不可变事实。Reason 和 Metadata 只用于审计；
+// Failure 保存确定性失败语义，三者都不能扩大 Actor 权限。
 type Event struct {
 	Type     EventType         `json:"type"`
 	Actor    Actor             `json:"actor"`
 	Reason   string            `json:"reason,omitempty"`
 	Metadata map[string]string `json:"metadata,omitempty"`
+	Failure  *StageFailure     `json:"failure,omitempty"`
 }

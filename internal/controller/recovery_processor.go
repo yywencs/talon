@@ -64,13 +64,24 @@ func (p *RecoveryProcessor) Run(ctx context.Context) (platform.Operation, error)
 	operation, callErr := p.platform.RequestRecovery(callCtx, request)
 	cancel()
 	if validateErr := validateRecoveryOperation(operation, request); validateErr != nil {
-		if callErr != nil {
-			return operation, errors.Join(callErr, validateErr)
+		if callErr != nil && strings.TrimSpace(operation.ID) == "" {
+			failure := classifyControllerError(workflow.FailureStageRecovery, "recovery_submit_failed",
+				"恢复请求未返回可对账的 Operation", snapshot.Plan.ID, "", operation, callErr)
+			return operation, errors.Join(callErr, validateErr, p.recordFailure(failure))
 		}
-		return operation, validateErr
+		failure := invalidResponseFailure(workflow.FailureStageRecovery, "invalid_recovery_operation",
+			"恢复平台返回了与冻结请求不匹配的 Operation", snapshot.Plan.ID, "", operation)
+		failure.Message = errors.Join(callErr, validateErr).Error()
+		recordErr := p.recordFailure(failure)
+		if callErr != nil {
+			return operation, errors.Join(callErr, validateErr, recordErr)
+		}
+		return operation, errors.Join(validateErr, recordErr)
 	}
 	if callErr != nil && !isTerminalOperation(operation.Status) {
-		return operation, callErr
+		failure := classifyControllerError(workflow.FailureStageRecovery, "recovery_submit_failed",
+			"恢复请求暂时未获得确定结果", snapshot.Plan.ID, "", operation, callErr)
+		return operation, errors.Join(callErr, p.recordFailure(failure))
 	}
 
 	deadline := time.Now().Add(p.operationTimeout)
@@ -84,15 +95,23 @@ func (p *RecoveryProcessor) Run(ctx context.Context) (platform.Operation, error)
 			return operation, err
 		}
 		if !time.Now().Before(deadline) {
-			return operation, p.fail(snapshot, request, operation,
-				"recovery operation exceeded its execution deadline", ErrRecoveryTimedOut)
+			reason := "recovery operation exceeded its execution deadline"
+			failure := workflow.StageFailure{
+				Stage: workflow.FailureStageRecovery, Category: workflow.FailureCategoryTimedOut,
+				Code: "recovery_operation_timed_out", SafeSummary: "逐级恢复 Operation 超过执行时限",
+				Message: reason, NextAction: workflow.FailureNextReinvestigate,
+				PlanID: snapshot.Plan.ID, OperationID: operation.ID, OperationStatus: string(operation.Status),
+			}
+			return operation, p.fail(snapshot, request, operation, reason, failure, ErrRecoveryTimedOut)
 		}
 		wait := pollInterval
 		if remaining := time.Until(deadline); wait > remaining {
 			wait = remaining
 		}
 		if err := waitContext(ctx, wait); err != nil {
-			return operation, err
+			failure := unknownResultFailure(workflow.FailureStageRecovery, "recovery_interrupted",
+				"恢复等待被中断，需要先确认原 Operation 状态", snapshot.Plan.ID, "", operation, err)
+			return operation, errors.Join(err, p.recordFailure(failure))
 		}
 		queryCtx, cancelQuery := context.WithTimeout(ctx, p.submitTimeout)
 		operation, err = p.platform.GetOperation(queryCtx, platform.OperationQuery{
@@ -100,10 +119,16 @@ func (p *RecoveryProcessor) Run(ctx context.Context) (platform.Operation, error)
 		})
 		cancelQuery()
 		if err != nil {
-			return operation, fmt.Errorf("query recovery operation: %w", err)
+			wrapped := fmt.Errorf("query recovery operation: %w", err)
+			failure := classifyControllerError(workflow.FailureStageRecovery, "recovery_query_failed",
+				"暂时无法查询恢复 Operation", snapshot.Plan.ID, "", operation, wrapped)
+			return operation, errors.Join(wrapped, p.recordFailure(failure))
 		}
 		if err := validateRecoveryOperation(operation, request); err != nil {
-			return operation, err
+			failure := invalidResponseFailure(workflow.FailureStageRecovery, "invalid_recovery_operation",
+				"恢复平台返回了与冻结请求不匹配的 Operation", snapshot.Plan.ID, "", operation)
+			failure.Message = err.Error()
+			return operation, errors.Join(err, p.recordFailure(failure))
 		}
 		if pollInterval < p.pollMaximum {
 			pollInterval *= 2
@@ -130,27 +155,67 @@ func (p *RecoveryProcessor) reconcile(snapshot workflow.Snapshot, request platfo
 			return true, err
 		case "hard_stop":
 			reason := recoveryFailureReason(operation, "recovery reached a hard-stop condition")
-			return true, p.fail(snapshot, request, operation, reason, ErrRecoveryFailed)
+			failure := workflow.StageFailure{
+				Stage: workflow.FailureStageRecovery, Category: workflow.FailureCategoryHealthGateFailed,
+				Code: "recovery_health_gate_failed", SafeSummary: "逐级恢复触发健康门禁，已停止继续放量",
+				Message: reason, NextAction: workflow.FailureNextReinvestigate,
+				PlanID: snapshot.Plan.ID, OperationID: operation.ID, OperationStatus: string(operation.Status),
+			}
+			return true, p.fail(snapshot, request, operation, reason, failure, ErrRecoveryFailed)
 		default:
-			return false, fmt.Errorf("succeeded recovery operation has invalid outcome %q", outcome)
+			err := fmt.Errorf("succeeded recovery operation has invalid outcome %q", outcome)
+			failure := invalidResponseFailure(workflow.FailureStageRecovery, "invalid_recovery_outcome",
+				"恢复平台返回了无法识别的成功结果", snapshot.Plan.ID, "", operation)
+			failure.Message = err.Error()
+			return false, errors.Join(err, p.recordFailure(failure))
 		}
-	case platform.OperationFailed, platform.OperationRejected, platform.OperationCancelled:
+	case platform.OperationFailed:
 		reason := recoveryFailureReason(operation, "traffic recovery operation did not succeed")
-		return true, p.fail(snapshot, request, operation, reason, ErrRecoveryFailed)
+		failure := workflow.StageFailure{
+			Stage: workflow.FailureStageRecovery, Category: workflow.FailureCategoryExecutionFailed,
+			Code: "recovery_operation_failed", SafeSummary: "逐级恢复 Operation 执行失败",
+			Message: reason, NextAction: workflow.FailureNextReinvestigate,
+			PlanID: snapshot.Plan.ID, OperationID: operation.ID, OperationStatus: string(operation.Status),
+		}
+		return true, p.fail(snapshot, request, operation, reason, failure, ErrRecoveryFailed)
+	case platform.OperationRejected:
+		reason := recoveryFailureReason(operation, "traffic recovery operation was rejected")
+		failure := workflow.StageFailure{
+			Stage: workflow.FailureStageRecovery, Category: workflow.FailureCategoryPreconditionChanged,
+			Code: "recovery_operation_rejected", SafeSummary: "恢复请求被平台拒绝，需要重新调查当前状态",
+			Message: reason, NextAction: workflow.FailureNextReinvestigate,
+			PlanID: snapshot.Plan.ID, OperationID: operation.ID, OperationStatus: string(operation.Status),
+		}
+		return true, p.fail(snapshot, request, operation, reason, failure, ErrRecoveryFailed)
+	case platform.OperationCancelled:
+		reason := recoveryFailureReason(operation, "traffic recovery operation was cancelled")
+		failure := unknownResultFailure(workflow.FailureStageRecovery, "recovery_operation_cancelled",
+			"恢复 Operation 被取消，需要重新调查当前流量状态", snapshot.Plan.ID, "", operation, errors.New(reason))
+		failure.NextAction = workflow.FailureNextReinvestigate
+		return true, p.fail(snapshot, request, operation, reason, failure, ErrRecoveryFailed)
 	default:
-		return false, fmt.Errorf("recovery operation has unknown status %q", operation.Status)
+		err := fmt.Errorf("recovery operation has unknown status %q", operation.Status)
+		failure := invalidResponseFailure(workflow.FailureStageRecovery, "unknown_recovery_status",
+			"恢复平台返回了无法识别的 Operation 状态", snapshot.Plan.ID, "", operation)
+		failure.Message = err.Error()
+		return false, errors.Join(err, p.recordFailure(failure))
 	}
 }
 
 func (p *RecoveryProcessor) fail(snapshot workflow.Snapshot, request platform.RecoveryRequest,
-	operation platform.Operation, reason string, cause error,
+	operation platform.Operation, reason string, failure workflow.StageFailure, cause error,
 ) error {
 	outcome, _ := operation.Result["outcome"].(string)
 	_, transitionErr := p.workflow.Apply(workflow.Event{
 		Type: workflow.EventStageFailed, Actor: workflow.ActorController, Reason: strings.TrimSpace(reason),
-		Metadata: recoveryMetadata(snapshot.Plan.ID, request, operation, strings.TrimSpace(outcome)),
+		Metadata: recoveryMetadata(snapshot.Plan.ID, request, operation, strings.TrimSpace(outcome)), Failure: &failure,
 	})
 	return errors.Join(cause, transitionErr)
+}
+
+func (p *RecoveryProcessor) recordFailure(failure workflow.StageFailure) error {
+	_, err := p.workflow.RecordFailure(failure)
+	return err
 }
 
 func validateRecoveryOperation(operation platform.Operation, request platform.RecoveryRequest) error {

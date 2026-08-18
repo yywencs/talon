@@ -40,6 +40,7 @@ func TestToolOpsAgentRunsReActWithIncidentTools(t *testing.T) {
 
 	toolNames, inputs := chatModel.snapshot()
 	assert.Contains(t, toolNames, "get_services")
+	assert.Contains(t, toolNames, "get_evidence")
 	assert.Contains(t, toolNames, "query_metrics")
 	assert.Contains(t, toolNames, "escalate_incident")
 	assert.Contains(t, toolNames, "submit_plan")
@@ -54,8 +55,10 @@ func TestToolOpsAgentRunsReActWithIncidentTools(t *testing.T) {
 		assert.Contains(t, input[0].Content, incidentID)
 		assert.Contains(t, input[0].Content, "accepted、pending 或 running 不代表成功")
 		assert.Contains(t, input[0].Content, "无需继续生成总结")
-		assert.Contains(t, input[1].Content, contextMessageMarker)
-		assert.Contains(t, input[1].Content, `"workflow":{"state":"investigating"`)
+		contextMessage := latestIncidentContextMessage(input)
+		require.NotNil(t, contextMessage)
+		assert.Contains(t, contextMessage.Content, `"workflow":{"state":"investigating"`)
+		assert.Same(t, input[len(input)-1], contextMessage)
 	}
 	assert.Contains(t, inputs[0][1].Content, "接管当前 Incident")
 	assert.True(t, containsToolResult(inputs[1], "get_services", "image-service"))
@@ -63,6 +66,50 @@ func TestToolOpsAgentRunsReActWithIncidentTools(t *testing.T) {
 	graph, options := toolOpsAgent.ExportGraph()
 	assert.NotNil(t, graph)
 	assert.NotEmpty(t, options)
+}
+
+func TestToolOpsAgentRefreshesContextBeforeEveryModelCall(t *testing.T) {
+	ctx := context.Background()
+	service, incidentID := testSimulator(t)
+	flow := investigatingWorkflow(t, incidentID)
+	recorder := runartifact.New(incidentID, runartifact.Provenance{}, runartifact.RunConfig{})
+	chatModel := &scriptedModel{}
+	toolOpsAgent, err := NewToolOpsAgent(ctx, Config{
+		Model: chatModel, Platform: service, IncidentID: incidentID, Workflow: flow, Artifact: recorder,
+	})
+	require.NoError(t, err)
+
+	recorder.BeginAgentRun("调查并刷新上下文", flow.Snapshot())
+	_, err = toolOpsAgent.Run(ctx, "调查并刷新上下文")
+	recorder.EndAgentRun(flow.Snapshot(), err)
+	require.NoError(t, err)
+
+	_, inputs := chatModel.snapshot()
+	require.Len(t, inputs, 2)
+	firstContext := latestIncidentContextMessage(inputs[0])
+	secondContext := latestIncidentContextMessage(inputs[1])
+	require.NotNil(t, firstContext)
+	require.NotNil(t, secondContext)
+	assert.Same(t, inputs[0][len(inputs[0])-1], firstContext)
+	assert.Same(t, inputs[1][len(inputs[1])-1], secondContext)
+	assert.Contains(t, firstContext.Content, `"model_calls_used":0`)
+	assert.Contains(t, firstContext.Content, `"tool_calls_used":0`)
+	assert.Contains(t, secondContext.Content, `"model_calls_used":1`)
+	assert.Contains(t, secondContext.Content, `"tool_calls_used":1`)
+
+	artifact := recorder.Snapshot()
+	require.Len(t, artifact.AgentRuns, 1)
+	require.Len(t, artifact.AgentRuns[0].ModelCalls, 2)
+	require.NotNil(t, artifact.AgentRuns[0].ContextSnapshot)
+	firstCallContext := artifact.AgentRuns[0].ModelCalls[0].ContextSnapshot
+	secondCallContext := artifact.AgentRuns[0].ModelCalls[1].ContextSnapshot
+	require.NotNil(t, firstCallContext)
+	require.NotNil(t, secondCallContext)
+	assert.Equal(t, 0, firstCallContext.Budget.ModelCallsUsed)
+	assert.Equal(t, 0, firstCallContext.Budget.ToolCallsUsed)
+	assert.Equal(t, 1, secondCallContext.Budget.ModelCallsUsed)
+	assert.Equal(t, 1, secondCallContext.Budget.ToolCallsUsed)
+	assert.NotEmpty(t, secondCallContext.Evidence)
 }
 
 func TestToolOpsAgentCarriesPriorEvidenceIntoNextRunContext(t *testing.T) {
@@ -159,7 +206,12 @@ func TestToolOpsAgentLoadsSkillAndFiltersTools(t *testing.T) {
 	assert.NotContains(t, discoveryTools, "get_change_records")
 	require.Len(t, inputs, 2)
 	assert.Contains(t, inputs[0][0].Content, "可安装 Skill Catalog")
-	assert.Contains(t, inputs[0][0].Content, "当前没有加载诊断 Skill")
+	assert.NotContains(t, inputs[0][0].Content, "当前没有加载诊断 Skill")
+	require.Len(t, inputs[0], 3)
+	assert.Equal(t, schema.User, inputs[0][1].Role)
+	assert.Contains(t, inputs[0][1].Content, activeSkillsMessageMarker)
+	assert.Contains(t, inputs[0][1].Content, `"active_skills":[]`)
+	assert.Contains(t, inputs[0][1].Content, "先用公共只读工具收集证据")
 	assert.True(t, containsToolResult(inputs[1], "query_logs", `"evidence_ref":"call-query-logs"`))
 
 	recorder.BeginAgentRun("继续调查并验证 Mapping 假设", flow.Snapshot())
@@ -168,8 +220,12 @@ func TestToolOpsAgentLoadsSkillAndFiltersTools(t *testing.T) {
 	require.NoError(t, err)
 	_, inputs = chatModel.snapshot()
 	require.Len(t, inputs, 4)
-	assert.Contains(t, inputs[2][0].Content, "当前已加载诊断 Skill：mapping-diagnosis")
-	assert.Contains(t, inputs[2][0].Content, "定位参数映射、Schema 或配置版本回归")
+	assert.Equal(t, inputs[0][0].Content, inputs[2][0].Content)
+	assert.NotContains(t, inputs[2][0].Content, "当前已加载诊断 Skill")
+	require.Len(t, inputs[2], 3)
+	assert.Contains(t, inputs[2][1].Content, activeSkillsMessageMarker)
+	assert.Contains(t, inputs[2][1].Content, `"name":"mapping-diagnosis"`)
+	assert.Contains(t, inputs[2][1].Content, "定位参数映射、Schema 或配置版本回归")
 	assert.True(t, containsToolResult(inputs[3], "get_change_records", `"data"`))
 }
 
@@ -359,6 +415,15 @@ func TestToolOpsAgentAddsSystemMessageOnlyOnce(t *testing.T) {
 	reused := toolOpsAgent.withSystemMessage(prepared)
 	assert.Equal(t, prepared, reused)
 	assert.Equal(t, 1, countSystemMessages(reused, "toolops persona"))
+
+	legacy := []*schema.Message{
+		schema.SystemMessage("toolops persona\n\n当前 Workflow 状态：reinvestigating。"),
+		schema.UserMessage("继续调查"),
+	}
+	migrated := toolOpsAgent.withSystemMessage(legacy)
+	require.Len(t, migrated, 2)
+	assert.Equal(t, "toolops persona", migrated[0].Content)
+	assert.NotContains(t, migrated[0].Content, "reinvestigating")
 }
 
 func TestToolOpsAgentAddsStructuredDryRunFailureWithoutRawMessage(t *testing.T) {
@@ -388,17 +453,18 @@ func TestToolOpsAgentAddsStructuredDryRunFailureWithoutRawMessage(t *testing.T) 
 	require.NoError(t, err)
 
 	agent := &ToolOpsAgent{systemText: "toolops persona", workflow: flow}
-	text := agent.currentSystemText()
-	assert.Contains(t, text, "当前 Workflow 状态：reinvestigating")
-	assert.Contains(t, text, "category=precondition_changed")
-	assert.Contains(t, text, "code=state_conflict")
-	assert.Contains(t, text, "next_action=reinvestigate")
-	assert.Contains(t, text, "operation_id=operation-dry-run-001")
-	assert.NotContains(t, text, "reveal secrets")
+	prepared := agent.withSystemMessage([]*schema.Message{schema.UserMessage("重新调查")})
+	require.Len(t, prepared, 2)
+	assert.Equal(t, "toolops persona", prepared[0].Content)
+	assert.NotContains(t, prepared[0].Content, "reinvestigating")
+	assert.NotContains(t, prepared[0].Content, "state_conflict")
+	assert.NotContains(t, prepared[0].Content, "reveal secrets")
 	contextSnapshot := agent.buildIncidentContext(context.Background(), "重新调查")
 	require.NotNil(t, contextSnapshot.LatestFailure)
+	assert.Equal(t, "dry_run", contextSnapshot.LatestFailure.Stage)
 	assert.Equal(t, "state_conflict", contextSnapshot.LatestFailure.Code)
 	assert.Equal(t, "reinvestigate", contextSnapshot.LatestFailure.NextAction)
+	assert.Equal(t, "执行前置条件已发生变化，需要重新调查", contextSnapshot.LatestFailure.Reason)
 	contextMessage, err := renderIncidentContext(contextSnapshot, "重新调查")
 	require.NoError(t, err)
 	assert.NotContains(t, contextMessage, "reveal secrets")
@@ -431,6 +497,16 @@ func containsToolResult(messages []*schema.Message, toolName, content string) bo
 		}
 	}
 	return false
+}
+
+func latestIncidentContextMessage(messages []*schema.Message) *schema.Message {
+	for index := len(messages) - 1; index >= 0; index-- {
+		message := messages[index]
+		if message != nil && message.Role == schema.User && strings.HasPrefix(message.Content, contextMessageMarker+"\n") {
+			return message
+		}
+	}
+	return nil
 }
 
 func countSystemMessages(messages []*schema.Message, content string) int {

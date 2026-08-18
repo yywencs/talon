@@ -9,13 +9,6 @@ import (
 	"github.com/joho/godotenv"
 )
 
-type Config struct {
-	Debug      bool
-	OneLogFile bool
-	LogDir     string
-	LLM        LLMConfig
-}
-
 type LLMConfig struct {
 	Provider            string
 	APIKey              string
@@ -25,36 +18,7 @@ type LLMConfig struct {
 	ContextWindowTokens int
 }
 
-// GlobalConfig 作为一个全局单例，方便在 Engine 或 Worker 中引用
-var Global *Config
-
-func Load() {
-	configRoot, err := FindRoot()
-	if err != nil {
-		panic(err)
-	}
-
-	envPath := filepath.Join(configRoot, ".env")
-	if err := godotenv.Load(envPath); err != nil {
-		fmt.Printf("Warning: failed to load .env file %s: %v", envPath, err)
-	}
-
-	logDir := getEnv("LOG_DIR", filepath.Join(configRoot, "logs"))
-
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		fmt.Printf("Warning: failed to create log directory %s: %v", logDir, err)
-	}
-
-	Global = &Config{
-		Debug:      getEnvAsBool("DEBUG", false),
-		OneLogFile: getEnvAsBool("ONLY_ONE_LOG_FILE", false),
-		LogDir:     logDir,
-		LLM:        llmConfigFromEnv(),
-	}
-}
-
-// LoadLLMConfig 为独立命令加载与主 Agent 相同的 .env 和 LLM 配置，
-// 但不创建日志目录，也不修改 Global，避免 rules-only Review 产生额外副作用。
+// LoadLLMConfig 为独立命令加载与主 Agent 相同的 .env 和 LLM 配置。
 func LoadLLMConfig() (LLMConfig, error) {
 	configRoot, err := FindRoot()
 	if err != nil {
@@ -76,8 +40,4 @@ func llmConfigFromEnv() LLMConfig {
 		PromptsDir:          getEnv("LLM_PROMPTS_DIR", ""),
 		ContextWindowTokens: Int("LLM_CONTEXT_WINDOW_TOKENS", 0),
 	}
-}
-
-func IsDebug() bool {
-	return Global.Debug
 }

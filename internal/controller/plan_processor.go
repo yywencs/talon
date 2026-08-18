@@ -198,11 +198,14 @@ func analyzeDryRunResult(operation platform.Operation, err error) (workflow.Plan
 			return failedPlanDryRun(workflow.PlanDryRunFailurePreconditionChanged, "state_conflict", message, workflow.PlanDryRunNextReinvestigate)
 		case errors.Is(err, platform.ErrPreconditionFailed):
 			return failedPlanDryRun(workflow.PlanDryRunFailurePreconditionChanged, "precondition_failed", message, workflow.PlanDryRunNextReinvestigate)
-		default:
+		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 			return workflow.PlanDryRunIndeterminate, &workflow.PlanDryRunFailure{
 				Category: workflow.PlanDryRunFailurePlatformUnavailable, Code: "platform_unavailable",
 				Message: message, NextAction: workflow.PlanDryRunNextRetry, Retryable: true,
 			}
+		default:
+			return failedPlanDryRun(workflow.PlanDryRunFailureUnclassified, "unclassified_dry_run_error",
+				message, workflow.PlanDryRunNextEscalate)
 		}
 	}
 	message := strings.TrimSpace(operation.Message)
@@ -221,10 +224,8 @@ func analyzeDryRunResult(operation platform.Operation, err error) (workflow.Plan
 			Message: message, NextAction: workflow.PlanDryRunNextRetry, Retryable: true,
 		}
 	default:
-		return workflow.PlanDryRunIndeterminate, &workflow.PlanDryRunFailure{
-			Category: workflow.PlanDryRunFailurePlatformUnavailable, Code: "invalid_operation_status",
-			Message: message, NextAction: workflow.PlanDryRunNextRetry, Retryable: true,
-		}
+		return failedPlanDryRun(workflow.PlanDryRunFailureInvalidResponse, "invalid_operation_status",
+			message, workflow.PlanDryRunNextEscalate)
 	}
 }
 

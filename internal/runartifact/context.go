@@ -78,12 +78,14 @@ type IncidentContextPlan struct {
 // 同时避免向模型暴露不可信的原始失败文本。
 type IncidentContextFailure struct {
 	Event       string            `json:"event"`
+	Stage       string            `json:"stage,omitempty"`
 	Reason      string            `json:"reason,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
 	Category    string            `json:"category,omitempty"`
 	Code        string            `json:"code,omitempty"`
 	NextAction  string            `json:"next_action,omitempty"`
 	Retryable   bool              `json:"retryable,omitempty"`
+	Fallback    bool              `json:"fallback,omitempty"`
 	OperationID string            `json:"operation_id,omitempty"`
 	ActionID    string            `json:"action_id,omitempty"`
 }

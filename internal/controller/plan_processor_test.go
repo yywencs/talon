@@ -203,14 +203,14 @@ func TestPlanProcessorDryRunWrapsPlatformFailure(t *testing.T) {
 	instance := plannedWorkflow(t, "incident-001", map[string]any{
 		"tool_id": "generate_image", "target_version": "mapping-v1", "idempotency_key": "rollback-001",
 	})
-	platformErr := errors.New("platform unavailable")
+	platformErr := context.DeadlineExceeded
 	service := &recordingPlatform{err: platformErr}
 	processor, err := NewPlanProcessor(service, instance)
 	require.NoError(t, err)
 
 	result, err := processor.DryRun(context.Background())
 	assert.ErrorIs(t, err, platformErr)
-	assert.ErrorContains(t, err, "platform unavailable")
+	assert.ErrorContains(t, err, "context deadline exceeded")
 	require.Len(t, result, 1)
 	assert.Equal(t, workflow.PlanDryRunIndeterminate, result[0].Status)
 	require.NotNil(t, result[0].Failure)
@@ -256,9 +256,20 @@ func TestAnalyzeDryRunResultClassifiesNextAction(t *testing.T) {
 			code: "state_conflict", nextAction: workflow.PlanDryRunNextReinvestigate,
 		},
 		{
-			name: "transport failure retries", err: errors.New("connection reset"),
+			name: "typed timeout retries", err: context.DeadlineExceeded,
 			status: workflow.PlanDryRunIndeterminate, category: workflow.PlanDryRunFailurePlatformUnavailable,
 			code: "platform_unavailable", nextAction: workflow.PlanDryRunNextRetry, retryable: true,
+		},
+		{
+			name: "unknown error fails closed", err: errors.New("new provider error"),
+			status: workflow.PlanDryRunFailed, category: workflow.PlanDryRunFailureUnclassified,
+			code: "unclassified_dry_run_error", nextAction: workflow.PlanDryRunNextEscalate,
+		},
+		{
+			name:      "unknown operation status escalates",
+			operation: platform.Operation{Status: platform.OperationStatus("future_status")},
+			status:    workflow.PlanDryRunFailed, category: workflow.PlanDryRunFailureInvalidResponse,
+			code: "invalid_operation_status", nextAction: workflow.PlanDryRunNextEscalate,
 		},
 		{
 			name:      "operation failure requires evidence refresh",

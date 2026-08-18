@@ -13,9 +13,12 @@ from .core import ARTIFACT_SCHEMA_VERSION, INPUT_SCHEMA_VERSION
 
 REQUIRED_CAPABILITIES = {
     "canonical_evidence_ids",
+    "evidence_lookup",
     "incident_context_snapshot",
+    "per_model_context_snapshot",
     "structured_escalation_handoff",
     "structured_experience",
+    "structured_stage_failures",
 }
 
 
@@ -110,6 +113,34 @@ def verify_export(
         missing = sorted(REQUIRED_CAPABILITIES - set(capabilities))
         _expect(not missing, "Artifact is missing capabilities: {}".format(", ".join(missing)))
 
+        stage_failures = artifact.get("stage_failures")
+        if not isinstance(stage_failures, list):
+            raise VerificationError("Artifact stage_failures must be an array")
+        for failure in stage_failures:
+            failure = _mapping(failure, "Artifact stage failure")
+            _expect(
+                failure.get("stage")
+                in ("dry_run", "remediation", "probe", "recovery", "compensation"),
+                "Artifact stage failure has an invalid stage",
+            )
+            category = _string(failure.get("category"), "stage failure category")
+            _string(failure.get("code"), "stage failure code")
+            _string(failure.get("safe_summary"), "stage failure safe_summary")
+            next_action = _string(failure.get("next_action"), "stage failure next_action")
+            retryable = failure.get("retryable")
+            _expect(isinstance(retryable, bool), "stage failure retryable must be boolean")
+            _expect(
+                (retryable and next_action == "retry")
+                or (not retryable and next_action != "retry"),
+                "stage failure retry semantics are inconsistent",
+            )
+            fallback = failure.get("fallback", False)
+            _expect(isinstance(fallback, bool), "stage failure fallback must be boolean")
+            _expect(
+                fallback == (category == "unclassified"),
+                "stage failure fallback does not match category",
+            )
+
         run_config = _mapping(artifact.get("run_config"), "Artifact run_config")
         _expect(
             run_config.get("context_version") == "talon.incident-context/v1",
@@ -132,6 +163,30 @@ def verify_export(
                 digest.startswith("sha256:") and len(digest) == 71,
                 "AgentRun context digest is invalid",
             )
+            model_calls = agent_run.get("model_calls")
+            if not isinstance(model_calls, list) or not model_calls:
+                raise VerificationError("AgentRun model_calls must be a non-empty array")
+            for model_call in model_calls:
+                model_call = _mapping(model_call, "Artifact ModelCall")
+                model_context = _mapping(
+                    model_call.get("context_snapshot"), "ModelCall context_snapshot"
+                )
+                _expect(
+                    model_context.get("schema_version") == "talon.incident-context/v1",
+                    "ModelCall context schema mismatch",
+                )
+                _expect(
+                    model_context.get("incident_id") == scenario_id,
+                    "ModelCall context Incident mismatch",
+                )
+                _string(model_context.get("objective"), "ModelCall context objective")
+                model_digest = _string(
+                    model_context.get("digest"), "ModelCall context digest"
+                )
+                _expect(
+                    model_digest.startswith("sha256:") and len(model_digest) == 71,
+                    "ModelCall context digest is invalid",
+                )
 
     expected_counts = Counter({scenario_id: repeat for scenario_id in expected_scenarios})
     _expect(

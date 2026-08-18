@@ -30,6 +30,8 @@ const (
 	PlanDryRunFailureAuthorizationRequired PlanDryRunFailureCategory = "authorization_required"
 	PlanDryRunFailureExecutionFailed       PlanDryRunFailureCategory = "execution_failed"
 	PlanDryRunFailurePlatformUnavailable   PlanDryRunFailureCategory = "platform_unavailable"
+	PlanDryRunFailureInvalidResponse       PlanDryRunFailureCategory = "invalid_response"
+	PlanDryRunFailureUnclassified          PlanDryRunFailureCategory = "unclassified"
 )
 
 // PlanDryRunNextAction 是 Controller 根据失败分类给出的确定性后续动作。
@@ -148,24 +150,77 @@ func (w *IncidentWorkflow) RecordPlanDryRun(result PlanDryRun) (PlanDryRun, erro
 		if result.OperationStatus != "" {
 			metadata["operation_status"] = result.OperationStatus
 		}
+		failure := normalizedDryRunFailure(result)
 		switch result.Failure.NextAction {
 		case PlanDryRunNextReplan, PlanDryRunNextReinvestigate:
 			if _, err := w.applyLocked(Event{
-				Type: EventPlanRejected, Actor: ActorWorkflow, Reason: reason, Metadata: metadata,
+				Type: EventPlanRejected, Actor: ActorWorkflow, Reason: reason, Metadata: metadata, Failure: &failure,
 			}); err != nil {
 				return PlanDryRun{}, err
 			}
 		case PlanDryRunNextEscalate:
 			if _, err := w.applyLocked(Event{
-				Type: EventEscalated, Actor: ActorWorkflow, Reason: reason, Metadata: metadata,
+				Type: EventEscalated, Actor: ActorWorkflow, Reason: reason, Metadata: metadata, Failure: &failure,
 			}); err != nil {
 				return PlanDryRun{}, err
 			}
 		case PlanDryRunNextRetry:
 			// 暂时性失败保持 planned，由 Controller 使用相同幂等键安全重试。
+			failure.WorkflowVersion = w.version
+			normalized, err := normalizeStageFailure(failure, w.now())
+			if err != nil {
+				return PlanDryRun{}, err
+			}
+			w.failures = append(w.failures, normalized)
 		}
 	}
 	return *clonePlanDryRunPointer(findPlanDryRun(w.planDryRuns, result.ActionID)), nil
+}
+
+func normalizedDryRunFailure(result PlanDryRun) StageFailure {
+	failure := result.Failure
+	category := map[PlanDryRunFailureCategory]FailureCategory{
+		PlanDryRunFailurePlanInvalid:           FailureCategoryPlanInvalid,
+		PlanDryRunFailurePreconditionChanged:   FailureCategoryPreconditionChanged,
+		PlanDryRunFailureAuthorizationRequired: FailureCategoryAuthorizationRequired,
+		PlanDryRunFailureExecutionFailed:       FailureCategoryExecutionFailed,
+		PlanDryRunFailurePlatformUnavailable:   FailureCategoryPlatformUnavailable,
+		PlanDryRunFailureInvalidResponse:       FailureCategoryInvalidResponse,
+		PlanDryRunFailureUnclassified:          FailureCategoryUnclassified,
+	}[failure.Category]
+	next := map[PlanDryRunNextAction]FailureNextAction{
+		PlanDryRunNextReplan:        FailureNextReplan,
+		PlanDryRunNextReinvestigate: FailureNextReinvestigate,
+		PlanDryRunNextEscalate:      FailureNextEscalate,
+		PlanDryRunNextRetry:         FailureNextRetry,
+	}[failure.NextAction]
+	return StageFailure{
+		Stage: FailureStageDryRun, Category: category, Code: failure.Code,
+		SafeSummary: dryRunSafeSummary(category), Message: failure.Message,
+		NextAction: next, Retryable: failure.Retryable,
+		Fallback: failure.Category == PlanDryRunFailureUnclassified,
+		PlanID:   result.PlanID, ActionID: result.ActionID, OperationID: result.OperationID,
+		OperationStatus: result.OperationStatus,
+	}
+}
+
+func dryRunSafeSummary(category FailureCategory) string {
+	switch category {
+	case FailureCategoryPlanInvalid:
+		return "Plan 的动作或参数未通过 Dry Run 校验"
+	case FailureCategoryPreconditionChanged:
+		return "执行前置条件已发生变化，需要重新调查"
+	case FailureCategoryAuthorizationRequired:
+		return "Dry Run 所需操作未获得授权"
+	case FailureCategoryExecutionFailed:
+		return "Dry Run 平台操作执行失败"
+	case FailureCategoryPlatformUnavailable:
+		return "Dry Run 暂时无法从平台获得确定结果"
+	case FailureCategoryInvalidResponse:
+		return "Dry Run 平台返回了无法识别的响应"
+	default:
+		return "Dry Run 发生了未分类错误"
+	}
 }
 
 func (s PlanDryRunStatus) valid() bool {
@@ -212,6 +267,8 @@ func validatePlanDryRunFailure(status PlanDryRunStatus, failure *PlanDryRunFailu
 		PlanDryRunFailureAuthorizationRequired: PlanDryRunNextEscalate,
 		PlanDryRunFailureExecutionFailed:       PlanDryRunNextReinvestigate,
 		PlanDryRunFailurePlatformUnavailable:   PlanDryRunNextRetry,
+		PlanDryRunFailureInvalidResponse:       PlanDryRunNextEscalate,
+		PlanDryRunFailureUnclassified:          PlanDryRunNextEscalate,
 	}[failure.Category]
 	if failure.NextAction != expectedAction {
 		return fmt.Errorf("plan dry run failure category %q requires next action %q", failure.Category, expectedAction)
@@ -226,7 +283,8 @@ func (c PlanDryRunFailureCategory) valid() bool {
 	switch c {
 	case PlanDryRunFailurePlanInvalid, PlanDryRunFailurePreconditionChanged,
 		PlanDryRunFailureAuthorizationRequired, PlanDryRunFailureExecutionFailed,
-		PlanDryRunFailurePlatformUnavailable:
+		PlanDryRunFailurePlatformUnavailable, PlanDryRunFailureInvalidResponse,
+		PlanDryRunFailureUnclassified:
 		return true
 	default:
 		return false

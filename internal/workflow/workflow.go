@@ -30,6 +30,7 @@ type Transition struct {
 	Actor    Actor             `json:"actor"`
 	Reason   string            `json:"reason,omitempty"`
 	Metadata map[string]string `json:"metadata,omitempty"`
+	Failure  *StageFailure     `json:"failure,omitempty"`
 	At       time.Time         `json:"at"`
 }
 
@@ -44,6 +45,7 @@ type Snapshot struct {
 	PlanDryRuns    []PlanDryRun         `json:"plan_dry_runs,omitempty"`
 	PlanPolicies   []PlanPolicyDecision `json:"plan_policies,omitempty"`
 	PlanApprovals  []PlanApproval       `json:"plan_approvals,omitempty"`
+	Failures       []StageFailure       `json:"failures,omitempty"`
 	History        []Transition         `json:"history"`
 }
 
@@ -62,6 +64,7 @@ type IncidentWorkflow struct {
 	planDryRuns    []PlanDryRun
 	planPolicies   []PlanPolicyDecision
 	planApprovals  []PlanApproval
+	failures       []StageFailure
 	history        []Transition
 	now            func() time.Time
 }
@@ -177,6 +180,11 @@ func (w *IncidentWorkflow) applyLocked(event Event) (Transition, error) {
 		return Transition{}, fmt.Errorf("%w: actor %q cannot emit event %q from state %q", ErrActorNotAllowed, event.Actor, event.Type, from)
 	}
 
+	failure, err := w.eventFailureLocked(from, event)
+	if err != nil {
+		return Transition{}, err
+	}
+
 	to := rule.to
 	if from == StateEscalated && event.Type == EventHumanResumed && resumesAsReinvestigation(w.suspendedState) {
 		to = StateReinvestigating
@@ -188,11 +196,18 @@ func (w *IncidentWorkflow) applyLocked(event Event) (Transition, error) {
 	}
 
 	w.version++
+	if failure != nil {
+		failure.WorkflowVersion = w.version
+	}
 	transition := Transition{
 		Version: w.version, From: from, To: to, Event: event.Type, Actor: event.Actor,
-		Reason: strings.TrimSpace(event.Reason), Metadata: cloneMetadata(event.Metadata), At: w.now(),
+		Reason: strings.TrimSpace(event.Reason), Metadata: cloneMetadata(event.Metadata),
+		Failure: cloneStageFailurePointer(failure), At: w.now(),
 	}
 	w.state = to
+	if failure != nil {
+		w.failures = append(w.failures, *failure)
+	}
 	w.history = append(w.history, transition)
 	return cloneTransition(transition), nil
 }
@@ -211,7 +226,85 @@ func (w *IncidentWorkflow) Snapshot() Snapshot {
 	return Snapshot{
 		IncidentID: w.incidentID, State: w.state, SuspendedState: w.suspendedState,
 		Version: w.version, Plan: clonePlanPointer(w.plan), Plans: clonePlans(w.plans), PlanDryRuns: clonePlanDryRuns(w.planDryRuns),
-		PlanPolicies: clonePlanPolicyDecisions(w.planPolicies), PlanApprovals: clonePlanApprovals(w.planApprovals), History: history,
+		PlanPolicies: clonePlanPolicyDecisions(w.planPolicies), PlanApprovals: clonePlanApprovals(w.planApprovals),
+		Failures: cloneStageFailures(w.failures), History: history,
+	}
+}
+
+// RecordFailure 保存不引起状态转换的结构化失败，例如可重试的平台暂时不可用，
+// 或需要先对账的未知执行结果。它不会推进 Workflow 版本或改变当前状态。
+func (w *IncidentWorkflow) RecordFailure(value StageFailure) (StageFailure, error) {
+	if w == nil {
+		return StageFailure{}, fmt.Errorf("%w: workflow is not initialized", ErrInvalidTransition)
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	value.WorkflowVersion = w.version
+	normalized, err := normalizeStageFailure(value, w.now())
+	if err != nil {
+		return StageFailure{}, err
+	}
+	if expected, ok := failureStageForState(w.state); !ok || normalized.Stage != expected {
+		return StageFailure{}, fmt.Errorf("failure stage %q does not match workflow state %q", normalized.Stage, w.state)
+	}
+	w.failures = append(w.failures, normalized)
+	return normalized, nil
+}
+
+func failureStageForState(state State) (FailureStage, bool) {
+	switch state {
+	case StatePlanned:
+		return FailureStageDryRun, true
+	case StateRemediating:
+		return FailureStageRemediation, true
+	case StateProbing:
+		return FailureStageProbe, true
+	case StateRecovering:
+		return FailureStageRecovery, true
+	case StateCompensating:
+		return FailureStageCompensation, true
+	default:
+		return "", false
+	}
+}
+
+func (w *IncidentWorkflow) eventFailureLocked(from State, event Event) (*StageFailure, error) {
+	value := cloneStageFailurePointer(event.Failure)
+	if value == nil && event.Type == EventStageFailed {
+		value = fallbackStageFailure(from, event.Reason, event.Metadata)
+	}
+	if value == nil {
+		return nil, nil
+	}
+	normalized, err := normalizeStageFailure(*value, w.now())
+	if err != nil {
+		return nil, fmt.Errorf("normalize event failure: %w", err)
+	}
+	return &normalized, nil
+}
+
+func fallbackStageFailure(state State, message string, metadata map[string]string) *StageFailure {
+	stage := FailureStage("")
+	next := FailureNextReinvestigate
+	switch state {
+	case StateRemediating:
+		stage = FailureStageRemediation
+	case StateProbing:
+		stage = FailureStageProbe
+	case StateRecovering:
+		stage = FailureStageRecovery
+	case StateCompensating:
+		stage = FailureStageCompensation
+		next = FailureNextEscalate
+	default:
+		return nil
+	}
+	return &StageFailure{
+		Stage: stage, Category: FailureCategoryUnclassified, Code: "unclassified_error",
+		SafeSummary: "当前执行阶段发生了未分类错误", Message: strings.TrimSpace(message),
+		NextAction: next, Fallback: true, PlanID: metadata["plan_id"],
+		ActionID: metadata["action_id"], OperationID: metadata["operation_id"],
+		OperationStatus: metadata["operation_status"],
 	}
 }
 
@@ -226,6 +319,7 @@ func resumesAsReinvestigation(state State) bool {
 
 func cloneTransition(value Transition) Transition {
 	value.Metadata = cloneMetadata(value.Metadata)
+	value.Failure = cloneStageFailurePointer(value.Failure)
 	return value
 }
 

@@ -294,6 +294,13 @@ func TestActionExecutorSubmissionTimeoutBecomesRetryableUnknown(t *testing.T) {
 	assert.NotNil(t, record.NextPollAt)
 	assert.Empty(t, record.OwnerID)
 	assert.Equal(t, workflow.StateRemediating, instance.Snapshot().State)
+	failures := instance.Snapshot().Failures
+	require.NotEmpty(t, failures)
+	latest := failures[len(failures)-1]
+	assert.Equal(t, workflow.FailureStageRemediation, latest.Stage)
+	assert.Equal(t, workflow.FailureCategoryResultUnknown, latest.Category)
+	assert.Equal(t, workflow.FailureNextReconcile, latest.NextAction)
+	assert.False(t, latest.Retryable)
 }
 
 func executionPlatform(tools ...string) *idempotentExecutionPlatform {

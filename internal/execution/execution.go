@@ -1,4 +1,4 @@
-// Package execution 定义 Plan Action 的持久化执行状态与租约接口。
+// Package execution 定义 Plan Action 的持久化执行状态、租约及其持久化端口。
 package execution
 
 import (

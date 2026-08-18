@@ -153,9 +153,14 @@ func TestIncidentControllerReinvestigatesAfterRecoveryHardStop(t *testing.T) {
 	assert.Equal(t, StopEscalated, result.Reason)
 	assert.Equal(t, workflow.StateEscalated, instance.Snapshot().State)
 	require.Len(t, investigator.instructions, 2)
-	assert.Contains(t, investigator.instructions[1], "hard-stop")
+	assert.Contains(t, investigator.instructions[1], "recovery_health_gate_failed")
 	assert.Contains(t, investigator.instructions[1], "operation_id=recovery-route-a")
-	assert.Contains(t, investigator.instructions[1], "outcome=hard_stop")
+	assert.Contains(t, investigator.instructions[1], "category=health_gate_failed")
+	failures := instance.Snapshot().Failures
+	require.NotEmpty(t, failures)
+	assert.Equal(t, workflow.FailureStageRecovery, failures[len(failures)-1].Stage)
+	assert.Equal(t, workflow.FailureCategoryHealthGateFailed, failures[len(failures)-1].Category)
+	assert.Equal(t, workflow.FailureNextReinvestigate, failures[len(failures)-1].NextAction)
 }
 
 func TestIncidentControllerReinvestigatesAfterRecoveryTimeout(t *testing.T) {
@@ -185,7 +190,7 @@ func TestIncidentControllerReinvestigatesAfterRecoveryTimeout(t *testing.T) {
 	assert.Equal(t, StopEscalated, result.Reason)
 	assert.Equal(t, workflow.StateEscalated, instance.Snapshot().State)
 	require.Len(t, investigator.instructions, 2)
-	assert.Contains(t, investigator.instructions[1], "execution deadline")
+	assert.Contains(t, investigator.instructions[1], "recovery_operation_timed_out")
 }
 
 func TestIncidentControllerReinvestigatesAfterProbeHardStop(t *testing.T) {
@@ -213,8 +218,12 @@ func TestIncidentControllerReinvestigatesAfterProbeHardStop(t *testing.T) {
 	assert.Equal(t, StopEscalated, result.Reason)
 	assert.Equal(t, workflow.StateEscalated, instance.Snapshot().State)
 	require.Len(t, investigator.instructions, 2)
-	assert.Contains(t, investigator.instructions[1], "hard-stop")
+	assert.Contains(t, investigator.instructions[1], "probe_health_gate_failed")
 	assert.Equal(t, 1, service.probeCalls)
+	failures := instance.Snapshot().Failures
+	require.NotEmpty(t, failures)
+	assert.Equal(t, workflow.FailureStageProbe, failures[len(failures)-1].Stage)
+	assert.Equal(t, workflow.FailureCategoryHealthGateFailed, failures[len(failures)-1].Category)
 }
 
 func TestIncidentControllerReinvestigatesAfterProbeTimeout(t *testing.T) {
@@ -244,7 +253,7 @@ func TestIncidentControllerReinvestigatesAfterProbeTimeout(t *testing.T) {
 	assert.Equal(t, StopEscalated, result.Reason)
 	assert.Equal(t, workflow.StateEscalated, instance.Snapshot().State)
 	require.Len(t, investigator.instructions, 2)
-	assert.Contains(t, investigator.instructions[1], "execution deadline")
+	assert.Contains(t, investigator.instructions[1], "probe_operation_timed_out")
 }
 
 func TestIncidentControllerReinvestigatesWithExecutionFailure(t *testing.T) {
@@ -274,6 +283,11 @@ func TestIncidentControllerReinvestigatesWithExecutionFailure(t *testing.T) {
 	require.Len(t, investigator.instructions, 2)
 	assert.Contains(t, investigator.instructions[1], "重新调查")
 	assert.Contains(t, investigator.instructions[1], "上一阶段失败原因")
+	failures := instance.Snapshot().Failures
+	require.NotEmpty(t, failures)
+	assert.Equal(t, workflow.FailureStageRemediation, failures[len(failures)-1].Stage)
+	assert.Equal(t, workflow.FailureCategoryExecutionFailed, failures[len(failures)-1].Category)
+	assert.Equal(t, "remediation_operation_failed", failures[len(failures)-1].Code)
 }
 
 func TestIncidentControllerRejectsInvestigatorWithoutWorkflowProgress(t *testing.T) {

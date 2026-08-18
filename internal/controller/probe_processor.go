@@ -68,13 +68,24 @@ func (p *ProbeProcessor) Run(ctx context.Context) (platform.Operation, error) {
 	operation, callErr := p.platform.RequestProbe(callCtx, request)
 	cancel()
 	if validateErr := validateProbeOperation(operation, request); validateErr != nil {
-		if callErr != nil {
-			return operation, errors.Join(callErr, validateErr)
+		if callErr != nil && strings.TrimSpace(operation.ID) == "" {
+			failure := classifyControllerError(workflow.FailureStageProbe, "probe_submit_failed",
+				"探测请求未返回可对账的 Operation", snapshot.Plan.ID, "", operation, callErr)
+			return operation, errors.Join(callErr, validateErr, p.recordFailure(failure))
 		}
-		return operation, validateErr
+		failure := invalidResponseFailure(workflow.FailureStageProbe, "invalid_probe_operation",
+			"探测平台返回了与冻结请求不匹配的 Operation", snapshot.Plan.ID, "", operation)
+		failure.Message = errors.Join(callErr, validateErr).Error()
+		recordErr := p.recordFailure(failure)
+		if callErr != nil {
+			return operation, errors.Join(callErr, validateErr, recordErr)
+		}
+		return operation, errors.Join(validateErr, recordErr)
 	}
 	if callErr != nil && !isTerminalOperation(operation.Status) {
-		return operation, callErr
+		failure := classifyControllerError(workflow.FailureStageProbe, "probe_submit_failed",
+			"探测请求暂时未获得确定结果", snapshot.Plan.ID, "", operation, callErr)
+		return operation, errors.Join(callErr, p.recordFailure(failure))
 	}
 
 	deadline := time.Now().Add(p.operationTimeout)
@@ -88,7 +99,14 @@ func (p *ProbeProcessor) Run(ctx context.Context) (platform.Operation, error) {
 			return operation, err
 		}
 		if !time.Now().Before(deadline) {
-			return operation, p.fail(snapshot, operation, "probe operation exceeded its execution deadline", ErrProbeTimedOut)
+			reason := "probe operation exceeded its execution deadline"
+			failure := workflow.StageFailure{
+				Stage: workflow.FailureStageProbe, Category: workflow.FailureCategoryTimedOut,
+				Code: "probe_operation_timed_out", SafeSummary: "探测 Operation 超过执行时限",
+				Message: reason, NextAction: workflow.FailureNextReinvestigate,
+				PlanID: snapshot.Plan.ID, OperationID: operation.ID, OperationStatus: string(operation.Status),
+			}
+			return operation, p.fail(snapshot, operation, reason, failure, ErrProbeTimedOut)
 		}
 
 		wait := pollInterval
@@ -96,7 +114,9 @@ func (p *ProbeProcessor) Run(ctx context.Context) (platform.Operation, error) {
 			wait = remaining
 		}
 		if err := waitContext(ctx, wait); err != nil {
-			return operation, err
+			failure := unknownResultFailure(workflow.FailureStageProbe, "probe_interrupted",
+				"探测等待被中断，需要先确认原 Operation 状态", snapshot.Plan.ID, "", operation, err)
+			return operation, errors.Join(err, p.recordFailure(failure))
 		}
 		queryCtx, cancelQuery := context.WithTimeout(ctx, p.submitTimeout)
 		operation, err = p.platform.GetOperation(queryCtx, platform.OperationQuery{
@@ -104,10 +124,16 @@ func (p *ProbeProcessor) Run(ctx context.Context) (platform.Operation, error) {
 		})
 		cancelQuery()
 		if err != nil {
-			return operation, fmt.Errorf("query probe operation: %w", err)
+			wrapped := fmt.Errorf("query probe operation: %w", err)
+			failure := classifyControllerError(workflow.FailureStageProbe, "probe_query_failed",
+				"暂时无法查询探测 Operation", snapshot.Plan.ID, "", operation, wrapped)
+			return operation, errors.Join(wrapped, p.recordFailure(failure))
 		}
 		if err := validateProbeOperation(operation, request); err != nil {
-			return operation, err
+			failure := invalidResponseFailure(workflow.FailureStageProbe, "invalid_probe_operation",
+				"探测平台返回了与冻结请求不匹配的 Operation", snapshot.Plan.ID, "", operation)
+			failure.Message = err.Error()
+			return operation, errors.Join(err, p.recordFailure(failure))
 		}
 		if pollInterval < p.pollMaximum {
 			pollInterval *= 2
@@ -135,19 +161,54 @@ func (p *ProbeProcessor) reconcile(snapshot workflow.Snapshot, request platform.
 			return true, err
 		case "hard_stop":
 			reason := probeFailureReason(operation, "traffic probe reached a hard-stop condition")
-			return true, p.fail(snapshot, operation, reason, ErrProbeFailed)
+			failure := workflow.StageFailure{
+				Stage: workflow.FailureStageProbe, Category: workflow.FailureCategoryHealthGateFailed,
+				Code: "probe_health_gate_failed", SafeSummary: "探测触发健康门禁，不能进入流量恢复",
+				Message: reason, NextAction: workflow.FailureNextReinvestigate,
+				PlanID: snapshot.Plan.ID, OperationID: operation.ID, OperationStatus: string(operation.Status),
+			}
+			return true, p.fail(snapshot, operation, reason, failure, ErrProbeFailed)
 		default:
-			return false, fmt.Errorf("succeeded probe operation has invalid outcome %q", outcome)
+			err := fmt.Errorf("succeeded probe operation has invalid outcome %q", outcome)
+			failure := invalidResponseFailure(workflow.FailureStageProbe, "invalid_probe_outcome",
+				"探测平台返回了无法识别的成功结果", snapshot.Plan.ID, "", operation)
+			failure.Message = err.Error()
+			return false, errors.Join(err, p.recordFailure(failure))
 		}
-	case platform.OperationFailed, platform.OperationRejected, platform.OperationCancelled:
+	case platform.OperationFailed:
 		reason := probeFailureReason(operation, "traffic probe operation did not succeed")
-		return true, p.fail(snapshot, operation, reason, ErrProbeFailed)
+		failure := workflow.StageFailure{
+			Stage: workflow.FailureStageProbe, Category: workflow.FailureCategoryExecutionFailed,
+			Code: "probe_operation_failed", SafeSummary: "探测 Operation 执行失败",
+			Message: reason, NextAction: workflow.FailureNextReinvestigate,
+			PlanID: snapshot.Plan.ID, OperationID: operation.ID, OperationStatus: string(operation.Status),
+		}
+		return true, p.fail(snapshot, operation, reason, failure, ErrProbeFailed)
+	case platform.OperationRejected:
+		reason := probeFailureReason(operation, "traffic probe operation was rejected")
+		failure := workflow.StageFailure{
+			Stage: workflow.FailureStageProbe, Category: workflow.FailureCategoryPreconditionChanged,
+			Code: "probe_operation_rejected", SafeSummary: "探测请求被平台拒绝，需要重新调查当前状态",
+			Message: reason, NextAction: workflow.FailureNextReinvestigate,
+			PlanID: snapshot.Plan.ID, OperationID: operation.ID, OperationStatus: string(operation.Status),
+		}
+		return true, p.fail(snapshot, operation, reason, failure, ErrProbeFailed)
+	case platform.OperationCancelled:
+		reason := probeFailureReason(operation, "traffic probe operation was cancelled")
+		failure := unknownResultFailure(workflow.FailureStageProbe, "probe_operation_cancelled",
+			"探测 Operation 被取消，需要重新调查后再决定是否探测", snapshot.Plan.ID, "", operation, errors.New(reason))
+		failure.NextAction = workflow.FailureNextReinvestigate
+		return true, p.fail(snapshot, operation, reason, failure, ErrProbeFailed)
 	default:
-		return false, fmt.Errorf("probe operation has unknown status %q", operation.Status)
+		err := fmt.Errorf("probe operation has unknown status %q", operation.Status)
+		failure := invalidResponseFailure(workflow.FailureStageProbe, "unknown_probe_status",
+			"探测平台返回了无法识别的 Operation 状态", snapshot.Plan.ID, "", operation)
+		failure.Message = err.Error()
+		return false, errors.Join(err, p.recordFailure(failure))
 	}
 }
 
-func (p *ProbeProcessor) fail(snapshot workflow.Snapshot, operation platform.Operation, reason string, cause error) error {
+func (p *ProbeProcessor) fail(snapshot workflow.Snapshot, operation platform.Operation, reason string, failure workflow.StageFailure, cause error) error {
 	request := platform.ProbeRequest{
 		IncidentID: snapshot.IncidentID, RouteID: snapshot.Plan.ProbeRouteID,
 		PolicyID: snapshot.Plan.RecoveryPolicyID, IdempotencyKey: snapshot.Plan.ID + ":probe",
@@ -155,9 +216,14 @@ func (p *ProbeProcessor) fail(snapshot workflow.Snapshot, operation platform.Ope
 	outcome, _ := operation.Result["outcome"].(string)
 	_, transitionErr := p.workflow.Apply(workflow.Event{
 		Type: workflow.EventStageFailed, Actor: workflow.ActorController, Reason: strings.TrimSpace(reason),
-		Metadata: probeMetadata(snapshot.Plan.ID, request, operation, strings.TrimSpace(outcome)),
+		Metadata: probeMetadata(snapshot.Plan.ID, request, operation, strings.TrimSpace(outcome)), Failure: &failure,
 	})
 	return errors.Join(cause, transitionErr)
+}
+
+func (p *ProbeProcessor) recordFailure(failure workflow.StageFailure) error {
+	_, err := p.workflow.RecordFailure(failure)
+	return err
 }
 
 func validateProbeOperation(operation platform.Operation, request platform.ProbeRequest) error {

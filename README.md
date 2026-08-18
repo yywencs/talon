@@ -41,15 +41,30 @@ LLM_PROMPTS_DIR=prompts/toolops-agent/v3
 
 ## Incident 上下文快照
 
-每次 Controller 启动新的 Agent Run 时，Talon 都会在第一次模型调用前生成
-`talon.incident-context/v1`。快照只汇总当前 Workflow、Active Skills、调用预算、
+每次 Controller 启动新的 Agent Run 时，Talon 都会先生成初始的
+`talon.incident-context/v1`；此后每次调用模型前都会重新生成最新状态栏。快照只汇总当前 Workflow、Active Skills、调用预算、
 此前成功只读调用的 Evidence Ref/ID、历史 Plan 和最近一次结构化失败，不复制原始工具
 输出，也不读取 Simulator 隐藏状态或 expectations。
 
-同一份快照会作为低信任状态数据放入本轮模型输入，并记录在
-`RunArtifact.agent_runs[].context_snapshot`。因此后续调查能够获得结构化 handoff，离线
-评测也能还原模型决策时实际看到的状态。`run_config.context_version` 和 Snapshot digest
+初始快照记录在 `RunArtifact.agent_runs[].context_snapshot`；每次模型调用前实际注入的
+快照位于 `agent_runs[].model_calls[].context_snapshot`，并始终作为模型输入末尾的低信任
+状态数据。因此后续调查能够获得结构化 handoff，离线评测也能还原每次模型决策时实际
+看到的状态。`run_config.context_version` 和 Snapshot digest
 用于版本归因与内容一致性校验。
+
+Snapshot 中的 `evidence_ref` 可以原样传给只读工具 `get_evidence`，按需取回当前
+Incident 已持久化的历史观察。返回内容会再次脱敏、限制为 32 KiB，并明确标记为
+`untrusted_observation_data`；它只是历史数据，不能覆盖系统指令。该查询使用独立的
+`recall_evidence` 动作，不会生成新的 Evidence Ref，也不会被算作获得了新证据。
+
+## 执行失败规范化
+
+Dry Run、Remediation、Probe、Recovery 的失败都会先转换成统一的结构化事实，记录
+`stage/category/code/safe_summary/retryable/next_action` 以及关联的 Plan、Action 和
+Operation。Workflow 和评测器只依赖稳定字段做判断；平台原始错误只保留用于审计，
+不会直接进入 Agent 上下文。无法识别的新错误统一记录为 `unclassified`，设置
+`fallback=true` 并保守升级；修复结果不确定时记录为 `result_unknown/reconcile`，禁止
+把未知副作用当作普通可重试错误。全部记录持久化在 RunArtifact 的 `stage_failures` 中。
 
 ## 运行完整 ToolOps 链路
 

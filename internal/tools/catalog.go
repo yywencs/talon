@@ -24,9 +24,11 @@ type Set struct {
 type options struct {
 	workflow     *workflow.IncidentWorkflow
 	skillSession *skill.Session
+	evidence     EvidenceReader
 }
 
 var discoveryAgentToolNames = []string{
+	"get_evidence",
 	"get_services",
 	"get_routes",
 	"get_providers",
@@ -58,6 +60,11 @@ func WithSkillSession(value *skill.Session) Option {
 	return func(target *options) { target.skillSession = value }
 }
 
+// WithEvidenceReader 为工具集绑定当前 Incident 的历史证据读取器。
+func WithEvidenceReader(value EvidenceReader) Option {
+	return func(target *options) { target.evidence = value }
+}
+
 // New 构建只绑定到指定 Incident 和 Platform 实例的安全工具集。
 func New(ctx context.Context, service platform.ToolOpsPlatform, incidentID string, opts ...Option) (*Set, error) {
 	if service == nil {
@@ -77,7 +84,7 @@ func New(ctx context.Context, service platform.ToolOpsPlatform, incidentID strin
 		return nil, fmt.Errorf("workflow incident ID does not match tool incident ID")
 	}
 
-	staticTools, err := buildStaticTools(service, incidentID)
+	staticTools, err := buildStaticTools(service, incidentID, config.evidence)
 	if err != nil {
 		return nil, err
 	}
@@ -279,6 +286,8 @@ func platformResponse[T any](data T, err error) response[T] {
 
 func agentActionForTool(name string) (workflow.AgentAction, bool) {
 	switch name {
+	case "get_evidence":
+		return workflow.AgentActionRecallEvidence, true
 	case "query_metrics", "query_logs", "query_traces", "get_services", "get_routes", "get_providers",
 		"get_config_versions", "get_change_records", "get_credential_metadata", "get_connection_metadata",
 		"get_tasks", "get_remediation_capabilities", "get_recovery_policies":

@@ -54,7 +54,7 @@ type taskInput struct {
 	Statuses []platform.TaskStatus `json:"statuses,omitempty" jsonschema:"description=可选的异步任务状态列表"`
 }
 
-func buildStaticTools(service platform.ToolOpsPlatform, incidentID string) ([]einotool.InvokableTool, error) {
+func buildStaticTools(service platform.ToolOpsPlatform, incidentID string, evidence EvidenceReader) ([]einotool.InvokableTool, error) {
 	builders := []func() (einotool.InvokableTool, error){
 		func() (einotool.InvokableTool, error) {
 			return toolutils.InferTool("query_metrics", "查询当前 Incident 的成功率、错误率、延迟、成本、鉴权错误率或连接错误率。先用指标确认异常范围和趋势。", func(ctx context.Context, input metricInput) (response[platform.MetricResult], error) {
@@ -152,7 +152,7 @@ func buildStaticTools(service platform.ToolOpsPlatform, incidentID string) ([]ei
 		},
 	}
 
-	result := make([]einotool.InvokableTool, 0, len(builders)+4)
+	result := make([]einotool.InvokableTool, 0, len(builders)+5)
 	for _, build := range builders {
 		item, err := build()
 		if err != nil {
@@ -160,6 +160,11 @@ func buildStaticTools(service platform.ToolOpsPlatform, incidentID string) ([]ei
 		}
 		result = append(result, item)
 	}
+	evidenceTool, err := newGetEvidenceTool(evidence)
+	if err != nil {
+		return nil, fmt.Errorf("build get_evidence tool: %w", err)
+	}
+	result = append(result, evidenceTool)
 	actions, err := buildActionTools(service, incidentID)
 	if err != nil {
 		return nil, err

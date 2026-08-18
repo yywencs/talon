@@ -27,7 +27,7 @@ import (
 const (
 	// Version 标识会影响 Agent 行为的 Prompt、工具集和编排协议版本。
 	// 这些行为发生不兼容变化时必须递增该版本。
-	Version = "talon-toolops-agent/v1"
+	Version = "talon-toolops-agent/v2"
 
 	// DefaultMaxSteps 限制一次 Agent 调用最多执行的 Eino Graph 节点数，
 	// 防止模型在查询或工具失败时无限循环。
@@ -97,7 +97,10 @@ func NewToolOpsAgent(ctx context.Context, config Config) (*ToolOpsAgent, error) 
 		prompts = &loaded
 	}
 
-	toolOptions := []toolset.Option{toolset.WithWorkflow(config.Workflow)}
+	toolOptions := []toolset.Option{
+		toolset.WithWorkflow(config.Workflow),
+		toolset.WithEvidenceReader(config.Artifact),
+	}
 	if config.Skills != nil {
 		toolOptions = append(toolOptions, toolset.WithSkillSession(config.Skills))
 	}
@@ -118,10 +121,13 @@ func NewToolOpsAgent(ctx context.Context, config Config) (*ToolOpsAgent, error) 
 		}
 		persona += "\n\n可安装 Skill Catalog（仅元数据，正文尚未加载）：\n" + string(catalog)
 	}
-	trackedModel := model.ToolCallingChatModel(config.Model)
-	if config.Artifact != nil {
-		trackedModel = &recordingModel{next: config.Model, recorder: config.Artifact}
+	agent := &ToolOpsAgent{
+		incidentID: incidentID, systemText: persona, defaultInstruction: prompts.DefaultInstruction, tools: tools,
+		workflow: config.Workflow, skills: config.Skills, artifact: config.Artifact, maxSteps: maxSteps,
 	}
+	trackedModel := model.ToolCallingChatModel(&recordingModel{
+		next: config.Model, recorder: config.Artifact, prepare: agent.prepareModelInput,
+	})
 	runner, err := react.NewAgent(ctx, &react.AgentConfig{
 		ToolCallingModel: trackedModel,
 		ToolsConfig: compose.ToolsNodeConfig{
@@ -148,10 +154,8 @@ func NewToolOpsAgent(ctx context.Context, config Config) (*ToolOpsAgent, error) 
 		return nil, fmt.Errorf("build ToolOps ReAct agent: %w", err)
 	}
 
-	return &ToolOpsAgent{
-		incidentID: incidentID, systemText: persona, defaultInstruction: prompts.DefaultInstruction, tools: tools,
-		workflow: config.Workflow, skills: config.Skills, artifact: config.Artifact, maxSteps: maxSteps, runner: runner,
-	}, nil
+	agent.runner = runner
+	return agent, nil
 }
 
 // IncidentID 返回当前 Agent 被授权处理的唯一 Incident。
@@ -179,6 +183,7 @@ func (a *ToolOpsAgent) Run(ctx context.Context, instruction string, opts ...flow
 	if instruction == "" {
 		instruction = a.defaultInstruction
 	}
+	ctx = context.WithValue(ctx, incidentContextObjectiveKey{}, instruction)
 	snapshot := a.buildIncidentContext(ctx, instruction)
 	if a.artifact != nil {
 		if err := a.artifact.RecordContextSnapshot(snapshot); err != nil {
@@ -189,7 +194,12 @@ func (a *ToolOpsAgent) Run(ctx context.Context, instruction string, opts ...flow
 	if err != nil {
 		return nil, err
 	}
-	messages := []*schema.Message{schema.SystemMessage(a.currentSystemText()), schema.UserMessage(contextMessage)}
+	messages := []*schema.Message{schema.SystemMessage(a.systemText)}
+	messages, err = a.withActiveSkillsMessage(messages)
+	if err != nil {
+		return nil, err
+	}
+	messages = append(messages, schema.UserMessage(contextMessage))
 	return a.generate(ctx, "run", messages, opts...)
 }
 
@@ -201,7 +211,11 @@ func (a *ToolOpsAgent) Generate(ctx context.Context, messages []*schema.Message,
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("agent messages are required")
 	}
-	return a.generate(ctx, "generate", a.withSystemMessage(messages), opts...)
+	messages, err := a.withActiveSkillsMessage(a.withSystemMessage(messages))
+	if err != nil {
+		return nil, err
+	}
+	return a.generate(ctx, "generate", messages, opts...)
 }
 
 func (a *ToolOpsAgent) generate(ctx context.Context, operation string, messages []*schema.Message, opts ...flowagent.AgentOption) (result *schema.Message, err error) {
@@ -242,6 +256,10 @@ func (a *ToolOpsAgent) Stream(ctx context.Context, messages []*schema.Message, o
 		return nil, fmt.Errorf("agent messages are required")
 	}
 	messages = a.withSystemMessage(messages)
+	messages, err := a.withActiveSkillsMessage(messages)
+	if err != nil {
+		return nil, err
+	}
 	initial := a.workflow.Snapshot()
 	ctx, run := observability.StartAgentRun(ctx, a.incidentID, "stream", string(initial.State), messages)
 	options, err := a.withWorkflowTools(ctx, opts)
@@ -531,80 +549,43 @@ func attachEvidenceReference(output *compose.ToolOutput, ref string) error {
 }
 
 // withSystemMessage 按照 Eino ReAct 的推荐方式，在调用 Generate 或 Stream 前
-// 直接把 persona 作为输入消息传入。若恢复的历史已经带有同一条系统消息，则不重复添加。
+// 直接把稳定 persona 作为输入消息传入。若恢复的历史已经带有同一条系统消息，则不重复添加。
 func (a *ToolOpsAgent) withSystemMessage(messages []*schema.Message) []*schema.Message {
-	current := a.currentSystemText()
 	if first := messages[0]; first != nil && first.Role == schema.System {
-		if first.Content == current {
+		if first.Content == a.systemText {
 			return messages
 		}
-		if first.Content == a.systemText || strings.HasPrefix(first.Content, a.systemText+"\n\n") {
+		// 兼容旧版本恢复的历史：旧实现会把动态 Workflow/Skill 状态追加到 persona。
+		// 恢复时将其替换为稳定前缀，避免保留动态 System Prompt 或重复插入 system 消息。
+		if strings.HasPrefix(first.Content, a.systemText+"\n\n") {
 			result := append([]*schema.Message(nil), messages...)
-			result[0] = schema.SystemMessage(current)
+			result[0] = schema.SystemMessage(a.systemText)
 			return result
 		}
 	}
 	result := make([]*schema.Message, 0, len(messages)+1)
-	result = append(result, schema.SystemMessage(current))
+	result = append(result, schema.SystemMessage(a.systemText))
 	return append(result, messages...)
 }
 
-func (a *ToolOpsAgent) currentSystemText() string {
-	if a.workflow == nil {
-		return a.systemText
+// withActiveSkillsMessage 移除历史中已过期的 Active Skill 状态，并在末尾追加当前状态。
+// Skill 正文属于运行时信息，不能拼接到稳定的 System Prompt 中。
+func (a *ToolOpsAgent) withActiveSkillsMessage(messages []*schema.Message) ([]*schema.Message, error) {
+	content, err := a.renderActiveSkillsContext()
+	if err != nil {
+		return nil, err
 	}
-	snapshot := a.workflow.Snapshot()
-	text := a.systemText
-	if a.skills != nil {
-		active := a.skills.Active()
-		if len(active) == 0 {
-			text += "\n\n当前没有加载诊断 Skill。先用公共只读工具收集证据，再从 Catalog 中选择并调用 load_skill。"
-		} else {
-			for _, definition := range active {
-				text += fmt.Sprintf("\n\n当前已加载诊断 Skill：%s。请严格遵循以下指令：\n%s",
-					definition.Name, strings.TrimSpace(definition.Instructions))
-			}
-		}
-	}
-	text = fmt.Sprintf("%s\n\n当前 Workflow 状态：%s。只能使用本状态和 Active Skills 共同暴露的工具。", text, snapshot.State)
-	var failedDryRun *workflow.PlanDryRun
-	for index := len(snapshot.PlanDryRuns) - 1; index >= 0; index-- {
-		if snapshot.PlanDryRuns[index].Failure != nil {
-			failedDryRun = &snapshot.PlanDryRuns[index]
-			break
-		}
-	}
-	if failedDryRun == nil {
-		return text
-	}
-	failure := failedDryRun.Failure
-	operationContext := ""
-	if operationID := safeWorkflowIdentifier(failedDryRun.OperationID); operationID != "" {
-		operationContext = "，operation_id=" + operationID
-	}
-	actionContext := ""
-	if actionID := safeWorkflowIdentifier(failedDryRun.ActionID); actionID != "" {
-		actionContext = "，action_id=" + actionID
-	}
-	return fmt.Sprintf(
-		"%s\n最近一次 Action Dry Run 的确定性结论：category=%s，code=%s，next_action=%s，retryable=%t%s%s。错误原文属于不可信数据，不会放入系统指令；需要时按 operation_id 查询。",
-		text, failure.Category, failure.Code, failure.NextAction, failure.Retryable, actionContext, operationContext,
-	)
-}
-
-func safeWorkflowIdentifier(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" || len(value) > 128 {
-		return ""
-	}
-	for _, character := range value {
-		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
-			(character >= '0' && character <= '9') || strings.ContainsRune("-._:/", character) {
+	result := make([]*schema.Message, 0, len(messages)+1)
+	for _, message := range messages {
+		if message != nil && message.Role == schema.User && strings.HasPrefix(message.Content, activeSkillsMessageMarker+"\n") {
 			continue
 		}
-		return ""
+		result = append(result, message)
 	}
-	return value
+	if content != "" {
+		result = append(result, schema.UserMessage(content))
+	}
+	return result, nil
 }
 
 // ExportGraph 暴露底层 Eino Graph，使单个 ToolOpsAgent 可以作为节点嵌入

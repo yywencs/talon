@@ -3,7 +3,6 @@ package config
 import (
 	"os"
 	"strconv"
-	"strings"
 )
 
 // 辅助函数：简化获取环境变量的逻辑
@@ -12,14 +11,6 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-func getEnvAsBool(key string, fallback bool) bool {
-	val := getEnv(key, "")
-	if val == "" {
-		return fallback
-	}
-	return strings.ToLower(val) == "true"
 }
 
 func Int(env string, defaultValue int) int {

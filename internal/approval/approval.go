@@ -1,4 +1,4 @@
-// Package approval 保存需要人工处理的 Action 级审批单。
+// Package approval 定义需要人工处理的 Action 级审批单及其持久化端口。
 package approval
 
 import (

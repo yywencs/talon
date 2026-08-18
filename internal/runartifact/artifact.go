@@ -21,16 +21,22 @@ const SchemaVersion = "talon.run-artifact/v2"
 
 const (
 	CapabilityCanonicalEvidenceIDs        = "canonical_evidence_ids"
+	CapabilityEvidenceLookup              = "evidence_lookup"
 	CapabilityIncidentContextSnapshot     = "incident_context_snapshot"
+	CapabilityPerModelContextSnapshot     = "per_model_context_snapshot"
 	CapabilityStructuredExperience        = "structured_experience"
 	CapabilityStructuredEscalationHandoff = "structured_escalation_handoff"
+	CapabilityStructuredStageFailures     = "structured_stage_failures"
 )
 
 var currentCapabilities = []string{
 	CapabilityCanonicalEvidenceIDs,
+	CapabilityEvidenceLookup,
 	CapabilityIncidentContextSnapshot,
+	CapabilityPerModelContextSnapshot,
 	CapabilityStructuredEscalationHandoff,
 	CapabilityStructuredExperience,
+	CapabilityStructuredStageFailures,
 }
 
 // Provenance identifies the code and dataset that produced a run.
@@ -114,14 +120,15 @@ type TokenUsage struct {
 }
 
 type ModelCall struct {
-	Sequence     int                 `json:"sequence"`
-	StartedAt    time.Time           `json:"started_at"`
-	FinishedAt   time.Time           `json:"finished_at"`
-	Duration     time.Duration       `json:"duration"`
-	FinishReason string              `json:"finish_reason,omitempty"`
-	ToolCalls    []RequestedToolCall `json:"tool_calls,omitempty"`
-	Usage        TokenUsage          `json:"usage"`
-	Error        string              `json:"error,omitempty"`
+	Sequence        int                      `json:"sequence"`
+	StartedAt       time.Time                `json:"started_at"`
+	FinishedAt      time.Time                `json:"finished_at"`
+	Duration        time.Duration            `json:"duration"`
+	FinishReason    string                   `json:"finish_reason,omitempty"`
+	ToolCalls       []RequestedToolCall      `json:"tool_calls,omitempty"`
+	Usage           TokenUsage               `json:"usage"`
+	Error           string                   `json:"error,omitempty"`
+	ContextSnapshot *IncidentContextSnapshot `json:"context_snapshot,omitempty"`
 }
 
 type RequestedToolCall struct {
@@ -145,6 +152,17 @@ type ToolCall struct {
 	EvidenceRef   string               `json:"evidence_ref,omitempty"`
 	EvidenceIDs   []string             `json:"evidence_ids"`
 	IsNewEvidence bool                 `json:"is_new_evidence,omitempty"`
+}
+
+// EvidenceRecord 是按 Evidence Ref 从当前 RunArtifact 取回的不可变历史观察。
+// Output 仍属于不可信外部数据，调用方必须在提供给模型前进行脱敏和大小限制。
+type EvidenceRecord struct {
+	EvidenceRef string          `json:"evidence_ref"`
+	EvidenceIDs []string        `json:"evidence_ids"`
+	SourceTool  string          `json:"source_tool"`
+	AgentRun    int             `json:"agent_run"`
+	ObservedAt  time.Time       `json:"observed_at"`
+	Output      json.RawMessage `json:"output"`
 }
 
 type BlockedAttempt struct {
@@ -184,8 +202,19 @@ type Summary struct {
 }
 
 type Failure struct {
-	Stage   string `json:"stage"`
-	Message string `json:"message"`
+	Stage           string    `json:"stage"`
+	Category        string    `json:"category,omitempty"`
+	Code            string    `json:"code,omitempty"`
+	SafeSummary     string    `json:"safe_summary,omitempty"`
+	Message         string    `json:"message"`
+	NextAction      string    `json:"next_action,omitempty"`
+	Retryable       bool      `json:"retryable,omitempty"`
+	Fallback        bool      `json:"fallback,omitempty"`
+	PlanID          string    `json:"plan_id,omitempty"`
+	ActionID        string    `json:"action_id,omitempty"`
+	OperationID     string    `json:"operation_id,omitempty"`
+	OperationStatus string    `json:"operation_status,omitempty"`
+	OccurredAt      time.Time `json:"occurred_at,omitempty"`
 }
 
 // IncidentExperience is a deterministic index over facts already retained in
@@ -197,26 +226,27 @@ type IncidentExperience struct {
 }
 
 type RunArtifact struct {
-	SchemaVersion   string                `json:"schema_version"`
-	Capabilities    []string              `json:"capabilities"`
-	Provenance      Provenance            `json:"provenance"`
-	RunConfig       RunConfig             `json:"run_config"`
-	RunID           string                `json:"run_id"`
-	ScenarioID      string                `json:"scenario_id"`
-	StartedAt       time.Time             `json:"started_at"`
-	FinishedAt      time.Time             `json:"finished_at"`
-	Duration        time.Duration         `json:"duration"`
-	Outcome         string                `json:"outcome"`
-	StopReason      string                `json:"stop_reason,omitempty"`
-	Failure         *Failure              `json:"failure,omitempty"`
-	AgentRuns       []AgentRun            `json:"agent_runs"`
-	Plans           []workflow.Plan       `json:"plans"`
-	WorkflowHistory []workflow.Transition `json:"workflow_history"`
-	BlockedAttempts []BlockedAttempt      `json:"blocked_attempts"`
-	Operations      []platform.Operation  `json:"operations"`
-	FinalState      FinalState            `json:"final_state"`
-	Experience      IncidentExperience    `json:"experience"`
-	Summary         Summary               `json:"summary"`
+	SchemaVersion   string                  `json:"schema_version"`
+	Capabilities    []string                `json:"capabilities"`
+	Provenance      Provenance              `json:"provenance"`
+	RunConfig       RunConfig               `json:"run_config"`
+	RunID           string                  `json:"run_id"`
+	ScenarioID      string                  `json:"scenario_id"`
+	StartedAt       time.Time               `json:"started_at"`
+	FinishedAt      time.Time               `json:"finished_at"`
+	Duration        time.Duration           `json:"duration"`
+	Outcome         string                  `json:"outcome"`
+	StopReason      string                  `json:"stop_reason,omitempty"`
+	Failure         *Failure                `json:"failure,omitempty"`
+	AgentRuns       []AgentRun              `json:"agent_runs"`
+	Plans           []workflow.Plan         `json:"plans"`
+	WorkflowHistory []workflow.Transition   `json:"workflow_history"`
+	StageFailures   []workflow.StageFailure `json:"stage_failures"`
+	BlockedAttempts []BlockedAttempt        `json:"blocked_attempts"`
+	Operations      []platform.Operation    `json:"operations"`
+	FinalState      FinalState              `json:"final_state"`
+	Experience      IncidentExperience      `json:"experience"`
+	Summary         Summary                 `json:"summary"`
 }
 
 type Recorder struct {
@@ -233,7 +263,7 @@ func New(scenarioID string, provenance Provenance, config RunConfig) *Recorder {
 	if strings.TrimSpace(config.ContextVersion) == "" {
 		config.ContextVersion = IncidentContextSchemaVersion
 	}
-	return &Recorder{artifact: RunArtifact{SchemaVersion: SchemaVersion, Capabilities: append([]string(nil), currentCapabilities...), Provenance: provenance, RunConfig: config, RunID: newRunID(), ScenarioID: strings.TrimSpace(scenarioID), StartedAt: now(), Outcome: "running", AgentRuns: []AgentRun{}, Plans: []workflow.Plan{}, WorkflowHistory: []workflow.Transition{}, BlockedAttempts: []BlockedAttempt{}, Operations: []platform.Operation{}, FinalState: FinalState{Routes: []platform.Route{}, Providers: []ProviderState{}, Configs: []ConfigState{}, Connections: []ConnectionState{}, Tasks: []TaskState{}}, Experience: IncidentExperience{Fields: []string{}, Sources: map[string][]string{}}}, evidence: map[string]struct{}{}, now: now}
+	return &Recorder{artifact: RunArtifact{SchemaVersion: SchemaVersion, Capabilities: append([]string(nil), currentCapabilities...), Provenance: provenance, RunConfig: config, RunID: newRunID(), ScenarioID: strings.TrimSpace(scenarioID), StartedAt: now(), Outcome: "running", AgentRuns: []AgentRun{}, Plans: []workflow.Plan{}, WorkflowHistory: []workflow.Transition{}, StageFailures: []workflow.StageFailure{}, BlockedAttempts: []BlockedAttempt{}, Operations: []platform.Operation{}, FinalState: FinalState{Routes: []platform.Route{}, Providers: []ProviderState{}, Configs: []ConfigState{}, Connections: []ConnectionState{}, Tasks: []TaskState{}}, Experience: IncidentExperience{Fields: []string{}, Sources: map[string][]string{}}}, evidence: map[string]struct{}{}, now: now}
 }
 
 func (r *Recorder) RecordContextSnapshot(snapshot IncidentContextSnapshot) error {
@@ -291,6 +321,7 @@ func (r *Recorder) EndAgentRun(snapshot workflow.Snapshot, err error) {
 	}
 	r.artifact.Plans = clonePlans(snapshot.Plans)
 	r.artifact.WorkflowHistory = append([]workflow.Transition{}, snapshot.History...)
+	r.artifact.StageFailures = append([]workflow.StageFailure{}, snapshot.Failures...)
 	if err != nil {
 		run.Error = err.Error()
 	}
@@ -299,6 +330,15 @@ func (r *Recorder) EndAgentRun(snapshot workflow.Snapshot, err error) {
 }
 
 func (r *Recorder) RecordModelCall(start time.Time, message *schema.Message, err error) {
+	r.recordModelCall(start, message, err, nil)
+}
+
+// RecordModelCallWithContext 保存模型调用结果及调用前实际注入的上下文快照。
+func (r *Recorder) RecordModelCallWithContext(start time.Time, message *schema.Message, err error, snapshot IncidentContextSnapshot) {
+	r.recordModelCall(start, message, err, &snapshot)
+}
+
+func (r *Recorder) recordModelCall(start time.Time, message *schema.Message, err error, snapshot *IncidentContextSnapshot) {
 	if r == nil {
 		return
 	}
@@ -310,6 +350,10 @@ func (r *Recorder) RecordModelCall(start time.Time, message *schema.Message, err
 	run := &r.artifact.AgentRuns[r.currentRun-1]
 	end := r.now()
 	call := ModelCall{Sequence: len(run.ModelCalls) + 1, StartedAt: start, FinishedAt: end, Duration: end.Sub(start)}
+	if snapshot != nil {
+		sealed := SealIncidentContextSnapshot(*snapshot)
+		call.ContextSnapshot = &sealed
+	}
 	if err != nil {
 		call.Error = err.Error()
 	}
@@ -401,6 +445,33 @@ func (r *Recorder) ValidateEvidenceRefs(refs []string) error {
 	return nil
 }
 
+// GetEvidence 按稳定 Evidence Ref 返回当前 Incident 中成功只读调用的历史观察。
+// 它不接受 Call ID，避免调用方混淆模型请求标识与 Artifact 证据标识。
+func (r *Recorder) GetEvidence(ref string) (EvidenceRecord, error) {
+	if r == nil {
+		return EvidenceRecord{}, fmt.Errorf("run artifact recorder is required")
+	}
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return EvidenceRecord{}, fmt.Errorf("evidence_ref is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, run := range r.artifact.AgentRuns {
+		for _, call := range run.ToolCalls {
+			if call.EvidenceRef != ref || call.Action != workflow.AgentActionRead || call.Status != "succeeded" {
+				continue
+			}
+			return EvidenceRecord{
+				EvidenceRef: call.EvidenceRef, EvidenceIDs: append([]string(nil), call.EvidenceIDs...),
+				SourceTool: call.Name, AgentRun: run.Sequence, ObservedAt: call.FinishedAt,
+				Output: append(json.RawMessage(nil), call.Output...),
+			}, nil
+		}
+	}
+	return EvidenceRecord{}, fmt.Errorf("evidence %q was not found in the current Incident", ref)
+}
+
 func (r *Recorder) Finish(stopReason string, snapshot workflow.Snapshot, err error) RunArtifact {
 	if r == nil {
 		return RunArtifact{}
@@ -413,13 +484,40 @@ func (r *Recorder) Finish(stopReason string, snapshot workflow.Snapshot, err err
 	r.artifact.Outcome = "completed"
 	if err != nil {
 		r.artifact.Outcome = "failed"
-		r.artifact.Failure = &Failure{Stage: stageFor(snapshot.State), Message: err.Error()}
+		r.artifact.Failure = artifactFailure(snapshot, err)
 	}
 	r.artifact.Plans = clonePlans(snapshot.Plans)
 	r.artifact.WorkflowHistory = append([]workflow.Transition{}, snapshot.History...)
+	r.artifact.StageFailures = append([]workflow.StageFailure{}, snapshot.Failures...)
 	r.rebuildExperienceLocked()
 	r.rebuildSummaryLocked()
 	return cloneArtifact(r.artifact)
+}
+
+func artifactFailure(snapshot workflow.Snapshot, err error) *Failure {
+	result := &Failure{Stage: stageFor(snapshot.State), Message: err.Error()}
+	if len(snapshot.Failures) == 0 {
+		result.Category = string(workflow.FailureCategoryUnclassified)
+		result.Code = "unclassified_run_error"
+		result.SafeSummary = "运行在当前阶段因未分类错误而终止"
+		result.NextAction = string(workflow.FailureNextEscalate)
+		result.Fallback = true
+		return result
+	}
+	latest := snapshot.Failures[len(snapshot.Failures)-1]
+	result.Stage = string(latest.Stage)
+	result.Category = string(latest.Category)
+	result.Code = latest.Code
+	result.SafeSummary = latest.SafeSummary
+	result.NextAction = string(latest.NextAction)
+	result.Retryable = latest.Retryable
+	result.Fallback = latest.Fallback
+	result.PlanID = latest.PlanID
+	result.ActionID = latest.ActionID
+	result.OperationID = latest.OperationID
+	result.OperationStatus = latest.OperationStatus
+	result.OccurredAt = latest.OccurredAt
+	return result
 }
 
 func (r *Recorder) Snapshot() RunArtifact {
@@ -635,6 +733,9 @@ func Normalize(value RunArtifact) RunArtifact {
 	}
 	if value.WorkflowHistory == nil {
 		value.WorkflowHistory = []workflow.Transition{}
+	}
+	if value.StageFailures == nil {
+		value.StageFailures = []workflow.StageFailure{}
 	}
 	if value.BlockedAttempts == nil {
 		value.BlockedAttempts = []BlockedAttempt{}

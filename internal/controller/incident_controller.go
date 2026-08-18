@@ -220,11 +220,15 @@ func investigationInstruction(snapshot workflow.Snapshot) string {
 	}
 	reason := "上一阶段执行失败"
 	metadata := map[string]string(nil)
-	if len(snapshot.History) > 0 {
-		last := snapshot.History[len(snapshot.History)-1]
-		metadata = last.Metadata
-		if strings.TrimSpace(last.Reason) != "" {
-			reason = strings.TrimSpace(last.Reason)
+	if len(snapshot.Failures) > 0 {
+		failure := snapshot.Failures[len(snapshot.Failures)-1]
+		if strings.TrimSpace(failure.SafeSummary) != "" {
+			reason = strings.TrimSpace(failure.SafeSummary)
+		}
+		metadata = map[string]string{
+			"stage": string(failure.Stage), "category": string(failure.Category), "code": failure.Code,
+			"next_action": string(failure.NextAction), "operation_id": failure.OperationID,
+			"action_id": failure.ActionID, "plan_id": failure.PlanID,
 		}
 	}
 	contextText := reinvestigationContext(metadata)
@@ -232,7 +236,7 @@ func investigationInstruction(snapshot workflow.Snapshot) string {
 }
 
 func reinvestigationContext(metadata map[string]string) string {
-	keys := []string{"operation_id", "route_id", "policy_id", "outcome", "action_id", "plan_id"}
+	keys := []string{"stage", "category", "code", "next_action", "operation_id", "action_id", "plan_id"}
 	values := make([]string, 0, len(keys))
 	for _, key := range keys {
 		if value := strings.TrimSpace(metadata[key]); value != "" {
