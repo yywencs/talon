@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/wen/opentalon/internal/evaluation"
+	"github.com/wen/opentalon/internal/runartifact"
+	"github.com/wen/opentalon/internal/scenario"
 	"github.com/wen/opentalon/internal/storage"
 )
 
@@ -22,6 +25,7 @@ type options struct {
 	outputDir      string
 	envFile        string
 	timeout        time.Duration
+	preflight      bool
 }
 
 func main() {
@@ -54,6 +58,9 @@ func run(arguments []string) error {
 		return fmt.Errorf("open PostgreSQL storage: %w", err)
 	}
 	defer database.Close()
+	if opts.preflight {
+		return runPreflight(ctx, database.RunArtifacts(), opts)
+	}
 
 	manifest, err := evaluation.ExportBatch(ctx, evaluation.ExportConfig{
 		Store: database.RunArtifacts(), DataRoot: opts.dataRoot,
@@ -67,6 +74,28 @@ func run(arguments []string) error {
 	return nil
 }
 
+func runPreflight(ctx context.Context, store runartifact.Store, opts options) error {
+	if _, err := scenario.LoadDataset(filepath.Join(opts.dataRoot, opts.datasetVersion)); err != nil {
+		return fmt.Errorf("validate evaluation dataset: %w", err)
+	}
+	artifacts, err := store.List(ctx, runartifact.VersionFilter{
+		SchemaVersion:  runartifact.SchemaVersion,
+		CodeVersion:    opts.codeVersion,
+		DatasetVersion: opts.datasetVersion,
+	})
+	if err != nil {
+		return fmt.Errorf("check existing run artifacts: %w", err)
+	}
+	if len(artifacts) != 0 {
+		return fmt.Errorf(
+			"found %d existing run artifacts for code=%s dataset=%s; choose a unique evaluation version",
+			len(artifacts), opts.codeVersion, opts.datasetVersion,
+		)
+	}
+	fmt.Printf("preflight passed (code=%s dataset=%s)\n", opts.codeVersion, opts.datasetVersion)
+	return nil
+}
+
 func parseOptions(arguments []string) (options, error) {
 	set := flag.NewFlagSet("talon-export", flag.ContinueOnError)
 	set.SetOutput(os.Stderr)
@@ -77,6 +106,7 @@ func parseOptions(arguments []string) (options, error) {
 	set.StringVar(&result.outputDir, "output", "", "新建的导出目录")
 	set.StringVar(&result.envFile, "env-file", ".env", "存在时加载 DATABASE_DSN 的环境变量文件；空值表示不加载")
 	set.DurationVar(&result.timeout, "timeout", time.Minute, "导出操作的时间上限")
+	set.BoolVar(&result.preflight, "preflight", false, "只校验数据集、数据库连接和目标版本无历史 Artifact")
 	if err := set.Parse(arguments); err != nil {
 		return options{}, err
 	}
@@ -89,7 +119,7 @@ func parseOptions(arguments []string) (options, error) {
 	if result.codeVersion == "" {
 		return options{}, fmt.Errorf("code-version is required")
 	}
-	if result.outputDir == "" {
+	if result.outputDir == "" && !result.preflight {
 		return options{}, fmt.Errorf("output is required")
 	}
 	if result.timeout <= 0 {

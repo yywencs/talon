@@ -17,17 +17,19 @@ import (
 	"github.com/wen/opentalon/internal/llm"
 	"github.com/wen/opentalon/internal/observability"
 	"github.com/wen/opentalon/internal/runartifact"
+	"github.com/wen/opentalon/internal/scenario"
 	"github.com/wen/opentalon/internal/storage"
 )
 
 type options struct {
-	datasetRoot string
-	scenarioID  string
-	envFile     string
-	timeout     time.Duration
-	autoApprove bool
-	maxSteps    int
-	showVersion bool
+	datasetRoot   string
+	scenarioID    string
+	envFile       string
+	timeout       time.Duration
+	autoApprove   bool
+	maxSteps      int
+	showVersion   bool
+	listScenarios bool
 }
 
 func main() {
@@ -47,6 +49,16 @@ func run(arguments []string) error {
 	}
 	if opts.showVersion {
 		fmt.Fprintf(os.Stdout, "%s (commit %s)\n", buildinfo.AgentVersion, buildinfo.Commit)
+		return nil
+	}
+	if opts.listScenarios {
+		dataset, err := scenario.LoadDataset(opts.datasetRoot)
+		if err != nil {
+			return fmt.Errorf("load scenarios: %w", err)
+		}
+		for _, item := range dataset.Cases {
+			fmt.Fprintln(os.Stdout, item.Scenario.Metadata.ID)
+		}
 		return nil
 	}
 	if opts.envFile != "" {
@@ -87,19 +99,16 @@ func run(arguments []string) error {
 	}
 	defer database.Close()
 
-	result, err := app.Run(ctx, app.Config{
+	_, err = app.Run(ctx, app.Config{
 		DatasetRoot: opts.datasetRoot, ScenarioID: opts.scenarioID,
 		Model: chatModel, Storage: database, Output: os.Stdout,
 		AutoApprove: opts.autoApprove, AgentMaxSteps: opts.maxSteps,
 		PromptDirectory: llmConfig.PromptsDir,
-		Provenance: runartifact.Provenance{CodeVersion: buildinfo.AgentVersion},
-		RunConfig:  runartifact.RunConfig{ModelProvider: llmConfig.Provider, Model: llmConfig.Model},
+		Provenance:      runartifact.Provenance{CodeVersion: buildinfo.AgentVersion},
+		RunConfig:       runartifact.RunConfig{ModelProvider: llmConfig.Provider, Model: llmConfig.Model},
 	})
 	if err != nil {
 		return err
-	}
-	if result.Controller.Reason == "escalated" {
-		return fmt.Errorf("incident was escalated; inspect the workflow output")
 	}
 	return nil
 }
@@ -115,6 +124,7 @@ func parseOptions(arguments []string) (options, error) {
 	set.BoolVar(&result.autoApprove, "auto-approve", true, "仅在隔离的 Simulator 场景中自动批准待审批 Action")
 	set.IntVar(&result.maxSteps, "max-agent-steps", 24, "单次 Agent ReAct 最大步骤数")
 	set.BoolVar(&result.showVersion, "version", false, "显示构建时注入的 Agent 版本和 Git commit")
+	set.BoolVar(&result.listScenarios, "list-scenarios", false, "列出数据集中的场景 ID 后退出，不初始化模型或数据库")
 	if err := set.Parse(arguments); err != nil {
 		return options{}, err
 	}

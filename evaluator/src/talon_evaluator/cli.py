@@ -1,3 +1,5 @@
+"""Talon Evaluator 命令行入口，统一单文件、批次目录和可选 Judge 模式。"""
+
 import argparse
 import json
 import sys
@@ -10,6 +12,8 @@ from .judge import JudgeConfig, JudgeError, OpenAICompatibleJudge, evaluate_with
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """声明命令行参数；Judge 配置既可来自 env 文件，也可由参数覆盖。"""
+
     parser = argparse.ArgumentParser(description="Evaluate a Talon input JSON or export directory")
     parser.add_argument("input", type=Path, help="evaluation input JSON or export directory")
     parser.add_argument("--output", "-o", type=Path, help="write result JSON instead of stdout")
@@ -26,6 +30,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """执行评测并返回稳定退出码：0 无失败、1 评测失败、2 基础设施或输入错误。"""
+
     args = build_parser().parse_args(argv)
     try:
         evaluate_one = evaluate
@@ -43,6 +49,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
             judge = OpenAICompatibleJudge(config)
             evaluate_one = lambda payload: evaluate_with_judge(payload, judge)
+        # 目录输入需要看所有 Run 是否成功；单文件则直接看该次 verdict。
         if args.input.is_dir():
             result = evaluate_directory(args.input, evaluate_one)
             failed = result["summary"]["successful_runs"] != result["summary"]["runs"]

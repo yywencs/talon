@@ -37,6 +37,7 @@ func TestRecorderSummarizesModelsEvidenceAndBlockedCalls(t *testing.T) {
 	assert.Equal(t, "test-code", artifact.Provenance.CodeVersion)
 	assert.Equal(t, "test-data", artifact.Provenance.DatasetVersion)
 	assert.Equal(t, "test-model", artifact.RunConfig.Model)
+	assert.Equal(t, IncidentContextSchemaVersion, artifact.RunConfig.ContextVersion)
 	assert.Equal(t, workflow.StatePlanned, artifact.FinalState.WorkflowState)
 	require.Len(t, artifact.AgentRuns, 1)
 	assert.Equal(t, 1, artifact.Summary.ModelCalls)
@@ -51,6 +52,27 @@ func TestRecorderSummarizesModelsEvidenceAndBlockedCalls(t *testing.T) {
 	assert.Contains(t, artifact.Experience.Fields, "symptoms")
 	assert.Contains(t, artifact.Experience.Fields, "applicability")
 	assert.Equal(t, "denied", artifact.AgentRuns[0].ToolCalls[1].Status)
+}
+
+func TestRecorderStoresSealedIncidentContextOnCurrentAgentRun(t *testing.T) {
+	recorder := New("incident-001", Provenance{}, RunConfig{})
+	recorder.BeginAgentRun("investigate", workflow.Snapshot{State: workflow.StateInvestigating})
+	require.NoError(t, recorder.RecordContextSnapshot(IncidentContextSnapshot{
+		IncidentID: "incident-001", Objective: "investigate",
+		Workflow: IncidentContextWorkflow{State: string(workflow.StateInvestigating)},
+		Evidence: []IncidentContextEvidence{{EvidenceRef: "tool:query_logs:abc", EvidenceIDs: []string{"log.connection_refused"}}},
+	}))
+
+	artifact := recorder.Snapshot()
+	require.Len(t, artifact.AgentRuns, 1)
+	require.NotNil(t, artifact.AgentRuns[0].ContextSnapshot)
+	contextSnapshot := artifact.AgentRuns[0].ContextSnapshot
+	assert.Equal(t, IncidentContextSchemaVersion, contextSnapshot.SchemaVersion)
+	assert.Equal(t, "incident-001", contextSnapshot.IncidentID)
+	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, contextSnapshot.Digest)
+	assert.NotNil(t, contextSnapshot.ActiveSkills)
+	assert.NotNil(t, contextSnapshot.Plans)
+	assert.NotNil(t, contextSnapshot.Constraints)
 }
 
 func TestRecorderDoesNotCountRepeatedEvidenceAsNewAndAttributesFailure(t *testing.T) {

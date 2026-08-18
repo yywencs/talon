@@ -41,3 +41,10 @@ func TestParseOptionsSupportsVersion(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.showVersion)
 }
+
+func TestParseOptionsSupportsListingScenarios(t *testing.T) {
+	result, err := parseOptions([]string{"--dataset=data/toolops-v1", "--list-scenarios"})
+	require.NoError(t, err)
+	assert.True(t, result.listScenarios)
+	assert.Equal(t, "data/toolops-v1", result.datasetRoot)
+}

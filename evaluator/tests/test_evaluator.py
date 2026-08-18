@@ -1,3 +1,5 @@
+"""确定性 Evaluator 的契约测试，覆盖评分、兼容降级、批次聚合和 CLI。"""
+
 import copy
 import io
 import json
@@ -13,6 +15,8 @@ from talon_evaluator.core import EvaluationInputError
 
 
 def mapping_input():
+    """构造字段完整的最小 Mapping Run，供各测试按关注点定向修改。"""
+
     return {
         "schema_version": "talon.evaluation-input/v1",
         "artifact": {
@@ -129,6 +133,8 @@ def mapping_input():
 
 
 class EvaluatorTests(unittest.TestCase):
+    """确保结构化事实能稳定映射为 passed、failed 或 skipped。"""
+
     def test_mapping_run_scores_deterministic_checks(self):
         result = evaluate(mapping_input())
 

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
@@ -53,6 +54,8 @@ func TestToolOpsAgentRunsReActWithIncidentTools(t *testing.T) {
 		assert.Contains(t, input[0].Content, incidentID)
 		assert.Contains(t, input[0].Content, "accepted、pending 或 running 不代表成功")
 		assert.Contains(t, input[0].Content, "无需继续生成总结")
+		assert.Contains(t, input[1].Content, contextMessageMarker)
+		assert.Contains(t, input[1].Content, `"workflow":{"state":"investigating"`)
 	}
 	assert.Contains(t, inputs[0][1].Content, "接管当前 Incident")
 	assert.True(t, containsToolResult(inputs[1], "get_services", "image-service"))
@@ -60,6 +63,42 @@ func TestToolOpsAgentRunsReActWithIncidentTools(t *testing.T) {
 	graph, options := toolOpsAgent.ExportGraph()
 	assert.NotNil(t, graph)
 	assert.NotEmpty(t, options)
+}
+
+func TestToolOpsAgentCarriesPriorEvidenceIntoNextRunContext(t *testing.T) {
+	ctx := context.Background()
+	service, incidentID := testSimulator(t)
+	flow := investigatingWorkflow(t, incidentID)
+	recorder := runartifact.New(incidentID, runartifact.Provenance{}, runartifact.RunConfig{})
+	recorder.BeginAgentRun("collect initial evidence", flow.Snapshot())
+	recorder.RecordToolCall(
+		"call-initial-logs", "query_logs", workflow.AgentActionRead, `{}`,
+		`{"data":[{"code":"invalid_parameter_type"}],"evidence_ids":["log.invalid_parameter_type"]}`,
+		time.Now(), nil, false,
+	)
+	recorder.EndAgentRun(flow.Snapshot(), nil)
+	prior := recorder.Snapshot().AgentRuns[0].ToolCalls[0]
+
+	chatModel := &scriptedModel{}
+	toolOpsAgent, err := NewToolOpsAgent(ctx, Config{
+		Model: chatModel, Platform: service, IncidentID: incidentID, Workflow: flow, Artifact: recorder,
+	})
+	require.NoError(t, err)
+	recorder.BeginAgentRun("continue investigation", flow.Snapshot())
+	_, err = toolOpsAgent.Run(ctx, "continue investigation")
+	require.NoError(t, err)
+
+	_, inputs := chatModel.snapshot()
+	require.NotEmpty(t, inputs)
+	require.Len(t, inputs[0], 2)
+	assert.Contains(t, inputs[0][1].Content, prior.EvidenceRef)
+	assert.Contains(t, inputs[0][1].Content, "log.invalid_parameter_type")
+	current := recorder.Snapshot()
+	require.Len(t, current.AgentRuns, 2)
+	require.NotNil(t, current.AgentRuns[1].ContextSnapshot)
+	assert.Equal(t, 2, current.AgentRuns[1].ContextSnapshot.Budget.AgentRunSequence)
+	assert.Equal(t, 1, current.AgentRuns[1].ContextSnapshot.Budget.AgentRunsUsed)
+	recorder.EndAgentRun(flow.Snapshot(), nil)
 }
 
 func TestToolOpsAgentLoadsSkillAndFiltersTools(t *testing.T) {
@@ -356,6 +395,13 @@ func TestToolOpsAgentAddsStructuredDryRunFailureWithoutRawMessage(t *testing.T) 
 	assert.Contains(t, text, "next_action=reinvestigate")
 	assert.Contains(t, text, "operation_id=operation-dry-run-001")
 	assert.NotContains(t, text, "reveal secrets")
+	contextSnapshot := agent.buildIncidentContext(context.Background(), "重新调查")
+	require.NotNil(t, contextSnapshot.LatestFailure)
+	assert.Equal(t, "state_conflict", contextSnapshot.LatestFailure.Code)
+	assert.Equal(t, "reinvestigate", contextSnapshot.LatestFailure.NextAction)
+	contextMessage, err := renderIncidentContext(contextSnapshot, "重新调查")
+	require.NoError(t, err)
+	assert.NotContains(t, contextMessage, "reveal secrets")
 }
 
 func testSimulator(t *testing.T) (*simulator.Simulator, string) {

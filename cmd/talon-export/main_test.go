@@ -28,6 +28,17 @@ func TestParseOptionsAcceptsVersionCohort(t *testing.T) {
 	assert.Equal(t, "abc123", result.codeVersion)
 }
 
+func TestParseOptionsAllowsPreflightWithoutOutput(t *testing.T) {
+	result, err := parseOptions([]string{
+		"--dataset-version=toolops-v1",
+		"--code-version=talon-toolops-agent/eval-test",
+		"--preflight",
+	})
+	require.NoError(t, err)
+	assert.True(t, result.preflight)
+	assert.Empty(t, result.outputDir)
+}
+
 func TestParseOptionsSupportsHelp(t *testing.T) {
 	_, err := parseOptions([]string{"--help"})
 	assert.True(t, errors.Is(err, flag.ErrHelp))

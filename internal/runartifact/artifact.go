@@ -21,12 +21,14 @@ const SchemaVersion = "talon.run-artifact/v2"
 
 const (
 	CapabilityCanonicalEvidenceIDs        = "canonical_evidence_ids"
+	CapabilityIncidentContextSnapshot     = "incident_context_snapshot"
 	CapabilityStructuredExperience        = "structured_experience"
 	CapabilityStructuredEscalationHandoff = "structured_escalation_handoff"
 )
 
 var currentCapabilities = []string{
 	CapabilityCanonicalEvidenceIDs,
+	CapabilityIncidentContextSnapshot,
 	CapabilityStructuredEscalationHandoff,
 	CapabilityStructuredExperience,
 }
@@ -42,10 +44,11 @@ type Provenance struct {
 // RunConfig records the inputs that can materially change Agent behavior.
 // Secrets and endpoints must never be stored here.
 type RunConfig struct {
-	ModelProvider string `json:"model_provider,omitempty"`
-	Model         string `json:"model,omitempty"`
-	AgentMaxSteps int    `json:"agent_max_steps"`
-	AutoApprove   bool   `json:"auto_approve"`
+	ModelProvider  string `json:"model_provider,omitempty"`
+	Model          string `json:"model,omitempty"`
+	AgentMaxSteps  int    `json:"agent_max_steps"`
+	AutoApprove    bool   `json:"auto_approve"`
+	ContextVersion string `json:"context_version,omitempty"`
 }
 
 // ProviderState is the evaluation-safe subset of a Provider. Endpoint details
@@ -153,18 +156,19 @@ type BlockedAttempt struct {
 }
 
 type AgentRun struct {
-	Sequence        int             `json:"sequence"`
-	Instruction     string          `json:"instruction"`
-	InitialState    workflow.State  `json:"initial_state"`
-	FinalState      workflow.State  `json:"final_state"`
-	StartedAt       time.Time       `json:"started_at"`
-	FinishedAt      time.Time       `json:"finished_at"`
-	Duration        time.Duration   `json:"duration"`
-	ModelCalls      []ModelCall     `json:"model_calls"`
-	ToolCalls       []ToolCall      `json:"tool_calls"`
-	Plans           []workflow.Plan `json:"plans"`
-	NewEvidenceRefs []string        `json:"new_evidence_refs,omitempty"`
-	Error           string          `json:"error,omitempty"`
+	Sequence        int                      `json:"sequence"`
+	Instruction     string                   `json:"instruction"`
+	InitialState    workflow.State           `json:"initial_state"`
+	FinalState      workflow.State           `json:"final_state"`
+	StartedAt       time.Time                `json:"started_at"`
+	FinishedAt      time.Time                `json:"finished_at"`
+	Duration        time.Duration            `json:"duration"`
+	ModelCalls      []ModelCall              `json:"model_calls"`
+	ToolCalls       []ToolCall               `json:"tool_calls"`
+	Plans           []workflow.Plan          `json:"plans"`
+	NewEvidenceRefs []string                 `json:"new_evidence_refs,omitempty"`
+	Error           string                   `json:"error,omitempty"`
+	ContextSnapshot *IncidentContextSnapshot `json:"context_snapshot,omitempty"`
 }
 
 type Summary struct {
@@ -226,7 +230,24 @@ type Recorder struct {
 
 func New(scenarioID string, provenance Provenance, config RunConfig) *Recorder {
 	now := time.Now
+	if strings.TrimSpace(config.ContextVersion) == "" {
+		config.ContextVersion = IncidentContextSchemaVersion
+	}
 	return &Recorder{artifact: RunArtifact{SchemaVersion: SchemaVersion, Capabilities: append([]string(nil), currentCapabilities...), Provenance: provenance, RunConfig: config, RunID: newRunID(), ScenarioID: strings.TrimSpace(scenarioID), StartedAt: now(), Outcome: "running", AgentRuns: []AgentRun{}, Plans: []workflow.Plan{}, WorkflowHistory: []workflow.Transition{}, BlockedAttempts: []BlockedAttempt{}, Operations: []platform.Operation{}, FinalState: FinalState{Routes: []platform.Route{}, Providers: []ProviderState{}, Configs: []ConfigState{}, Connections: []ConnectionState{}, Tasks: []TaskState{}}, Experience: IncidentExperience{Fields: []string{}, Sources: map[string][]string{}}}, evidence: map[string]struct{}{}, now: now}
+}
+
+func (r *Recorder) RecordContextSnapshot(snapshot IncidentContextSnapshot) error {
+	if r == nil {
+		return fmt.Errorf("run artifact recorder is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.currentRun == 0 {
+		return fmt.Errorf("an Agent run must be active before recording context")
+	}
+	sealed := SealIncidentContextSnapshot(snapshot)
+	r.artifact.AgentRuns[r.currentRun-1].ContextSnapshot = &sealed
+	return nil
 }
 
 // RecordFinalState records the platform-independent operations and reduced

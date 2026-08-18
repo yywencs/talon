@@ -1,4 +1,4 @@
-"""Batch evaluation for one versioned Talon export directory."""
+"""按 manifest 批量评测一个版本化 Talon 导出目录，并聚合运行指标。"""
 
 import json
 from collections import Counter
@@ -15,6 +15,8 @@ def evaluate_directory(
     directory: Path,
     evaluate_one: Callable[[Mapping[str, Any]], Dict[str, Any]] = evaluate,
 ) -> Dict[str, Any]:
+    """校验 manifest 与每个 Artifact 的对应关系，再逐 Run 执行指定评测函数。"""
+
     directory = directory.resolve()
     manifest = _read_json(directory / "manifest.json")
     if not isinstance(manifest, Mapping):
@@ -40,6 +42,7 @@ def evaluate_directory(
         artifact = payload.get("artifact")
         if not isinstance(artifact, Mapping):
             raise EvaluationInputError("evaluation input {} has no artifact".format(file_name))
+        # manifest 是批次索引，必须与文件内 Artifact 一致，防止错配或替换文件。
         for field in ("run_id", "scenario_id", "outcome"):
             if artifact.get(field) != entry.get(field):
                 raise EvaluationInputError(
@@ -80,6 +83,8 @@ def evaluate_directory(
 
 
 def _run_result(artifact: Mapping[str, Any], result: Mapping[str, Any]) -> Dict[str, Any]:
+    """把单 Run 的 Artifact 指标和规则结果压缩成批次报告所需的稳定摘要。"""
+
     summary = _mapping(artifact.get("summary"))
     evaluation_summary = _mapping(result.get("summary"))
     failure = _mapping(artifact.get("failure"))
@@ -116,9 +121,12 @@ def _run_result(artifact: Mapping[str, Any], result: Mapping[str, Any]) -> Dict[
 
 
 def _aggregate(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """聚合一组 Run；score 只统计已评项，coverage 额外反映 skipped 比例。"""
+
     count = len(runs)
     completed = sum(run["runtime_outcome"] == "completed" for run in runs)
     failed_runtime = sum(run["runtime_outcome"] == "failed" for run in runs)
+    # incomplete 不是失败：本地确定性模式允许把语义题留给后续 LLM Judge。
     successful = sum(
         run["runtime_outcome"] == "completed" and run["verdict"] != "failed"
         for run in runs

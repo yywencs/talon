@@ -1,3 +1,5 @@
+"""LLM Judge 的隔离测试，不访问真实模型端点。"""
+
 import json
 import tempfile
 import unittest
@@ -18,6 +20,8 @@ from test_evaluator import mapping_input
 
 
 class FakeJudge:
+    """记录最小化 Judge 载荷，并返回预设结果。"""
+
     def __init__(self, outcome):
         self.config = JudgeConfig(
             provider="openai-compatible",
@@ -33,6 +37,8 @@ class FakeJudge:
 
 
 class FakeHTTPResponse:
+    """模拟 urllib 上下文管理器响应，验证请求与解析逻辑。"""
+
     def __init__(self, payload):
         self.payload = json.dumps(payload).encode("utf-8")
 
@@ -47,6 +53,8 @@ class FakeHTTPResponse:
 
 
 class JudgeTests(unittest.TestCase):
+    """覆盖阈值、输出协议、模型溯源、代理绕过和批次保真。"""
+
     def test_loopback_judge_bypasses_environment_proxy(self):
         opener = _url_opener("http://127.0.0.1:11434/v1/chat/completions")
 

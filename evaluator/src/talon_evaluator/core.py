@@ -1,4 +1,4 @@
-"""Versioned deterministic scoring for Talon evaluation bundles."""
+"""Talon 版本化确定性评测核心：只依据结构化事实评分，不猜测自由文本语义。"""
 
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -10,10 +10,14 @@ EXPECTATION_SCHEMA_VERSION = "toolops-expectation/v1.1"
 
 
 class EvaluationInputError(ValueError):
+    """输入 JSON、Schema 或版本契约不满足评测要求。"""
+
     pass
 
 
 class _Checks:
+    """按统一结构收集 passed、failed 和因信息不足而 skipped 的检查项。"""
+
     def __init__(self) -> None:
         self.values: List[Dict[str, Any]] = []
 
@@ -51,6 +55,8 @@ class _Checks:
 
 
 def evaluate(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    """校验输入后，按诊断、修复、探针、恢复、升级和经验六个阶段评分。"""
+
     artifact, expectations = _validate_input(payload)
     checks = _Checks()
 
@@ -66,6 +72,7 @@ def evaluate(payload: Mapping[str, Any]) -> Dict[str, Any]:
     operations = _dict_list(artifact.get("operations"))
     plans = _dict_list(artifact.get("plans"))
     tool_calls = _tool_calls(artifact)
+    # dry-run 只验证计划可执行性，不能算作真正发生的修复动作。
     remediation_ops = [
         value
         for value in operations
@@ -98,6 +105,7 @@ def evaluate(payload: Mapping[str, Any]) -> Dict[str, Any]:
     skipped = sum(value["status"] == "skipped" for value in checks.values)
     evaluated = passed + failed
     total = len(checks.values)
+    # skipped 不等于失败，但意味着证据覆盖不完整，最终 verdict 必须是 incomplete。
     verdict = "failed" if failed else ("incomplete" if skipped else "passed")
 
     provenance = _dict(artifact.get("provenance"))
@@ -125,6 +133,8 @@ def evaluate(payload: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def _validate_input(payload: Mapping[str, Any]) -> Tuple[Mapping[str, Any], Mapping[str, Any]]:
+    """在评分前锁定输入、Artifact 与 expectations 的 Schema 和场景对应关系。"""
+
     if not isinstance(payload, Mapping):
         raise EvaluationInputError("evaluation input must be a JSON object")
     if payload.get("schema_version") != INPUT_SCHEMA_VERSION:
@@ -182,6 +192,8 @@ def _score_diagnosis(
     escalation_ops: Sequence[Mapping[str, Any]],
     expectations: Mapping[str, Any],
 ) -> None:
+    """检查根因是否被记录，以及 Plan/升级引用的证据是否覆盖场景要求。"""
+
     expected = _dict(expectations.get("diagnosis"))
     if expected.get("acceptable_root_causes"):
         roots = [value.get("root_cause") for value in plans if value.get("root_cause")]
@@ -198,6 +210,7 @@ def _score_diagnosis(
             roots,
             "a Plan root cause or escalation diagnosis must be recorded",
         )
+        # 自由文本根因不能用字符串相似度可靠判断，明确留给版本化 LLM Judge。
         checks.skip(
             "diagnosis.root_cause_correctness",
             "diagnosis",
@@ -275,6 +288,8 @@ def _score_remediation(
     probe_ops: Sequence[Mapping[str, Any]],
     expectations: Mapping[str, Any],
 ) -> int:
+    """检查计划动作、dry-run、禁止行为和实际修复是否符合 expectations。"""
+
     expected = _dict(expectations.get("remediation"))
     planned_actions = [
         action for plan in plans for action in _dict_list(plan.get("actions"))
@@ -335,6 +350,8 @@ def _score_probe(
     probe_ops: Sequence[Mapping[str, Any]],
     expectations: Mapping[str, Any],
 ) -> None:
+    """确认修复后确实执行了指定路由和策略的小流量探针。"""
+
     expected = _dict(expectations.get("probe"))
     if "must_request" in expected:
         must_request = bool(expected.get("must_request"))
@@ -402,6 +419,8 @@ def _score_recovery(
     forbidden_failures: int,
     expectations: Mapping[str, Any],
 ) -> None:
+    """验证 Controller 恢复步骤、最终状态和多轮修复次数。"""
+
     expected = _dict(expectations.get("recovery"))
     final_state = _dict(artifact.get("final_state"))
     if "agent_must_request_recovery" in expected:
@@ -499,6 +518,8 @@ def _score_escalation(
     escalation_ops: Sequence[Mapping[str, Any]],
     expectations: Mapping[str, Any],
 ) -> None:
+    """验证升级时机、稳定 reason_code、目标团队和结构化 handoff。"""
+
     expected = _dict(expectations.get("escalation"))
     if "expected" in expected:
         wanted = bool(expected.get("expected"))
@@ -567,6 +588,8 @@ def _score_escalation(
 def _score_experience(
     checks: _Checks, artifact: Mapping[str, Any], expectations: Mapping[str, Any]
 ) -> None:
+    """检查 RunArtifact 是否生成可供后续检索和复盘的结构化经验索引。"""
+
     expected = _dict(expectations.get("experience"))
     if expected.get("must_record"):
         required = set(_string_list(expected.get("must_record")))
@@ -597,6 +620,8 @@ def _supports(artifact: Mapping[str, Any], capability: str) -> bool:
 def _cited_evidence_ids(
     tool_calls: Sequence[Mapping[str, Any]], references: Sequence[Any]
 ) -> set[str]:
+    """只汇总 Plan/升级实际引用的只读调用，未引用的查询不能冒充有效证据。"""
+
     cited = {value for value in references if isinstance(value, str) and value}
     result: set[str] = set()
     peer_addresses: set[str] = set()
@@ -618,12 +643,15 @@ def _cited_evidence_ids(
                 endpoint = provider.get("endpoint")
                 if isinstance(endpoint, str) and endpoint.strip():
                     provider_endpoints.add(endpoint.strip())
+    # Trace 对端与 Provider 声明端点不一致时，派生“旧地址”这一跨工具证据。
     if provider_endpoints and any(peer not in provider_endpoints for peer in peer_addresses):
         result.add("trace.peer_address_obsolete")
     return result
 
 
 def _failed_probe_evidence_ids(artifact: Mapping[str, Any]) -> set[str]:
+    """提取失败探针之后的新查询证据，并从前后连接快照派生状态变化。"""
+
     has_failed_probe = any(
         operation.get("kind") == "probe"
         and operation.get("status") == "succeeded"

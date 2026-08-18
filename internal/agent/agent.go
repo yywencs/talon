@@ -61,6 +61,8 @@ type ToolOpsAgent struct {
 	tools              *toolset.Set
 	workflow           *workflow.IncidentWorkflow
 	skills             *skill.Session
+	artifact           *runartifact.Recorder
+	maxSteps           int
 	runner             *react.Agent
 }
 
@@ -148,7 +150,7 @@ func NewToolOpsAgent(ctx context.Context, config Config) (*ToolOpsAgent, error) 
 
 	return &ToolOpsAgent{
 		incidentID: incidentID, systemText: persona, defaultInstruction: prompts.DefaultInstruction, tools: tools,
-		workflow: config.Workflow, skills: config.Skills, runner: runner,
+		workflow: config.Workflow, skills: config.Skills, artifact: config.Artifact, maxSteps: maxSteps, runner: runner,
 	}, nil
 }
 
@@ -177,10 +179,17 @@ func (a *ToolOpsAgent) Run(ctx context.Context, instruction string, opts ...flow
 	if instruction == "" {
 		instruction = a.defaultInstruction
 	}
-	messages := []*schema.Message{
-		schema.SystemMessage(a.currentSystemText()),
-		schema.UserMessage(instruction),
+	snapshot := a.buildIncidentContext(ctx, instruction)
+	if a.artifact != nil {
+		if err := a.artifact.RecordContextSnapshot(snapshot); err != nil {
+			return nil, fmt.Errorf("record Incident context snapshot: %w", err)
+		}
 	}
+	contextMessage, err := renderIncidentContext(snapshot, instruction)
+	if err != nil {
+		return nil, err
+	}
+	messages := []*schema.Message{schema.SystemMessage(a.currentSystemText()), schema.UserMessage(contextMessage)}
 	return a.generate(ctx, "run", messages, opts...)
 }
 
