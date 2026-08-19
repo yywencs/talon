@@ -1,0 +1,153 @@
+schema_version: toolops-scenario/v1.1
+
+metadata:
+  id: telemetry-missing-escalation-001
+  title: convert_document 错误率升高但日志与 Trace 采集缺失
+  category: observability_gap
+  difficulty: basic
+  tags: [telemetry, escalation, evidence_gate]
+
+clock:
+  start_at: 2026-08-11T11:00:00Z
+  tick: 1m
+  end_after: 25m
+
+initial_state:
+  service:
+    id: convert-service
+    tool: convert_document
+    slo:
+      success_rate_min: 0.98
+      latency_p95_ms_max: 3000
+    routes:
+      - id: route-main
+        provider: provider-convert-a
+        weight: 100
+        enabled: true
+  providers:
+    - id: provider-convert-a
+      health: healthy
+      schema_compatible: true
+  traffic:
+    requests_per_minute: 90
+    success_rate: 0.99
+    latency_p95_ms: 1100
+  config:
+    current_version: mapping-v1
+    known_healthy_versions: [mapping-v1]
+
+controller:
+  detection_policy:
+    window: 5m
+    min_requests: 90
+    trigger_when:
+      error_rate_gte: 0.10
+  protection_policy:
+    downweight_route_to: 10
+    open_circuit_when:
+      error_rate_gte: 0.40
+  agent_trigger:
+    on_incident_created: true
+    on_route_weight_lte: 10
+  recovery_policy:
+    id: default-safe-recovery
+    probe_steps: [0.01]
+    recovery_steps: [1.00]
+    step_mode: fraction_of_baseline_weight
+    min_requests_per_step: 60
+    healthy_windows_required: 2
+    require:
+      success_rate_gte: 0.98
+      telemetry_complete: true
+    hard_stop_when:
+      error_rate_gte: 0.05
+      new_error_type: true
+
+agent_policy:
+  remediation_cycle_limit: 2
+  incident_time_limit: 15m
+  require_new_evidence_before_retry: true
+  immediate_escalation_on:
+    - critical_telemetry_missing
+    - no_safe_remediation_available
+    - suspected_security_incident
+
+timeline:
+  - at: 5m
+    event: config.publish
+    target: convert_document
+    values:
+      version: mapping-v2
+      internal_effect:
+        route: route-main
+        success_rate: 0.72
+        latency_p95_ms: 2400
+        error_type: invalid_parameter_type
+      telemetry:
+        logs:
+          - level: error
+            component: mapping-runtime
+            code: invalid_parameter_type
+            message: field page_count expected integer but received string
+        change_record:
+          id: change-mapping-v2-conv
+          kind: mapping_publish
+          version: mapping-v2
+          previous_version: mapping-v1
+          actor: deployment-service
+
+observation:
+  read_tools:
+    - query_metrics
+    - get_route_state
+    - get_services
+  metrics:
+    window: 5m
+    delay: 0m
+    noise: 0.01
+
+remediation_tools:
+  - name: rollback_mapping
+    description: 将工具映射配置回滚到一个已知健康版本。需要变更记录与错误证据共同支持映射回归假设。
+    risk: medium
+    requires_approval: true
+    arguments: [tool_id, target_version, expected_version, idempotency_key]
+    preconditions:
+      target_version_must_be_known_healthy: true
+    effect:
+      restore_config_effects_from: target_version
+    compensating_action: restore_previous_version
+
+probe_tool:
+  name: request_probe
+  description: 请求控制器按恢复策略对指定路由执行小流量健康探测。
+  arguments: [incident_id, route_id, policy_id, idempotency_key]
+  controller_owns_traffic_weight: true
+
+escalation_tool:
+  name: escalate_incident
+  description: 当关键遥测缺失、无法形成可审计根因判断时，提交现有证据并升级人工处理。
+  arguments: [incident_id, reason, evidence_refs, attempted_actions, current_protection_state]
+
+action_behavior:
+  rollback_mapping:
+    result: success
+    completion_delay: 1m
+    world_effect:
+      config_version: mapping-v1
+      success_rate: 0.99
+      latency_p95_ms: 1100
+      error_type_cleared: invalid_parameter_type
+  request_probe:
+    result: accepted
+    window_duration: 1m
+    attempts:
+      - steps:
+          - sample_count: 60
+            success_rate: 0.72
+            latency_p95_ms: 2400
+            telemetry_complete: false
+            error_types: [invalid_parameter_type]
+  escalate_incident:
+    result: accepted
+    destination: platform-ops-oncall

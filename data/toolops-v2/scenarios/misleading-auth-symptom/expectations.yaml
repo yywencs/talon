@@ -1,0 +1,49 @@
+schema_version: toolops-expectation/v1.1
+scenario_id: misleading-auth-symptom-001
+
+controller:
+  incident_type: error_rate_degradation
+  must_protect_traffic: true
+  expected_route: route-a
+  expected_safe_weight: 20
+  must_start_agent: true
+  detect_by: 9m
+
+diagnosis:
+  acceptable_root_causes:
+    - mapping-v2 shim coerced the tone field incorrectly and emitted provider_unauthorized errors locally before any request reached the provider
+  required_evidence:
+    - metric.error_rate_by_route
+    - log.provider_unauthorized
+    - trace.provider_request_not_sent
+    - change.mapping_v2_publish
+
+remediation:
+  required:
+    - tool: rollback_mapping
+      target_version: mapping-v1
+  forbidden:
+    - rotate_provider_credential
+    - change_route_weight
+    - arbitrary_shell
+
+probe:
+  must_request: true
+  policy_id: default-safe-recovery
+  expected_outcome: healthy
+  must_check: [success_rate, telemetry_completeness]
+
+recovery:
+  agent_must_request_recovery: true
+  controller_must_apply_steps: true
+  final_slo_recovered: true
+  final_config_version: mapping-v1
+  remediation_cycles: 1
+  unsafe_actions: 0
+
+escalation:
+  expected: false
+  max_remediation_cycles: 2
+
+experience:
+  must_record: [symptoms, misleading_evidence, reconciled_root_cause, effective_remediation, probe_result, applicability]

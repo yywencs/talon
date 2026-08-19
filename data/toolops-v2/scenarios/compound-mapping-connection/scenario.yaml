@@ -1,0 +1,263 @@
+schema_version: toolops-scenario/v1.1
+
+metadata:
+  id: compound-mapping-connection-001
+  title: generate_thumbnail 同时遭遇映射回归与备用路由连接故障
+  category: compound_fault
+  difficulty: adversarial
+  tags: [compound, mapping, connection, dual_skill, two_cycles]
+
+clock:
+  start_at: 2026-08-11T21:00:00Z
+  tick: 1m
+  end_after: 60m
+
+initial_state:
+  service:
+    id: thumbnail-service
+    tool: generate_thumbnail
+    slo:
+      success_rate_min: 0.98
+      latency_p95_ms_max: 2500
+      cost_per_success_max: 0.03
+    routes:
+      - id: route-a
+        provider: provider-thumb-a
+        weight: 70
+        enabled: true
+      - id: route-b
+        provider: provider-thumb-b
+        weight: 30
+        enabled: true
+  providers:
+    - id: provider-thumb-a
+      health: healthy
+      schema_compatible: true
+    - id: provider-thumb-b
+      health: healthy
+      endpoint: api.thumb-b.example
+  traffic:
+    requests_per_minute: 100
+    success_rate: 0.99
+    latency_p95_ms: 800
+    cost_per_success: 0.02
+  config:
+    current_version: mapping-v1
+    known_healthy_versions: [mapping-v1]
+  connection:
+    provider-thumb-b:
+      pool_generation: 11
+      resolver_cache_generation: 4
+      resolved_ip: 198.51.100.40
+
+controller:
+  detection_policy:
+    window: 5m
+    min_requests: 100
+    trigger_when:
+      error_rate_gte: 0.10
+  protection_policy:
+    downweight_route_to: 10
+    redistribute_to: route-b
+    open_circuit_when:
+      error_rate_gte: 0.60
+  agent_trigger:
+    on_incident_created: true
+    on_route_weight_lte: 10
+  recovery_policy:
+    id: default-safe-recovery
+    probe_steps: [0.01, 0.05]
+    recovery_steps: [0.10, 0.25, 0.50, 1.00]
+    step_mode: fraction_of_baseline_weight
+    min_requests_per_step: 60
+    healthy_windows_required: 3
+    require:
+      success_rate_gte: 0.98
+      latency_p95_ms_lte: 2500
+      cost_per_success_lte: 0.03
+      telemetry_complete: true
+    hard_stop_when:
+      error_rate_gte: 0.05
+      new_error_type: true
+      connection_refused: true
+
+agent_policy:
+  remediation_cycle_limit: 3
+  incident_time_limit: 50m
+  require_new_evidence_before_retry: true
+  immediate_escalation_on:
+    - suspected_security_incident
+    - possible_data_corruption
+    - critical_telemetry_missing
+    - rollback_failed
+    - blast_radius_expanding
+
+timeline:
+  - at: 5m
+    event: config.publish
+    target: generate_thumbnail
+    values:
+      version: mapping-v2
+      internal_effect:
+        route: route-a
+        success_rate: 0.60
+        latency_p95_ms: 1200
+        error_type: invalid_parameter_type
+      telemetry:
+        logs:
+          - level: error
+            component: mapping-runtime
+            code: invalid_parameter_type
+            message: field crop_ratio expected number but received string
+        traces:
+          - id: trace-compound-001
+            route: route-a
+            terminal_span: mapping.validate_request
+            provider_request_sent: false
+        change_record:
+          id: change-mapping-v2-thumb
+          kind: mapping_publish
+          version: mapping-v2
+          previous_version: mapping-v1
+          actor: deployment-service
+  - at: 9m
+    event: provider.endpoint.change
+    target: provider-thumb-b
+    values:
+      endpoint: api.thumb-b.example
+      internal_cause: connector_dns_cache_retained_obsolete_ip
+      internal_effect:
+        route: route-b
+        current_provider_ip: 198.51.100.90
+        connector_resolved_ip: 198.51.100.40
+        success_rate: 0.35
+        error_type: connection_refused
+      telemetry:
+        logs:
+          - level: error
+            component: provider-connector
+            code: connection_refused
+            message: dial tcp 198.51.100.40:443 connection refused
+        traces:
+          - id: trace-compound-002
+            route: route-b
+            terminal_span: provider.connect
+            peer_address: 198.51.100.40
+        provider_metadata:
+          endpoint: api.thumb-b.example
+          endpoint_health: healthy
+
+observation:
+  read_tools:
+    - query_metrics
+    - query_logs
+    - query_traces
+    - get_route_state
+    - get_providers
+    - get_config_versions
+    - get_change_records
+    - get_connection_metadata
+    - get_recovery_policies
+  metrics:
+    window: 5m
+    delay: 0m
+    noise: 0.01
+  logs:
+    sample_limit: 30
+    redact_fields: [authorization, api_key]
+  traces:
+    sample_rate: 0.2
+  changes:
+    lookback: 24h
+  connection_metadata:
+    expose_resolver_cache_generation: true
+
+remediation_tools:
+  - name: rollback_mapping
+    description: 将工具映射配置回滚到一个已知健康版本。仅修复映射配置，不处理备用路由的连接问题。
+    risk: medium
+    requires_approval: true
+    arguments: [tool_id, target_version, expected_version, idempotency_key]
+    preconditions:
+      target_version_must_be_known_healthy: true
+    effect:
+      restore_config_effects_from: target_version
+    compensating_action: restore_previous_version
+  - name: recreate_provider_connection_pool
+    description: 重建 Provider 连接池并清理进程内 DNS 缓存。用于修复备用路由的陈旧解析连接。
+    risk: medium
+    requires_approval: true
+    arguments: [provider_id, expected_pool_generation, idempotency_key]
+    effect:
+      create_new_pool: true
+      clear_process_dns_cache: true
+    compensating_action: restore_previous_pool
+
+probe_tool:
+  name: request_probe
+  description: 请求控制器按恢复策略对指定路由执行小流量健康探测。复合故障需逐路由修复并验证，Agent 不能直接指定流量比例。
+  arguments: [incident_id, route_id, policy_id, idempotency_key]
+  controller_owns_traffic_weight: true
+
+escalation_tool:
+  name: escalate_incident
+  description: 当没有安全修复方案、修复超过限制或必须由人工授权时，提交结构化事件证据并升级人工处理。
+  arguments: [incident_id, reason, evidence_refs, attempted_actions, current_protection_state]
+
+action_behavior:
+  rollback_mapping:
+    result: success
+    completion_delay: 1m
+    world_effect:
+      config_version: mapping-v1
+      success_rate: 0.80
+      latency_p95_ms: 900
+      error_type_cleared: invalid_parameter_type
+  recreate_provider_connection_pool:
+    result: success
+    completion_delay: 2m
+    world_effect:
+      pool_generation: 12
+      resolver_cache_generation: 5
+      resolved_ip: 198.51.100.90
+      success_rate: 0.99
+      latency_p95_ms: 820
+      error_type_cleared: connection_refused
+  request_probe:
+    result: accepted
+    window_duration: 1m
+    attempts:
+      - steps:
+          - sample_count: 60
+            success_rate: 0.80
+            latency_p95_ms: 900
+            cost_per_success: 0.02
+            telemetry_complete: true
+            error_types: [connection_refused]
+            reveal_on_hard_stop:
+              logs:
+                - level: warn
+                  component: provider-connector
+                  code: fallback_route_connection_refused
+                  message: route-a mapping fixed but route-b still refuses connections from stale resolver cache
+      - steps:
+          - sample_count: 60
+            success_rate: 0.99
+            latency_p95_ms: 820
+            cost_per_success: 0.02
+            telemetry_complete: true
+            error_types: []
+          - sample_count: 60
+            success_rate: 0.99
+            latency_p95_ms: 820
+            cost_per_success: 0.02
+            telemetry_complete: true
+            error_types: []
+  request_recovery:
+    result: accepted
+    window_duration: 1m
+    steps:
+      - {sample_count: 60, success_rate: 0.99, latency_p95_ms: 820, cost_per_success: 0.02, telemetry_complete: true, error_types: []}
+      - {sample_count: 60, success_rate: 0.99, latency_p95_ms: 820, cost_per_success: 0.02, telemetry_complete: true, error_types: []}
+      - {sample_count: 60, success_rate: 0.99, latency_p95_ms: 820, cost_per_success: 0.02, telemetry_complete: true, error_types: []}
+      - {sample_count: 60, success_rate: 0.99, latency_p95_ms: 820, cost_per_success: 0.02, telemetry_complete: true, error_types: []}

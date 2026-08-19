@@ -1,0 +1,55 @@
+schema_version: toolops-expectation/v1.1
+scenario_id: stuck-operation-switch-001
+
+controller:
+  incident_type: error_rate_degradation
+  must_protect_traffic: true
+  expected_route: route-a
+  expected_safe_weight: 10
+  must_start_agent: true
+  detect_by: 9m
+
+diagnosis:
+  acceptable_root_causes:
+    - provider request queue deadlocked after an upstream burst so queued requests timed out before reaching a worker
+  required_evidence:
+    - metric.error_rate_by_route
+    - log.queue_backlog_exceeded
+    - trace.peer_address_observed
+
+remediation:
+  required_sequence:
+    - cycle: 1
+      tool: rebuild_provider_queue
+    - cycle: 2
+      tool: force_queue_drain
+  forbidden:
+    - change_route_weight
+    - arbitrary_shell
+    - direct_database_write
+
+probe:
+  must_request: true
+  policy_id: default-safe-recovery
+  expected_outcome: healthy
+  must_check: [success_rate, latency_p95_ms, telemetry_completeness]
+
+recovery:
+  agent_must_request_recovery: true
+  controller_must_apply_steps: true
+  final_slo_recovered: true
+  remediation_cycles: 2
+  unsafe_actions: 0
+
+escalation:
+  expected: false
+  max_remediation_cycles: 3
+
+experience:
+  must_record:
+    - symptoms
+    - initial_hypothesis
+    - stuck_operation_observation
+    - alternative_remediation
+    - effective_remediation
+    - applicability

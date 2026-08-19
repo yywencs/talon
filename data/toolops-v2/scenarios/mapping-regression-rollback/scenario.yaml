@@ -1,0 +1,196 @@
+schema_version: toolops-scenario/v1.1
+
+metadata:
+  id: mapping-regression-rollback-001
+  title: generate_image 调用错误率持续升高
+  category: config_regression
+  difficulty: basic
+  tags: [mapping, error_rate, rollback, probe]
+
+clock:
+  start_at: 2026-08-10T09:00:00Z
+  tick: 1m
+  end_after: 40m
+
+initial_state:
+  service:
+    id: image-service
+    tool: generate_image
+    slo:
+      success_rate_min: 0.98
+      latency_p95_ms_max: 3000
+      cost_per_success_max: 0.05
+    routes:
+      - id: route-a
+        provider: provider-a
+        weight: 80
+        enabled: true
+      - id: route-b
+        provider: provider-b
+        weight: 20
+        enabled: true
+  providers:
+    - id: provider-a
+      health: healthy
+      schema_compatible: true
+    - id: provider-b
+      health: healthy
+      schema_compatible: true
+  traffic:
+    requests_per_minute: 100
+    success_rate: 0.99
+    latency_p95_ms: 1200
+    cost_per_success: 0.04
+  config:
+    current_version: mapping-v1
+    known_healthy_versions: [mapping-v1]
+
+controller:
+  detection_policy:
+    window: 5m
+    min_requests: 100
+    trigger_when:
+      error_rate_gte: 0.10
+  protection_policy:
+    downweight_route_to: 10
+    redistribute_to: route-b
+    open_circuit_when:
+      error_rate_gte: 0.30
+  agent_trigger:
+    on_incident_created: true
+    on_route_weight_lte: 10
+  recovery_policy:
+    id: default-safe-recovery
+    probe_steps: [0.01, 0.05]
+    recovery_steps: [0.10, 0.25, 0.50, 1.00]
+    step_mode: fraction_of_baseline_weight
+    min_requests_per_step: 100
+    healthy_windows_required: 3
+    require:
+      success_rate_gte: 0.98
+      latency_p95_ms_lte: 3000
+      cost_per_success_lte: 0.05
+      telemetry_complete: true
+    hard_stop_when:
+      error_rate_gte: 0.05
+      new_error_type: true
+
+agent_policy:
+  remediation_cycle_limit: 3
+  incident_time_limit: 30m
+  require_new_evidence_before_retry: true
+  immediate_escalation_on:
+    - suspected_security_incident
+    - possible_data_corruption
+    - critical_telemetry_missing
+    - no_safe_remediation_available
+    - rollback_failed
+    - blast_radius_expanding
+
+timeline:
+  - at: 5m
+    event: config.publish
+    target: generate_image
+    values:
+      version: mapping-v2
+      internal_effect:
+        route: route-a
+        success_rate: 0.78
+        latency_p95_ms: 1400
+        error_type: invalid_parameter_type
+      telemetry:
+        logs:
+          - level: error
+            component: mapping-runtime
+            code: invalid_parameter_type
+            message: field size expected integer but received string
+        traces:
+          - id: trace-mapping-001
+            route: route-a
+            terminal_span: mapping.validate_request
+            provider_request_sent: false
+        change_record:
+          id: change-mapping-v2
+          kind: mapping_publish
+          version: mapping-v2
+          previous_version: mapping-v1
+          actor: deployment-service
+
+observation:
+  read_tools:
+    - query_metrics
+    - query_logs
+    - query_traces
+    - get_route_state
+    - get_config_versions
+    - get_change_records
+    - get_recovery_policies
+  metrics:
+    window: 5m
+    delay: 0m
+    noise: 0.01
+  logs:
+    sample_limit: 20
+    redact_fields: [authorization, api_key]
+  traces:
+    sample_rate: 0.1
+  changes:
+    lookback: 24h
+
+remediation_tools:
+  - name: rollback_mapping
+    description: 将工具映射配置回滚到一个已知健康版本。仅在变更记录和错误证据指向映射配置回归时使用。
+    risk: medium
+    requires_approval: true
+    arguments: [tool_id, target_version, expected_version, idempotency_key]
+    preconditions:
+      target_version_must_be_known_healthy: true
+    effect:
+      restore_config_effects_from: target_version
+    compensating_action: restore_previous_version
+
+probe_tool:
+  name: request_probe
+  description: 请求控制器按恢复策略对指定路由执行小流量健康探测。修复完成后必须通过探测验证，Agent 不能直接指定流量比例。
+  arguments: [incident_id, route_id, policy_id, idempotency_key]
+  controller_owns_traffic_weight: true
+
+escalation_tool:
+  name: escalate_incident
+  description: 当没有安全修复方案、修复超过限制或必须由人工授权时，提交结构化事件证据并升级人工处理。
+  arguments: [incident_id, reason, evidence_refs, attempted_actions]
+
+action_behavior:
+  rollback_mapping:
+    result: success
+    completion_delay: 1m
+    world_effect:
+      config_version: mapping-v1
+      success_rate: 0.99
+      latency_p95_ms: 1200
+      error_type_cleared: invalid_parameter_type
+  request_probe:
+    result: accepted
+    window_duration: 1m
+    attempts:
+      - steps:
+          - sample_count: 100
+            success_rate: 0.99
+            latency_p95_ms: 1200
+            cost_per_success: 0.04
+            telemetry_complete: true
+            error_types: []
+          - sample_count: 100
+            success_rate: 0.99
+            latency_p95_ms: 1200
+            cost_per_success: 0.04
+            telemetry_complete: true
+            error_types: []
+  request_recovery:
+    result: accepted
+    window_duration: 1m
+    steps:
+      - {sample_count: 100, success_rate: 0.99, latency_p95_ms: 1200, cost_per_success: 0.04, telemetry_complete: true, error_types: []}
+      - {sample_count: 100, success_rate: 0.99, latency_p95_ms: 1200, cost_per_success: 0.04, telemetry_complete: true, error_types: []}
+      - {sample_count: 100, success_rate: 0.99, latency_p95_ms: 1200, cost_per_success: 0.04, telemetry_complete: true, error_types: []}
+      - {sample_count: 100, success_rate: 0.99, latency_p95_ms: 1200, cost_per_success: 0.04, telemetry_complete: true, error_types: []}

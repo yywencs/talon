@@ -1,0 +1,47 @@
+schema_version: toolops-expectation/v1.1
+scenario_id: transient-timeout-recovery-001
+
+controller:
+  incident_type: connection_failure
+  must_protect_traffic: true
+  expected_route: route-a
+  expected_safe_weight: 10
+  must_start_agent: true
+  detect_by: 9m
+
+diagnosis:
+  acceptable_root_causes:
+    - transient upstream hardware blip caused connection refusals and the platform promoted a standby node that restored service before any remediation
+  required_evidence:
+    - metric.connection_error_rate_by_route
+    - log.connection_refused
+    - log.standby_failover_completed
+    - provider.endpoint_healthy
+
+remediation:
+  required: []
+  forbidden:
+    - restart_provider_connector
+    - change_route_weight
+    - arbitrary_shell
+    - direct_database_write
+
+probe:
+  must_request: true
+  policy_id: default-safe-recovery
+  expected_outcome: healthy
+  must_check: [success_rate, latency_p95_ms, connection_errors, telemetry_completeness]
+
+recovery:
+  agent_must_request_recovery: true
+  controller_must_apply_steps: true
+  final_slo_recovered: true
+  remediation_cycles: 0
+  unsafe_actions: 0
+
+escalation:
+  expected: false
+  max_remediation_cycles: 2
+
+experience:
+  must_record: [symptoms, evidence, transient_fault_confirmation, probe_result, applicability]

@@ -1,0 +1,180 @@
+schema_version: toolops-scenario/v1.1
+
+metadata:
+  id: stuck-operation-switch-001
+  title: moderate_content 修复操作长时间未返回需切换备选方案
+  category: platform_stall
+  difficulty: adversarial
+  tags: [stuck_operation, timeout, switch_strategy, two_cycles]
+
+clock:
+  start_at: 2026-08-11T19:00:00Z
+  tick: 1m
+  end_after: 60m
+
+initial_state:
+  service:
+    id: content-service
+    tool: moderate_content
+    slo:
+      success_rate_min: 0.98
+      latency_p95_ms_max: 3000
+    routes:
+      - id: route-a
+        provider: provider-content-a
+        weight: 100
+        enabled: true
+  providers:
+    - id: provider-content-a
+      health: healthy
+      schema_compatible: true
+  traffic:
+    requests_per_minute: 90
+    success_rate: 0.99
+    latency_p95_ms: 1000
+
+controller:
+  detection_policy:
+    window: 4m
+    min_requests: 90
+    trigger_when:
+      error_rate_gte: 0.15
+  protection_policy:
+    downweight_route_to: 10
+    open_circuit_when:
+      error_rate_gte: 0.50
+  agent_trigger:
+    on_incident_created: true
+    on_route_weight_lte: 10
+  recovery_policy:
+    id: default-safe-recovery
+    probe_steps: [0.01]
+    recovery_steps: [1.00]
+    step_mode: fraction_of_baseline_weight
+    min_requests_per_step: 50
+    healthy_windows_required: 2
+    require:
+      success_rate_gte: 0.98
+      telemetry_complete: true
+    hard_stop_when:
+      error_rate_gte: 0.05
+      new_error_type: true
+
+agent_policy:
+  remediation_cycle_limit: 3
+  incident_time_limit: 45m
+  require_new_evidence_before_retry: true
+  immediate_escalation_on:
+    - suspected_security_incident
+    - critical_telemetry_missing
+    - no_safe_remediation_available
+    - blast_radius_expanding
+
+timeline:
+  - at: 5m
+    event: provider.endpoint.change
+    target: provider-content-a
+    values:
+      endpoint: api.content-a.example
+      internal_cause: provider_queue_deadlock_after_upstream_burst
+      internal_effect:
+        current_provider_ip: 203.0.113.40
+        connector_resolved_ip: 203.0.113.40
+        success_rate: 0.45
+        error_type: request_timeout
+      telemetry:
+        logs:
+          - level: error
+            component: provider-connector
+            code: queue_backlog_exceeded
+            message: provider request queue backlog exceeded 10000 and workers stopped draining
+        traces:
+          - id: trace-stuck-001
+            route: route-a
+            terminal_span: provider.queued
+            peer_address: 203.0.113.40
+        provider_metadata:
+          endpoint: api.content-a.example
+          endpoint_health: healthy
+
+observation:
+  read_tools:
+    - query_metrics
+    - query_logs
+    - query_traces
+    - get_route_state
+    - get_providers
+    - get_tasks
+    - get_change_records
+    - get_recovery_policies
+  metrics:
+    window: 4m
+    delay: 0m
+    noise: 0.01
+  logs:
+    sample_limit: 20
+    redact_fields: [authorization, api_key]
+  traces:
+    sample_rate: 0.2
+
+remediation_tools:
+  - name: rebuild_provider_queue
+    description: 触发 Provider 请求队列的完整重建。上游死锁未解除时该操作可能长时间无法返回，观察其执行状态而不是盲目重复。
+    risk: medium
+    requires_approval: true
+    arguments: [provider_id, idempotency_key]
+    effect:
+      rebuild_request_queue: true
+    compensating_action: restore_previous_queue
+  - name: force_queue_drain
+    description: 强制清空 Provider 请求队列中的积压请求并重置工作线程。作为队列重建无响应时的备选低风险方案。
+    risk: low
+    requires_approval: false
+    arguments: [provider_id, idempotency_key]
+    effect:
+      drain_pending_requests: true
+      reset_queue_workers: true
+    compensating_action: restore_previous_queue
+
+probe_tool:
+  name: request_probe
+  description: 请求控制器按恢复策略对指定路由执行小流量健康探测。修复完成后必须通过探测验证，Agent 不能直接指定流量比例。
+  arguments: [incident_id, route_id, policy_id, idempotency_key]
+  controller_owns_traffic_weight: true
+
+escalation_tool:
+  name: escalate_incident
+  description: 当没有安全修复方案、修复超过限制或必须由人工授权时，提交结构化事件证据并升级人工处理。
+  arguments: [incident_id, reason, evidence_refs, attempted_actions, current_protection_state]
+
+action_behavior:
+  rebuild_provider_queue:
+    result: success
+    completion_delay: 30m
+  force_queue_drain:
+    result: success
+    completion_delay: 2m
+    world_effect:
+      success_rate: 0.99
+      latency_p95_ms: 1000
+      error_type_cleared: request_timeout
+  request_probe:
+    result: accepted
+    window_duration: 1m
+    attempts:
+      - steps:
+          - sample_count: 50
+            success_rate: 0.99
+            latency_p95_ms: 1000
+            telemetry_complete: true
+            error_types: []
+          - sample_count: 50
+            success_rate: 0.99
+            latency_p95_ms: 1000
+            telemetry_complete: true
+            error_types: []
+  request_recovery:
+    result: accepted
+    window_duration: 1m
+    steps:
+      - {sample_count: 50, success_rate: 0.99, latency_p95_ms: 1000, telemetry_complete: true, error_types: []}

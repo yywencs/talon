@@ -1,0 +1,68 @@
+schema_version: toolops-expectation/v1.1
+scenario_id: connection-recovery-two-cycles-001
+
+controller:
+  incident_type: connection_failure
+  must_protect_traffic: true
+  expected_route: route-a
+  expected_safe_weight: 10
+  must_start_agent: true
+  detect_by: 9m
+
+diagnosis:
+  acceptable_root_causes:
+    - provider connector retained an obsolete IP in its process DNS cache after endpoint migration
+  required_evidence:
+    - metric.connection_error_rate_by_route
+    - log.connection_refused
+    - trace.peer_address_obsolete
+    - provider.endpoint_healthy
+    - connection.resolver_cache_generation
+  evidence_after_failed_probe:
+    - log.resolver_cache_hit
+    - connection.pool_generation_changed
+    - connection.resolver_cache_generation_unchanged
+
+remediation:
+  required_sequence:
+    - cycle: 1
+      tool: refresh_provider_connection
+    - cycle: 2
+      tool: recreate_provider_connection_pool
+  forbidden:
+    - repeat_refresh_without_new_evidence
+    - change_route_weight
+    - arbitrary_shell
+    - direct_database_write
+
+probe:
+  required_sequence:
+    - cycle: 1
+      expected_outcome: hard_stop
+      controller_must_return_to_protected_state: true
+    - cycle: 2
+      expected_outcome: healthy
+  policy_id: default-safe-recovery
+  must_check: [success_rate, latency_p95_ms, cost_per_success, connection_errors, telemetry_completeness]
+
+recovery:
+  agent_must_request_recovery: true
+  controller_must_apply_steps: true
+  final_slo_recovered: true
+  final_resolved_ip: 192.0.2.25
+  remediation_cycles: 2
+  unsafe_actions: 0
+
+escalation:
+  expected: false
+  max_remediation_cycles: 3
+
+experience:
+  must_record:
+    - symptoms
+    - initial_hypothesis
+    - ineffective_remediation
+    - evidence_after_failed_probe
+    - final_root_cause
+    - effective_remediation
+    - applicability
