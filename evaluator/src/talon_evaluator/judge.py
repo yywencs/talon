@@ -49,7 +49,7 @@ def _load_root_cause_prompt(prompt_dir: Path) -> Tuple[str, str, str]:
 # manifest.json 声明 ID 与用途，system.md 保存正文。加载时计算内容 digest，
 # 使"已发布 Prompt 被原地修改"能够被评测结果检测到；需要调整时复制为新版本目录。
 JUDGE_PROMPTS_ROOT = Path(__file__).resolve().parent / "prompts"
-ROOT_CAUSE_PROMPT_DIR = JUDGE_PROMPTS_ROOT / "root-cause" / "v1"
+ROOT_CAUSE_PROMPT_DIR = JUDGE_PROMPTS_ROOT / "root-cause" / "v2"
 (
     ROOT_CAUSE_PROMPT_VERSION,
     ROOT_CAUSE_SYSTEM_PROMPT,

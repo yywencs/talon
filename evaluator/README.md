@@ -82,10 +82,13 @@ make eval-full \
 识别同模型自评；同模型不会被禁止，便于本地调试，但不建议用于正式基线。
 
 Judge Prompt 与 Agent Prompt 采用同一套版本化惯例，位于
-`src/talon_evaluator/prompts/root-cause/v1/`（`system.md` 正文 + `manifest.json`
-版本声明），随评测器包一起分发，不依赖 Go 侧的 `prompts/` 目录。每次评测按 Prompt
-正文计算 SHA-256 digest 并写入结果，可检测已发布 Prompt 是否被意外修改；需要调整
-Prompt 时复制为新版本目录并更新 manifest 中的 ID。
+`src/talon_evaluator/prompts/root-cause/`（当前 `v2`），每个版本一个不可变目录
+（`system.md` 正文 + `manifest.json` 版本声明），随评测器包一起分发，不依赖 Go 侧
+的 `prompts/` 目录。`v2` 在 v1 基础上引入评分档位锚点、证据引用否决、关键词堆砌
+惩罚、长度中立声明与边界示例，使判定从单条指令演进为结构化 Rubric；`v1` 原样保留
+供历史结果对账，跨版本比较 Judge 结果时应按 `prompt_version` 分组。每次评测按
+Prompt 正文计算 SHA-256 digest 并写入结果，可检测已发布 Prompt 是否被意外修改；
+需要继续调整时复制为新版本目录并更新 manifest 中的 ID。
 
 ## 结果语义
 

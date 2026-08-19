@@ -80,7 +80,7 @@ class JudgeTests(unittest.TestCase):
         self.assertEqual("passed", result["summary"]["verdict"])
         self.assertEqual(1.0, result["summary"]["coverage"])
         self.assertEqual(JUDGE_VERSION, result["judge"]["judge_version"])
-        self.assertEqual("root-cause/v1", result["judge"]["prompt_version"])
+        self.assertEqual("root-cause/v2", result["judge"]["prompt_version"])
         self.assertEqual("independent-judge", result["judge"]["model"])
         self.assertFalse(result["judge"]["same_as_agent_model"])
         self.assertEqual(120, result["judge"]["usage"]["total_tokens"])
