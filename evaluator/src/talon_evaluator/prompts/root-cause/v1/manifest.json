@@ -1,0 +1,4 @@
+{
+  "id": "root-cause/v1",
+  "description": "判定 Agent 根因陈述与参考根因语义等价且与引用证据一致，用于补充确定性规则无法覆盖的 root_cause_correctness 检查"
+}

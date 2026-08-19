@@ -76,10 +76,16 @@ make eval-full \
 ```
 
 不带 `--judge` 的原命令仍然只运行确定性规则。Judge 返回值会替换原先的语义
-`skipped` 检查，并在结果的 `judge` 字段记录模型、Judge/Prompt 版本、阈值、Token
-和耗时。模型请求失败或输出不符合 JSON 契约时命令以基础设施错误退出，不会把它
-误算成 Agent 失败。结果还会记录 `agent_model` 和 `same_as_agent_model`，用于识别
-同模型自评；同模型不会被禁止，便于本地调试，但不建议用于正式基线。
+`skipped` 检查，并在结果的 `judge` 字段记录模型、Judge/Prompt 版本、Prompt digest、
+阈值、Token 和耗时。模型请求失败或输出不符合 JSON 契约时命令以基础设施错误退出，
+不会把它误算成 Agent 失败。结果还会记录 `agent_model` 和 `same_as_agent_model`，用于
+识别同模型自评；同模型不会被禁止，便于本地调试，但不建议用于正式基线。
+
+Judge Prompt 与 Agent Prompt 采用同一套版本化惯例，位于
+`src/talon_evaluator/prompts/root-cause/v1/`（`system.md` 正文 + `manifest.json`
+版本声明），随评测器包一起分发，不依赖 Go 侧的 `prompts/` 目录。每次评测按 Prompt
+正文计算 SHA-256 digest 并写入结果，可检测已发布 Prompt 是否被意外修改；需要调整
+Prompt 时复制为新版本目录并更新 manifest 中的 ID。
 
 ## 结果语义
 
