@@ -228,7 +228,7 @@ type RemediationCapability struct {
 }
 
 // RecoveryPolicy 是 Controller 向 Agent 公开的确定性探测和逐级恢复规则。
-// Agent 只能在 Plan 中引用策略 ID，不能修改步长、健康门槛或硬停止条件。
+// Agent 只能在 ExecutionIntent 中引用策略 ID，不能修改步长、健康门槛或硬停止条件。
 type RecoveryPolicy struct {
 	ID                     string         `json:"id"`
 	ProbeSteps             []float64      `json:"probe_steps"`

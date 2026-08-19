@@ -6,18 +6,18 @@ type EventType string
 const (
 	// EventStartInvestigation 表示控制器已完成保护动作，可以开始调查。
 	EventStartInvestigation EventType = "start_investigation"
-	// EventPlanSubmitted 表示 Agent 已提交一份结构化 Plan。
-	EventPlanSubmitted EventType = "plan_submitted"
+	// EventExecutionIntentSubmitted 表示 Agent 已提交一份结构化 ExecutionIntent。
+	EventExecutionIntentSubmitted EventType = "execution_intent_submitted"
 	// EventSkillLoaded 表示 Agent 基于公开证据按需加载了一个诊断 Skill。
 	EventSkillLoaded EventType = "skill_loaded"
 	// EventSkillUnloaded 表示新证据否定原假设后，Agent 卸载了一个诊断 Skill。
 	EventSkillUnloaded EventType = "skill_unloaded"
-	// EventApprovalRequired 表示 Workflow 判定 Plan 必须等待人工审批。
+	// EventApprovalRequired 表示 Workflow 判定 ExecutionIntent 必须等待人工审批。
 	EventApprovalRequired EventType = "approval_required"
-	// EventPlanApproved 表示 Plan 已通过自动 Policy 或人工审批。
-	EventPlanApproved EventType = "plan_approved"
-	// EventPlanRejected 表示 Plan 被 Policy 或人工拒绝，需要 Agent 基于当前证据重新决策。
-	EventPlanRejected EventType = "plan_rejected"
+	// EventExecutionAuthorized 表示 ExecutionIntent 已通过自动 Policy 或人工审批。
+	EventExecutionAuthorized EventType = "execution_authorized"
+	// EventExecutionIntentRejected 表示 ExecutionIntent 被 Policy 或人工拒绝，需要 Agent 基于当前证据重新决策。
+	EventExecutionIntentRejected EventType = "execution_intent_rejected"
 	// EventStageCheckpoint 表示动态 Stage 已执行完成，必须先做确定性决策。
 	EventStageCheckpoint      EventType = "stage_checkpoint"
 	EventCheckpointContinue   EventType = "checkpoint_continue"

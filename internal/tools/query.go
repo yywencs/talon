@@ -139,13 +139,13 @@ func buildStaticTools(service platform.ToolOpsPlatform, incidentID string, evide
 			})
 		},
 		func() (einotool.InvokableTool, error) {
-			return toolutils.InferTool("get_remediation_capabilities", "获取当前 Incident 可用于制定Plan的修复能力、参数、风险和前置条件。此工具只返回目录，不执行修复。", func(ctx context.Context, input stateInput) (response[[]platform.RemediationCapability], error) {
+			return toolutils.InferTool("get_remediation_capabilities", "获取当前 Incident 可用于决定下一个短 Stage 的修复能力、参数、风险和前置条件。此工具只返回目录，不执行修复。", func(ctx context.Context, input stateInput) (response[[]platform.RemediationCapability], error) {
 				result, callErr := service.GetRemediationCapabilities(ctx, platform.StateQuery{Scope: input.scope(incidentID)})
 				return evidenceResponse(result, callErr), nil
 			})
 		},
 		func() (einotool.InvokableTool, error) {
-			return toolutils.InferTool("get_recovery_policies", "获取 Controller 允许当前 Incident 引用的探测与逐级恢复策略。提交Plan前必须读取，并原样使用返回的策略ID；Agent不能自行生成策略ID或修改流量步长。", func(ctx context.Context, input stateInput) (response[[]platform.RecoveryPolicy], error) {
+			return toolutils.InferTool("get_recovery_policies", "获取 Controller 允许当前 Incident 引用的探测与逐级恢复策略。提交执行意图前必须读取，并原样使用返回的策略 ID；Agent 不能自行生成策略 ID 或修改流量步长。", func(ctx context.Context, input stateInput) (response[[]platform.RecoveryPolicy], error) {
 				result, callErr := service.GetRecoveryPolicies(ctx, platform.StateQuery{Scope: input.scope(incidentID)})
 				return evidenceResponse(result, callErr), nil
 			})

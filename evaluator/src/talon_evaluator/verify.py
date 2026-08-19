@@ -19,6 +19,7 @@ REQUIRED_CAPABILITIES = {
     "structured_escalation_handoff",
     "structured_experience",
     "structured_stage_failures",
+    "execution_intents",
 }
 
 
@@ -143,7 +144,7 @@ def verify_export(
 
         run_config = _mapping(artifact.get("run_config"), "Artifact run_config")
         _expect(
-            run_config.get("context_version") == "talon.incident-context/v1",
+            run_config.get("context_version") == "talon.incident-context/v2",
             "Artifact context version mismatch",
         )
         agent_runs = artifact.get("agent_runs")
@@ -153,7 +154,7 @@ def verify_export(
             agent_run = _mapping(agent_run, "Artifact AgentRun")
             context = _mapping(agent_run.get("context_snapshot"), "AgentRun context_snapshot")
             _expect(
-                context.get("schema_version") == "talon.incident-context/v1",
+                context.get("schema_version") == "talon.incident-context/v2",
                 "AgentRun context schema mismatch",
             )
             _expect(context.get("incident_id") == scenario_id, "AgentRun context Incident mismatch")
@@ -172,7 +173,7 @@ def verify_export(
                     model_call.get("context_snapshot"), "ModelCall context_snapshot"
                 )
                 _expect(
-                    model_context.get("schema_version") == "talon.incident-context/v1",
+                    model_context.get("schema_version") == "talon.incident-context/v2",
                     "ModelCall context schema mismatch",
                 )
                 _expect(

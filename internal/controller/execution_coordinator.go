@@ -14,10 +14,10 @@ import (
 	"github.com/wen/opentalon/internal/workflow"
 )
 
-var ErrPlanDryRunFailed = errors.New("plan dry run failed")
+var ErrActionDryRunFailed = errors.New("intent dry run failed")
 
-// PlanProcessor 负责执行已经由 Workflow 冻结的 Plan，不让 Agent 直接调用生产写操作。
-type PlanProcessor struct {
+// ExecutionCoordinator 负责执行已经由 Workflow 冻结的 ExecutionIntent，不让 Agent 直接调用生产写操作。
+type ExecutionCoordinator struct {
 	platform         platform.ToolOpsPlatform
 	workflow         *workflow.IncidentWorkflow
 	approvalStore    approval.Store
@@ -39,12 +39,12 @@ type AsyncExecutionConfig struct {
 	OperationTimeout    time.Duration
 }
 
-// PlanProcessorOption 配置 PlanProcessor 的可选控制面能力。
-type PlanProcessorOption func(*PlanProcessor) error
+// ExecutionCoordinatorOption 配置 ExecutionCoordinator 的可选控制面能力。
+type ExecutionCoordinatorOption func(*ExecutionCoordinator) error
 
 // WithApprovalStore 接入持久化审批收件箱。
-func WithApprovalStore(store approval.Store) PlanProcessorOption {
-	return func(processor *PlanProcessor) error {
+func WithApprovalStore(store approval.Store) ExecutionCoordinatorOption {
+	return func(processor *ExecutionCoordinator) error {
 		if store == nil {
 			return fmt.Errorf("approval store is required")
 		}
@@ -54,8 +54,8 @@ func WithApprovalStore(store approval.Store) PlanProcessorOption {
 }
 
 // WithExecutionStore 接入 Action 执行记录、Worker 身份和租约时长。
-func WithExecutionStore(store execution.Store, workerID string, leaseDuration time.Duration) PlanProcessorOption {
-	return func(processor *PlanProcessor) error {
+func WithExecutionStore(store execution.Store, workerID string, leaseDuration time.Duration) ExecutionCoordinatorOption {
+	return func(processor *ExecutionCoordinator) error {
 		if store == nil {
 			return fmt.Errorf("execution store is required")
 		}
@@ -73,8 +73,8 @@ func WithExecutionStore(store execution.Store, workerID string, leaseDuration ti
 }
 
 // WithAsyncExecution 配置“短同步提交 + 异步轮询”的时间边界。
-func WithAsyncExecution(config AsyncExecutionConfig) PlanProcessorOption {
-	return func(processor *PlanProcessor) error {
+func WithAsyncExecution(config AsyncExecutionConfig) ExecutionCoordinatorOption {
+	return func(processor *ExecutionCoordinator) error {
 		if config.SubmitTimeout <= 0 || config.InitialPollInterval <= 0 ||
 			config.MaxPollInterval < config.InitialPollInterval || config.OperationTimeout <= 0 {
 			return fmt.Errorf("async execution durations are invalid")
@@ -88,8 +88,8 @@ func WithAsyncExecution(config AsyncExecutionConfig) PlanProcessorOption {
 }
 
 // WithWorkflowCheckpoint 在每个确定性执行检查点持久化 Workflow/RunArtifact。
-func WithWorkflowCheckpoint(checkpoint func(context.Context, workflow.Snapshot) error) PlanProcessorOption {
-	return func(processor *PlanProcessor) error {
+func WithWorkflowCheckpoint(checkpoint func(context.Context, workflow.Snapshot) error) ExecutionCoordinatorOption {
+	return func(processor *ExecutionCoordinator) error {
 		if checkpoint == nil {
 			return fmt.Errorf("workflow checkpoint callback is required")
 		}
@@ -98,7 +98,7 @@ func WithWorkflowCheckpoint(checkpoint func(context.Context, workflow.Snapshot) 
 	}
 }
 
-func (p *PlanProcessor) persistCheckpoint(ctx context.Context) error {
+func (p *ExecutionCoordinator) persistCheckpoint(ctx context.Context) error {
 	if p == nil || p.checkpoint == nil {
 		return nil
 	}
@@ -107,15 +107,15 @@ func (p *PlanProcessor) persistCheckpoint(ctx context.Context) error {
 	return p.checkpoint(persistCtx, p.workflow.Snapshot())
 }
 
-// NewPlanProcessor 创建 Plan 执行编排器。
-func NewPlanProcessor(service platform.ToolOpsPlatform, instance *workflow.IncidentWorkflow, options ...PlanProcessorOption) (*PlanProcessor, error) {
+// NewExecutionCoordinator 创建 ExecutionIntent 执行编排器。
+func NewExecutionCoordinator(service platform.ToolOpsPlatform, instance *workflow.IncidentWorkflow, options ...ExecutionCoordinatorOption) (*ExecutionCoordinator, error) {
 	if service == nil {
 		return nil, fmt.Errorf("toolops platform is required")
 	}
 	if instance == nil {
 		return nil, fmt.Errorf("incident workflow is required")
 	}
-	processor := &PlanProcessor{
+	processor := &ExecutionCoordinator{
 		platform: service, workflow: instance,
 		submitTimeout: 10 * time.Second, pollInitial: 2 * time.Second,
 		pollMaximum: 30 * time.Second, operationTimeout: 10 * time.Minute,
@@ -125,71 +125,71 @@ func NewPlanProcessor(service platform.ToolOpsPlatform, instance *workflow.Incid
 			continue
 		}
 		if err := option(processor); err != nil {
-			return nil, fmt.Errorf("configure plan processor: %w", err)
+			return nil, fmt.Errorf("configure execution coordinator: %w", err)
 		}
 	}
 	return processor, nil
 }
 
-// DryRun 按顺序对当前冻结 Plan 的每个 Action 做无副作用预执行。
+// DryRun 按顺序对当前冻结 ExecutionIntent 的每个 Action 做无副作用预执行。
 // 每个结果分别绑定 Action ID 和摘要；已完成的 Action 不会被重复调用。
-func (p *PlanProcessor) DryRun(ctx context.Context) ([]workflow.PlanDryRun, error) {
+func (p *ExecutionCoordinator) DryRun(ctx context.Context) ([]workflow.ActionDryRun, error) {
 	if p == nil || p.platform == nil || p.workflow == nil {
-		return nil, fmt.Errorf("plan processor is not initialized")
+		return nil, fmt.Errorf("execution coordinator is not initialized")
 	}
 	if _, err := p.workflow.ResolveCurrentStage(); err != nil {
-		return p.workflow.Snapshot().PlanDryRuns, errors.Join(ErrPlanDryRunFailed, err)
+		return p.workflow.Snapshot().ActionDryRuns, errors.Join(ErrActionDryRunFailed, err)
 	}
 	snapshot := p.workflow.Snapshot()
-	for _, result := range snapshot.PlanDryRuns {
-		if result.Status == workflow.PlanDryRunFailed {
-			return snapshot.PlanDryRuns, ErrPlanDryRunFailed
+	for _, result := range snapshot.ActionDryRuns {
+		if result.Status == workflow.ActionDryRunFailed {
+			return snapshot.ActionDryRuns, ErrActionDryRunFailed
 		}
 	}
-	if snapshot.State != workflow.StatePlanned {
-		return nil, fmt.Errorf("%w: plan dry run is not allowed in state %q", workflow.ErrInvalidTransition, snapshot.State)
+	if snapshot.State != workflow.StateValidating {
+		return nil, fmt.Errorf("%w: intent dry run is not allowed in state %q", workflow.ErrInvalidTransition, snapshot.State)
 	}
-	if snapshot.Plan == nil {
-		return nil, fmt.Errorf("planned workflow has no frozen plan")
+	if snapshot.ExecutionIntent == nil {
+		return nil, fmt.Errorf("validating workflow has no frozen intent")
 	}
 
 	actions := workflow.ExecutableActions(snapshot)
 	if len(actions) == 0 {
-		return nil, fmt.Errorf("planned workflow has no resolved actions")
+		return nil, fmt.Errorf("validating workflow has no resolved actions")
 	}
 	for _, action := range actions {
-		if terminalActionDryRun(snapshot.PlanDryRuns, action.ID) {
+		if terminalActionDryRun(snapshot.ActionDryRuns, action.ID) {
 			continue
 		}
 		operation, idempotencyKey, callErr := p.dryRunAction(ctx, snapshot.IncidentID, action)
 		status, failure := analyzeDryRunResult(operation, callErr)
-		result := workflow.PlanDryRun{
-			PlanID: snapshot.Plan.ID, ActionID: action.ID, ActionDigest: action.Digest,
+		result := workflow.ActionDryRun{
+			IntentID: snapshot.ExecutionIntent.ID, ActionID: action.ID, ActionDigest: action.Digest,
 			OperationID: operation.ID, IdempotencyKey: idempotencyKey,
 			Status: status, OperationStatus: string(operation.Status), Message: operation.Message,
 			Failure: failure, Result: cloneMap(operation.Result),
 		}
-		recorded, recordErr := p.workflow.RecordPlanDryRun(result)
+		recorded, recordErr := p.workflow.RecordActionDryRun(result)
 		if recordErr != nil {
-			return p.workflow.Snapshot().PlanDryRuns, fmt.Errorf("record action %q dry run: %w", action.ID, recordErr)
+			return p.workflow.Snapshot().ActionDryRuns, fmt.Errorf("record action %q dry run: %w", action.ID, recordErr)
 		}
 		if persistErr := p.persistCheckpoint(ctx); persistErr != nil {
-			return p.workflow.Snapshot().PlanDryRuns, fmt.Errorf("persist action %q dry run checkpoint: %w", action.ID, persistErr)
+			return p.workflow.Snapshot().ActionDryRuns, fmt.Errorf("persist action %q dry run checkpoint: %w", action.ID, persistErr)
 		}
 		if callErr != nil {
-			if recorded.Status == workflow.PlanDryRunFailed {
-				return p.workflow.Snapshot().PlanDryRuns, errors.Join(ErrPlanDryRunFailed, callErr)
+			if recorded.Status == workflow.ActionDryRunFailed {
+				return p.workflow.Snapshot().ActionDryRuns, errors.Join(ErrActionDryRunFailed, callErr)
 			}
-			return p.workflow.Snapshot().PlanDryRuns, fmt.Errorf("execute action %q dry run: %w", action.ID, callErr)
+			return p.workflow.Snapshot().ActionDryRuns, fmt.Errorf("execute action %q dry run: %w", action.ID, callErr)
 		}
-		if recorded.Status == workflow.PlanDryRunFailed {
-			return p.workflow.Snapshot().PlanDryRuns, fmt.Errorf("%w: action %q operation status %q", ErrPlanDryRunFailed, action.ID, recorded.OperationStatus)
+		if recorded.Status == workflow.ActionDryRunFailed {
+			return p.workflow.Snapshot().ActionDryRuns, fmt.Errorf("%w: action %q operation status %q", ErrActionDryRunFailed, action.ID, recorded.OperationStatus)
 		}
 	}
-	return p.workflow.Snapshot().PlanDryRuns, nil
+	return p.workflow.Snapshot().ActionDryRuns, nil
 }
 
-func (p *PlanProcessor) dryRunAction(ctx context.Context, incidentID string, action workflow.PlannedAction) (platform.Operation, string, error) {
+func (p *ExecutionCoordinator) dryRunAction(ctx context.Context, incidentID string, action workflow.IntendedAction) (platform.Operation, string, error) {
 	idempotencyKey := action.ID + ":dry-run"
 	if action.Kind == workflow.ActionKindRemediation {
 		request := remediationDryRunRequest(incidentID, action)
@@ -235,7 +235,7 @@ func nonEmptyString(arguments map[string]any, name string) (string, bool) {
 	return value, ok && value != ""
 }
 
-func remediationDryRunRequest(incidentID string, action workflow.PlannedAction) platform.RemediationRequest {
+func remediationDryRunRequest(incidentID string, action workflow.IntendedAction) platform.RemediationRequest {
 	arguments := cloneMap(action.Arguments)
 	expectedVersion, _ := arguments["expected_version"].(string)
 	delete(arguments, "idempotency_key")
@@ -248,16 +248,16 @@ func remediationDryRunRequest(incidentID string, action workflow.PlannedAction) 
 	}
 }
 
-func terminalActionDryRun(values []workflow.PlanDryRun, actionID string) bool {
+func terminalActionDryRun(values []workflow.ActionDryRun, actionID string) bool {
 	for _, value := range values {
 		if value.ActionID == actionID {
-			return value.Status == workflow.PlanDryRunSucceeded || value.Status == workflow.PlanDryRunFailed
+			return value.Status == workflow.ActionDryRunSucceeded || value.Status == workflow.ActionDryRunFailed
 		}
 	}
 	return false
 }
 
-func analyzeDryRunResult(operation platform.Operation, err error) (workflow.PlanDryRunStatus, *workflow.PlanDryRunFailure) {
+func analyzeDryRunResult(operation platform.Operation, err error) (workflow.ActionDryRunStatus, *workflow.ActionDryRunFailure) {
 	if err != nil {
 		message := strings.TrimSpace(operation.Message)
 		if message == "" {
@@ -265,48 +265,48 @@ func analyzeDryRunResult(operation platform.Operation, err error) (workflow.Plan
 		}
 		switch {
 		case errors.Is(err, platform.ErrNotFound):
-			return failedPlanDryRun(workflow.PlanDryRunFailurePlanInvalid, "capability_not_found", message, workflow.PlanDryRunNextNeedsAgent)
+			return failedActionDryRun(workflow.ActionDryRunFailureIntentInvalid, "capability_not_found", message, workflow.ActionDryRunNextNeedsAgent)
 		case errors.Is(err, platform.ErrUnsupported):
-			return failedPlanDryRun(workflow.PlanDryRunFailurePlanInvalid, "capability_unsupported", message, workflow.PlanDryRunNextNeedsAgent)
+			return failedActionDryRun(workflow.ActionDryRunFailureIntentInvalid, "capability_unsupported", message, workflow.ActionDryRunNextNeedsAgent)
 		case errors.Is(err, platform.ErrUnauthorized):
-			return failedPlanDryRun(workflow.PlanDryRunFailureAuthorizationRequired, "authorization_denied", message, workflow.PlanDryRunNextEscalate)
+			return failedActionDryRun(workflow.ActionDryRunFailureAuthorizationRequired, "authorization_denied", message, workflow.ActionDryRunNextEscalate)
 		case errors.Is(err, platform.ErrConflict):
-			return failedPlanDryRun(workflow.PlanDryRunFailurePreconditionChanged, "state_conflict", message, workflow.PlanDryRunNextNeedsAgent)
+			return failedActionDryRun(workflow.ActionDryRunFailurePreconditionChanged, "state_conflict", message, workflow.ActionDryRunNextNeedsAgent)
 		case errors.Is(err, platform.ErrPreconditionFailed):
-			return failedPlanDryRun(workflow.PlanDryRunFailurePreconditionChanged, "precondition_failed", message, workflow.PlanDryRunNextNeedsAgent)
+			return failedActionDryRun(workflow.ActionDryRunFailurePreconditionChanged, "precondition_failed", message, workflow.ActionDryRunNextNeedsAgent)
 		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
-			return workflow.PlanDryRunIndeterminate, &workflow.PlanDryRunFailure{
-				Category: workflow.PlanDryRunFailurePlatformUnavailable, Code: "platform_unavailable",
-				Message: message, NextAction: workflow.PlanDryRunNextRetry, Retryable: true,
+			return workflow.ActionDryRunIndeterminate, &workflow.ActionDryRunFailure{
+				Category: workflow.ActionDryRunFailurePlatformUnavailable, Code: "platform_unavailable",
+				Message: message, NextAction: workflow.ActionDryRunNextRetry, Retryable: true,
 			}
 		default:
-			return failedPlanDryRun(workflow.PlanDryRunFailureUnclassified, "unclassified_dry_run_error",
-				message, workflow.PlanDryRunNextEscalate)
+			return failedActionDryRun(workflow.ActionDryRunFailureUnclassified, "unclassified_dry_run_error",
+				message, workflow.ActionDryRunNextEscalate)
 		}
 	}
 	message := strings.TrimSpace(operation.Message)
 	switch operation.Status {
 	case platform.OperationPending, platform.OperationRunning:
-		return workflow.PlanDryRunPending, nil
+		return workflow.ActionDryRunPending, nil
 	case platform.OperationSucceeded:
-		return workflow.PlanDryRunSucceeded, nil
+		return workflow.ActionDryRunSucceeded, nil
 	case platform.OperationRejected:
-		return failedPlanDryRun(workflow.PlanDryRunFailurePlanInvalid, "operation_rejected", message, workflow.PlanDryRunNextNeedsAgent)
+		return failedActionDryRun(workflow.ActionDryRunFailureIntentInvalid, "operation_rejected", message, workflow.ActionDryRunNextNeedsAgent)
 	case platform.OperationFailed:
-		return failedPlanDryRun(workflow.PlanDryRunFailureExecutionFailed, "operation_failed", message, workflow.PlanDryRunNextNeedsAgent)
+		return failedActionDryRun(workflow.ActionDryRunFailureExecutionFailed, "operation_failed", message, workflow.ActionDryRunNextNeedsAgent)
 	case platform.OperationCancelled:
-		return workflow.PlanDryRunIndeterminate, &workflow.PlanDryRunFailure{
-			Category: workflow.PlanDryRunFailurePlatformUnavailable, Code: "operation_cancelled",
-			Message: message, NextAction: workflow.PlanDryRunNextRetry, Retryable: true,
+		return workflow.ActionDryRunIndeterminate, &workflow.ActionDryRunFailure{
+			Category: workflow.ActionDryRunFailurePlatformUnavailable, Code: "operation_cancelled",
+			Message: message, NextAction: workflow.ActionDryRunNextRetry, Retryable: true,
 		}
 	default:
-		return failedPlanDryRun(workflow.PlanDryRunFailureInvalidResponse, "invalid_operation_status",
-			message, workflow.PlanDryRunNextEscalate)
+		return failedActionDryRun(workflow.ActionDryRunFailureInvalidResponse, "invalid_operation_status",
+			message, workflow.ActionDryRunNextEscalate)
 	}
 }
 
-func failedPlanDryRun(category workflow.PlanDryRunFailureCategory, code, message string, next workflow.PlanDryRunNextAction) (workflow.PlanDryRunStatus, *workflow.PlanDryRunFailure) {
-	return workflow.PlanDryRunFailed, &workflow.PlanDryRunFailure{
+func failedActionDryRun(category workflow.ActionDryRunFailureCategory, code, message string, next workflow.ActionDryRunNextAction) (workflow.ActionDryRunStatus, *workflow.ActionDryRunFailure) {
+	return workflow.ActionDryRunFailed, &workflow.ActionDryRunFailure{
 		Category: category, Code: code, Message: message, NextAction: next,
 	}
 }

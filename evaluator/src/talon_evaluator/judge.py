@@ -199,10 +199,14 @@ def _root_cause_case(payload: Mapping[str, Any]) -> Dict[str, Any]:
     artifact = _mapping(payload.get("artifact"))
     expectations = _mapping(payload.get("expectations"))
     diagnosis = _mapping(expectations.get("diagnosis"))
-    plans = _mapping_list(artifact.get("plans"))
+    intents = _mapping_list(
+        artifact.get("execution_intents")
+        if artifact.get("execution_intents") is not None
+        else artifact.get("plans")
+    )
     operations = _mapping_list(artifact.get("operations"))
     escalation = [item for item in operations if item.get("kind") == "escalation"]
-    actual = [item.get("root_cause") for item in plans if _nonempty(item.get("root_cause"))]
+    actual = [item.get("root_cause") for item in intents if _nonempty(item.get("root_cause"))]
     actual.extend(
         _mapping(item.get("result")).get("reason")
         for item in escalation
@@ -210,8 +214,8 @@ def _root_cause_case(payload: Mapping[str, Any]) -> Dict[str, Any]:
     )
     references = [
         ref
-        for plan in plans
-        for ref in _string_list(plan.get("evidence_refs"))
+        for intent in intents
+        for ref in _string_list(intent.get("evidence_refs"))
     ]
     references.extend(
         ref

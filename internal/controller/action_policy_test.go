@@ -13,14 +13,14 @@ import (
 	"github.com/wen/opentalon/internal/workflow"
 )
 
-func TestPlanPolicyPersistsAndDecidesActionApproval(t *testing.T) {
+func TestActionPolicyPersistsAndDecidesActionApproval(t *testing.T) {
 	processor, instance, service := processorWithSuccessfulDryRun(t, platform.RemediationCapability{
 		Name: "rollback_mapping", Risk: "medium", RequiresApproval: true,
 	})
 	database, err := storagepkg.OpenSQLite(context.Background(), t.TempDir()+"/approvals.db")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = database.Close() })
-	processor, err = NewPlanProcessor(service, instance, WithApprovalStore(database.Approvals()))
+	processor, err = NewExecutionCoordinator(service, instance, WithApprovalStore(database.Approvals()))
 	require.NoError(t, err)
 
 	decisions, err := processor.EvaluatePolicy(context.Background())
@@ -35,7 +35,7 @@ func TestPlanPolicyPersistsAndDecidesActionApproval(t *testing.T) {
 
 	_, err = processor.Approve(context.Background(), approvalRequest(decisions[0], "oncall", "verified"))
 	require.NoError(t, err)
-	assert.Equal(t, workflow.StateRemediating, instance.Snapshot().State)
+	assert.Equal(t, workflow.StateExecuting, instance.Snapshot().State)
 	pending, err = processor.ListPendingApprovals(context.Background())
 	require.NoError(t, err)
 	assert.Empty(t, pending)
@@ -45,7 +45,7 @@ func TestPlanPolicyPersistsAndDecidesActionApproval(t *testing.T) {
 	assert.Equal(t, "oncall", persisted.DecidedBy)
 }
 
-func TestPlanPolicyAutoApprovesExplicitLowRiskAction(t *testing.T) {
+func TestActionPolicyAutoApprovesExplicitLowRiskAction(t *testing.T) {
 	processor, instance, service := processorWithSuccessfulDryRun(t, platform.RemediationCapability{
 		Name: "rollback_mapping", Risk: "low", RequiresApproval: false,
 	})
@@ -53,11 +53,11 @@ func TestPlanPolicyAutoApprovesExplicitLowRiskAction(t *testing.T) {
 	decisions, err := processor.EvaluatePolicy(context.Background())
 	require.NoError(t, err)
 	require.Len(t, decisions, 1)
-	assert.Equal(t, workflow.PlanPolicyAutoApproved, decisions[0].Outcome)
+	assert.Equal(t, workflow.ActionPolicyAutoApproved, decisions[0].Outcome)
 	assert.Equal(t, "low_risk_auto_approved", decisions[0].ReasonCode)
-	assert.Equal(t, workflow.StateRemediating, instance.Snapshot().State)
-	require.Len(t, instance.Snapshot().PlanPolicies, 1)
-	assert.Empty(t, instance.Snapshot().PlanApprovals)
+	assert.Equal(t, workflow.StateExecuting, instance.Snapshot().State)
+	require.Len(t, instance.Snapshot().ActionPolicies, 1)
+	assert.Empty(t, instance.Snapshot().ActionApprovals)
 
 	repeated, err := processor.EvaluatePolicy(context.Background())
 	require.NoError(t, err)
@@ -65,7 +65,7 @@ func TestPlanPolicyAutoApprovesExplicitLowRiskAction(t *testing.T) {
 	assert.Equal(t, 1, service.capabilitiesCalls)
 }
 
-func TestPlanPolicyRequiresApprovalAndBindsDecisionToAction(t *testing.T) {
+func TestActionPolicyRequiresApprovalAndBindsDecisionToAction(t *testing.T) {
 	processor, instance, _ := processorWithSuccessfulDryRun(t, platform.RemediationCapability{
 		Name: "rollback_mapping", Risk: "medium", RequiresApproval: true,
 	})
@@ -74,16 +74,16 @@ func TestPlanPolicyRequiresApprovalAndBindsDecisionToAction(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, decisions, 1)
 	decision := decisions[0]
-	assert.Equal(t, workflow.PlanPolicyApprovalRequired, decision.Outcome)
+	assert.Equal(t, workflow.ActionPolicyApprovalRequired, decision.Outcome)
 	assert.Equal(t, workflow.StateAwaitingApproval, instance.Snapshot().State)
 
 	_, err = processor.Approve(context.Background(), ApprovalRequest{
-		PlanID: "another-plan", ActionID: decision.ActionID, ActionDigest: decision.ActionDigest, Approver: "oncall@example.com",
+		IntentID: "another-intent", ActionID: decision.ActionID, ActionDigest: decision.ActionDigest, Approver: "oncall@example.com",
 	})
 	require.Error(t, err)
 	assert.Equal(t, workflow.StateAwaitingApproval, instance.Snapshot().State)
 	_, err = processor.Approve(context.Background(), ApprovalRequest{
-		PlanID: decision.PlanID, ActionID: decision.ActionID, ActionDigest: "tampered-digest", Approver: "oncall@example.com",
+		IntentID: decision.IntentID, ActionID: decision.ActionID, ActionDigest: "tampered-digest", Approver: "oncall@example.com",
 	})
 	require.ErrorContains(t, err, "does not match persisted action")
 
@@ -91,9 +91,9 @@ func TestPlanPolicyRequiresApprovalAndBindsDecisionToAction(t *testing.T) {
 	approval, err := processor.Approve(context.Background(), request)
 	require.NoError(t, err)
 	assert.Equal(t, decision.ActionID, approval.ActionID)
-	assert.Equal(t, workflow.PlanApprovalApproved, approval.Decision)
-	assert.Equal(t, workflow.StateRemediating, instance.Snapshot().State)
-	require.Len(t, instance.Snapshot().PlanApprovals, 1)
+	assert.Equal(t, workflow.ActionApprovalApproved, approval.Decision)
+	assert.Equal(t, workflow.StateExecuting, instance.Snapshot().State)
+	require.Len(t, instance.Snapshot().ActionApprovals, 1)
 
 	repeated, err := processor.Approve(context.Background(), request)
 	require.NoError(t, err)
@@ -103,8 +103,8 @@ func TestPlanPolicyRequiresApprovalAndBindsDecisionToAction(t *testing.T) {
 	require.ErrorContains(t, err, "already decided")
 }
 
-func TestPlanPolicyWaitsForEveryRequiredActionApproval(t *testing.T) {
-	instance := plannedWorkflowWithActions(t, "incident-multi", []workflow.PlannedAction{
+func TestActionPolicyWaitsForEveryRequiredActionApproval(t *testing.T) {
+	instance := validatingWorkflowWithActions(t, "incident-multi", []workflow.IntendedAction{
 		{ToolName: "rollback_mapping", Arguments: map[string]any{"idempotency_key": "rollback-001"}},
 		{ToolName: "restart_service", Arguments: map[string]any{"idempotency_key": "restart-001"}},
 	})
@@ -118,7 +118,7 @@ func TestPlanPolicyWaitsForEveryRequiredActionApproval(t *testing.T) {
 	database, err := storagepkg.OpenSQLite(context.Background(), t.TempDir()+"/approvals.db")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = database.Close() })
-	processor, err := NewPlanProcessor(service, instance, WithApprovalStore(database.Approvals()))
+	processor, err := NewExecutionCoordinator(service, instance, WithApprovalStore(database.Approvals()))
 	require.NoError(t, err)
 	results, err := processor.DryRun(context.Background())
 	require.NoError(t, err)
@@ -131,15 +131,15 @@ func TestPlanPolicyWaitsForEveryRequiredActionApproval(t *testing.T) {
 	_, err = processor.Approve(context.Background(), approvalRequest(decisions[0], "oncall-a", "first action checked"))
 	require.NoError(t, err)
 	assert.Equal(t, workflow.StateAwaitingApproval, instance.Snapshot().State)
-	require.Len(t, instance.Snapshot().PlanApprovals, 1)
+	require.Len(t, instance.Snapshot().ActionApprovals, 1)
 
 	_, err = processor.Approve(context.Background(), approvalRequest(decisions[1], "oncall-b", "second action checked"))
 	require.NoError(t, err)
-	assert.Equal(t, workflow.StateRemediating, instance.Snapshot().State)
-	require.Len(t, instance.Snapshot().PlanApprovals, 2)
+	assert.Equal(t, workflow.StateExecuting, instance.Snapshot().State)
+	require.Len(t, instance.Snapshot().ActionApprovals, 2)
 }
 
-func TestPlanPolicyHumanActionRejectionReturnsToReinvestigation(t *testing.T) {
+func TestActionPolicyHumanActionRejectionReturnsToReinvestigation(t *testing.T) {
 	processor, instance, _ := processorWithSuccessfulDryRun(t, platform.RemediationCapability{
 		Name: "rollback_mapping", Risk: "medium", RequiresApproval: true,
 	})
@@ -153,22 +153,22 @@ func TestPlanPolicyHumanActionRejectionReturnsToReinvestigation(t *testing.T) {
 
 	approval, err := processor.Reject(context.Background(), approvalRequest(decision, "oncall@example.com", "blast radius is too large"))
 	require.NoError(t, err)
-	assert.Equal(t, workflow.PlanApprovalRejected, approval.Decision)
+	assert.Equal(t, workflow.ActionApprovalRejected, approval.Decision)
 	assert.Equal(t, workflow.StateInvestigating, instance.Snapshot().State)
 }
 
-func TestPlanPolicyRejectsUnavailableActionCapability(t *testing.T) {
+func TestActionPolicyRejectsUnavailableActionCapability(t *testing.T) {
 	processor, instance, _ := processorWithSuccessfulDryRun(t)
 
 	decisions, err := processor.EvaluatePolicy(context.Background())
 	require.NoError(t, err)
 	require.Len(t, decisions, 1)
-	assert.Equal(t, workflow.PlanPolicyRejected, decisions[0].Outcome)
+	assert.Equal(t, workflow.ActionPolicyRejected, decisions[0].Outcome)
 	assert.Equal(t, "capability_not_available", decisions[0].ReasonCode)
 	assert.Equal(t, workflow.StateBlocked, instance.Snapshot().State)
 }
 
-func TestPlanPolicyUsesApprovalAsSafeDefaultForUnknownRisk(t *testing.T) {
+func TestActionPolicyUsesApprovalAsSafeDefaultForUnknownRisk(t *testing.T) {
 	processor, instance, _ := processorWithSuccessfulDryRun(t, platform.RemediationCapability{
 		Name: "rollback_mapping", Risk: "", RequiresApproval: false,
 	})
@@ -176,55 +176,55 @@ func TestPlanPolicyUsesApprovalAsSafeDefaultForUnknownRisk(t *testing.T) {
 	decisions, err := processor.EvaluatePolicy(context.Background())
 	require.NoError(t, err)
 	require.Len(t, decisions, 1)
-	assert.Equal(t, workflow.PlanPolicyApprovalRequired, decisions[0].Outcome)
+	assert.Equal(t, workflow.ActionPolicyApprovalRequired, decisions[0].Outcome)
 	assert.Equal(t, "unknown", decisions[0].Risk)
 	assert.Equal(t, workflow.StateAwaitingApproval, instance.Snapshot().State)
 }
 
-func TestPlanPolicyRequiresEveryActionDryRun(t *testing.T) {
-	instance := plannedWorkflow(t, "incident-001", map[string]any{"idempotency_key": "rollback-001"})
+func TestActionPolicyRequiresEveryActionDryRun(t *testing.T) {
+	instance := validatingWorkflow(t, "incident-001", map[string]any{"idempotency_key": "rollback-001"})
 	service := &recordingPlatform{capabilities: []platform.RemediationCapability{{Name: "rollback_mapping", Risk: "low"}}}
-	processor, err := NewPlanProcessor(service, instance)
+	processor, err := NewExecutionCoordinator(service, instance)
 	require.NoError(t, err)
 
 	_, err = processor.EvaluatePolicy(context.Background())
 	require.ErrorContains(t, err, "successful dry run")
-	assert.Equal(t, workflow.StatePlanned, instance.Snapshot().State)
+	assert.Equal(t, workflow.StateValidating, instance.Snapshot().State)
 	assert.Zero(t, service.capabilitiesCalls)
 }
 
-func TestPlanPolicyRefusesHumanApprovalWithoutPersistentStore(t *testing.T) {
-	instance := plannedWorkflow(t, "incident-001", map[string]any{"idempotency_key": "rollback-001"})
+func TestActionPolicyRefusesHumanApprovalWithoutPersistentStore(t *testing.T) {
+	instance := validatingWorkflow(t, "incident-001", map[string]any{"idempotency_key": "rollback-001"})
 	service := &recordingPlatform{
 		operation: platform.Operation{ID: "dry-run-001", Status: platform.OperationSucceeded},
 		capabilities: []platform.RemediationCapability{{
 			Name: "rollback_mapping", Risk: "medium", RequiresApproval: true,
 		}},
 	}
-	processor, err := NewPlanProcessor(service, instance)
+	processor, err := NewExecutionCoordinator(service, instance)
 	require.NoError(t, err)
 	_, err = processor.DryRun(context.Background())
 	require.NoError(t, err)
 
 	_, err = processor.EvaluatePolicy(context.Background())
 	require.ErrorContains(t, err, "approval store is required")
-	assert.Equal(t, workflow.StatePlanned, instance.Snapshot().State)
-	assert.Empty(t, instance.Snapshot().PlanPolicies)
+	assert.Equal(t, workflow.StateValidating, instance.Snapshot().State)
+	assert.Empty(t, instance.Snapshot().ActionPolicies)
 }
 
-func TestPlanPolicyPlatformFailureKeepsPlanPlanned(t *testing.T) {
+func TestActionPolicyPlatformFailureKeepsIntentValidating(t *testing.T) {
 	processor, instance, service := processorWithSuccessfulDryRun(t)
 	service.capabilitiesErr = errors.New("catalog unavailable")
 
 	_, err := processor.EvaluatePolicy(context.Background())
 	require.ErrorContains(t, err, "catalog unavailable")
-	assert.Equal(t, workflow.StatePlanned, instance.Snapshot().State)
-	assert.Empty(t, instance.Snapshot().PlanPolicies)
+	assert.Equal(t, workflow.StateValidating, instance.Snapshot().State)
+	assert.Empty(t, instance.Snapshot().ActionPolicies)
 }
 
-func processorWithSuccessfulDryRun(t *testing.T, capabilities ...platform.RemediationCapability) (*PlanProcessor, *workflow.IncidentWorkflow, *recordingPlatform) {
+func processorWithSuccessfulDryRun(t *testing.T, capabilities ...platform.RemediationCapability) (*ExecutionCoordinator, *workflow.IncidentWorkflow, *recordingPlatform) {
 	t.Helper()
-	instance := plannedWorkflow(t, "incident-001", map[string]any{
+	instance := validatingWorkflow(t, "incident-001", map[string]any{
 		"tool_id": "generate_image", "target_version": "mapping-v1",
 		"expected_version": "mapping-v2", "idempotency_key": "rollback-001",
 	})
@@ -235,31 +235,31 @@ func processorWithSuccessfulDryRun(t *testing.T, capabilities ...platform.Remedi
 	database, err := storagepkg.OpenSQLite(context.Background(), t.TempDir()+"/approvals.db")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = database.Close() })
-	processor, err := NewPlanProcessor(service, instance, WithApprovalStore(database.Approvals()))
+	processor, err := NewExecutionCoordinator(service, instance, WithApprovalStore(database.Approvals()))
 	require.NoError(t, err)
 	_, err = processor.DryRun(context.Background())
 	require.NoError(t, err)
 	return processor, instance, service
 }
 
-func plannedWorkflowWithActions(t *testing.T, incidentID string, actions []workflow.PlannedAction) *workflow.IncidentWorkflow {
+func validatingWorkflowWithActions(t *testing.T, incidentID string, actions []workflow.IntendedAction) *workflow.IncidentWorkflow {
 	t.Helper()
 	instance, err := workflow.NewIncidentWorkflow(workflow.Config{IncidentID: incidentID})
 	require.NoError(t, err)
 	_, err = instance.Apply(workflow.Event{Type: workflow.EventStartInvestigation, Actor: workflow.ActorController})
 	require.NoError(t, err)
-	_, err = instance.SubmitPlan(workflow.PlanDraft{
+	_, err = instance.SubmitExecutionIntent(workflow.ExecutionIntentDraft{
 		Summary: "remediate incident", RootCause: "confirmed regression", EvidenceRefs: []string{"trace:001"},
-		Stages: []workflow.PlanStageDraft{{StageID: "remediate", Goal: "remediate incident", Actions: actions,
+		Stages: []workflow.ExecutionStageDraft{{StageID: "remediate", Goal: "remediate incident", Actions: actions,
 			CheckpointPolicy: workflow.CheckpointPolicy{DefaultDecision: workflow.CheckpointSucceeded}}},
 	})
 	require.NoError(t, err)
 	return instance
 }
 
-func approvalRequest(decision workflow.PlanPolicyDecision, approver, reason string) ApprovalRequest {
+func approvalRequest(decision workflow.ActionPolicyDecision, approver, reason string) ApprovalRequest {
 	return ApprovalRequest{
-		PlanID: decision.PlanID, ActionID: decision.ActionID, ActionDigest: decision.ActionDigest,
+		IntentID: decision.IntentID, ActionID: decision.ActionID, ActionDigest: decision.ActionDigest,
 		Approver: approver, Reason: reason,
 	}
 }

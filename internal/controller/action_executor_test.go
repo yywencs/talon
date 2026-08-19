@@ -92,9 +92,9 @@ func (p *idempotentExecutionPlatform) GetOperation(_ context.Context, query plat
 	return platform.Operation{}, platform.ErrNotFound
 }
 
-func TestActionExecutorRunsPlanActionsStrictlyInOrder(t *testing.T) {
+func TestActionExecutorRunsIntentActionsStrictlyInOrder(t *testing.T) {
 	service := executionPlatform("first_fix", "second_fix")
-	processor, instance, database := remediatingProcessor(t, service, "worker-a", time.Minute, []workflow.PlannedAction{
+	processor, instance, database := executingProcessor(t, service, "worker-a", time.Minute, []workflow.IntendedAction{
 		{ToolName: "first_fix", Arguments: map[string]any{"idempotency_key": "agent-first"}},
 		{ToolName: "second_fix", Arguments: map[string]any{"idempotency_key": "agent-second"}},
 	})
@@ -104,7 +104,7 @@ func TestActionExecutorRunsPlanActionsStrictlyInOrder(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, execution.StatusSucceeded, first.Status)
 	assert.Equal(t, 1, first.Sequence)
-	assert.Equal(t, workflow.StateRemediating, instance.Snapshot().State)
+	assert.Equal(t, workflow.StateExecuting, instance.Snapshot().State)
 
 	second, err := processor.ExecuteNext(context.Background())
 	require.NoError(t, err)
@@ -118,7 +118,7 @@ func TestActionExecutorRunsPlanActionsStrictlyInOrder(t *testing.T) {
 func TestActionExecutorReconcilesPendingOperationWithoutResubmission(t *testing.T) {
 	service := executionPlatform("async_fix")
 	service.async = true
-	processor, instance, database := remediatingProcessor(t, service, "worker-a", time.Minute, []workflow.PlannedAction{
+	processor, instance, database := executingProcessor(t, service, "worker-a", time.Minute, []workflow.IntendedAction{
 		{ToolName: "async_fix", Arguments: map[string]any{"idempotency_key": "agent-async"}},
 	})
 	defer database.Close()
@@ -127,7 +127,7 @@ func TestActionExecutorReconcilesPendingOperationWithoutResubmission(t *testing.
 	require.NoError(t, err)
 	assert.Equal(t, execution.StatusRunning, running.Status)
 	assert.NotEmpty(t, running.OperationID)
-	assert.Equal(t, workflow.StateRemediating, instance.Snapshot().State)
+	assert.Equal(t, workflow.StateExecuting, instance.Snapshot().State)
 
 	time.Sleep(2 * time.Millisecond)
 	finished, err := processor.ExecuteNext(context.Background())
@@ -141,7 +141,7 @@ func TestActionExecutorReconcilesPendingOperationWithoutResubmission(t *testing.
 func TestActionExecutorLeaseTakeoverRetriesRequestButSideEffectOccursOnce(t *testing.T) {
 	service := executionPlatform("safe_fix")
 	service.failFirstCall = true
-	processorA, instance, database := remediatingProcessor(t, service, "worker-a", 5*time.Millisecond, []workflow.PlannedAction{
+	processorA, instance, database := executingProcessor(t, service, "worker-a", 5*time.Millisecond, []workflow.IntendedAction{
 		{ToolName: "safe_fix", Arguments: map[string]any{"idempotency_key": "agent-key-is-ignored"}},
 	})
 	defer database.Close()
@@ -150,7 +150,7 @@ func TestActionExecutorLeaseTakeoverRetriesRequestButSideEffectOccursOnce(t *tes
 	assert.ErrorIs(t, err, ErrActionExecutionUnknown)
 	assert.Equal(t, execution.StatusUnknown, unknown.Status)
 	time.Sleep(10 * time.Millisecond)
-	processorB, err := NewPlanProcessor(service, instance,
+	processorB, err := NewExecutionCoordinator(service, instance,
 		WithApprovalStore(database.Approvals()),
 		WithExecutionStore(database.Executions(), "worker-b", time.Minute),
 		WithAsyncExecution(fastAsyncExecutionConfig()))
@@ -168,7 +168,7 @@ func TestActionExecutorLeaseTakeoverRetriesRequestButSideEffectOccursOnce(t *tes
 func TestActionWorkerPollsOperationUntilSucceeded(t *testing.T) {
 	service := executionPlatform("async_fix")
 	service.async = true
-	processor, instance, database := remediatingProcessor(t, service, "worker-a", time.Second, []workflow.PlannedAction{
+	processor, instance, database := executingProcessor(t, service, "worker-a", time.Second, []workflow.IntendedAction{
 		{ToolName: "async_fix", Arguments: map[string]any{}},
 	})
 	defer database.Close()
@@ -185,7 +185,7 @@ func TestActionWorkerFailsOperationAfterDeadline(t *testing.T) {
 	service := executionPlatform("stuck_fix")
 	service.async = true
 	service.stayPending = true
-	processor, instance, database := remediatingProcessor(t, service, "worker-a", time.Second, []workflow.PlannedAction{
+	processor, instance, database := executingProcessor(t, service, "worker-a", time.Second, []workflow.IntendedAction{
 		{ToolName: "stuck_fix", Arguments: map[string]any{}},
 	})
 	defer database.Close()
@@ -196,7 +196,7 @@ func TestActionWorkerFailsOperationAfterDeadline(t *testing.T) {
 	err = worker.Run(context.Background())
 	assert.ErrorIs(t, err, ErrOperationTimedOut)
 	assert.Equal(t, workflow.StateInvestigating, instance.Snapshot().State)
-	records, listErr := database.Executions().ListPlan(context.Background(), instance.Snapshot().Plan.ID)
+	records, listErr := database.Executions().ListIntent(context.Background(), instance.Snapshot().ExecutionIntent.ID)
 	require.NoError(t, listErr)
 	require.Len(t, records, 1)
 	assert.Equal(t, execution.StatusFailed, records[0].Status)
@@ -205,7 +205,7 @@ func TestActionWorkerFailsOperationAfterDeadline(t *testing.T) {
 
 func TestActionExecutorSubmissionTimeoutBecomesRetryableUnknown(t *testing.T) {
 	service := executionPlatform("slow_submit")
-	processor, instance, database := remediatingProcessor(t, service, "worker-a", time.Second, []workflow.PlannedAction{
+	processor, instance, database := executingProcessor(t, service, "worker-a", time.Second, []workflow.IntendedAction{
 		{ToolName: "slow_submit", Arguments: map[string]any{}},
 	})
 	defer database.Close()
@@ -218,7 +218,7 @@ func TestActionExecutorSubmissionTimeoutBecomesRetryableUnknown(t *testing.T) {
 	assert.Equal(t, execution.StatusUnknown, record.Status)
 	assert.NotNil(t, record.NextPollAt)
 	assert.Empty(t, record.OwnerID)
-	assert.Equal(t, workflow.StateRemediating, instance.Snapshot().State)
+	assert.Equal(t, workflow.StateExecuting, instance.Snapshot().State)
 	failures := instance.Snapshot().Failures
 	require.NotEmpty(t, failures)
 	latest := failures[len(failures)-1]
@@ -237,22 +237,22 @@ func executionPlatform(tools ...string) *idempotentExecutionPlatform {
 		executionResults: make(map[string]map[string]any)}
 }
 
-func remediatingProcessor(t *testing.T, service *idempotentExecutionPlatform, workerID string, lease time.Duration, actions []workflow.PlannedAction) (*PlanProcessor, *workflow.IncidentWorkflow, *storage.Storage) {
+func executingProcessor(t *testing.T, service *idempotentExecutionPlatform, workerID string, lease time.Duration, actions []workflow.IntendedAction) (*ExecutionCoordinator, *workflow.IncidentWorkflow, *storage.Storage) {
 	t.Helper()
 	ctx := context.Background()
 	instance, err := workflow.NewIncidentWorkflow(workflow.Config{IncidentID: "execution-incident"})
 	require.NoError(t, err)
 	_, err = instance.Apply(workflow.Event{Type: workflow.EventStartInvestigation, Actor: workflow.ActorController})
 	require.NoError(t, err)
-	_, err = instance.SubmitPlan(workflow.PlanDraft{
+	_, err = instance.SubmitExecutionIntent(workflow.ExecutionIntentDraft{
 		Summary: "execute fixes", RootCause: "confirmed failure", EvidenceRefs: []string{"trace:execution"},
-		Stages: []workflow.PlanStageDraft{{StageID: "execute", Goal: "execute fixes", Actions: actions,
+		Stages: []workflow.ExecutionStageDraft{{StageID: "execute", Goal: "execute fixes", Actions: actions,
 			CheckpointPolicy: workflow.CheckpointPolicy{DefaultDecision: workflow.CheckpointSucceeded}}},
 	})
 	require.NoError(t, err)
 	database, err := storage.OpenSQLite(ctx, filepath.Join(t.TempDir(), "talon.db"))
 	require.NoError(t, err)
-	processor, err := NewPlanProcessor(service, instance,
+	processor, err := NewExecutionCoordinator(service, instance,
 		WithApprovalStore(database.Approvals()),
 		WithExecutionStore(database.Executions(), workerID, lease),
 		WithAsyncExecution(fastAsyncExecutionConfig()))
@@ -261,7 +261,7 @@ func remediatingProcessor(t *testing.T, service *idempotentExecutionPlatform, wo
 	require.NoError(t, err)
 	_, err = processor.EvaluatePolicy(ctx)
 	require.NoError(t, err)
-	require.Equal(t, workflow.StateRemediating, instance.Snapshot().State)
+	require.Equal(t, workflow.StateExecuting, instance.Snapshot().State)
 	return processor, instance, database
 }
 

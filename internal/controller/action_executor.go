@@ -19,24 +19,24 @@ var ErrActionExecutionUnknown = errors.New("action execution result is unknown")
 // ErrOperationTimedOut 表示异步 Operation 超过允许的最长执行时间。
 var ErrOperationTimedOut = errors.New("platform operation timed out")
 
-// ExecuteNext 领取并处理当前 Plan 的下一个 Action。
-// 同一 Plan 严格串行；超时接管始终复用稳定幂等键，因此请求可重试而业务副作用最多发生一次。
-func (p *PlanProcessor) ExecuteNext(ctx context.Context) (execution.Record, error) {
+// ExecuteNext 领取并处理当前 ExecutionIntent 的下一个 Action。
+// 同一 ExecutionIntent 严格串行；超时接管始终复用稳定幂等键，因此请求可重试而业务副作用最多发生一次。
+func (p *ExecutionCoordinator) ExecuteNext(ctx context.Context) (execution.Record, error) {
 	if p == nil || p.platform == nil || p.workflow == nil || p.executionStore == nil {
-		return execution.Record{}, fmt.Errorf("plan processor execution is not initialized")
+		return execution.Record{}, fmt.Errorf("execution coordinator is not initialized")
 	}
 	if err := ctx.Err(); err != nil {
 		return execution.Record{}, err
 	}
 	snapshot := p.workflow.Snapshot()
-	// 只有 Policy 已放行、Workflow 已进入修复阶段的冻结 Plan 才允许执行。
-	if snapshot.State != workflow.StateRemediating {
+	// 只有 Policy 已放行、Workflow 已进入修复阶段的冻结 ExecutionIntent 才允许执行。
+	if snapshot.State != workflow.StateExecuting {
 		return execution.Record{}, fmt.Errorf("%w: action execution is not allowed in state %q", workflow.ErrInvalidTransition, snapshot.State)
 	}
-	if snapshot.Plan == nil {
-		return execution.Record{}, fmt.Errorf("remediating workflow has no frozen plan")
+	if snapshot.ExecutionIntent == nil {
+		return execution.Record{}, fmt.Errorf("executing workflow has no frozen intent")
 	}
-	if err := p.validateExecutablePlan(ctx, snapshot); err != nil {
+	if err := p.validateExecutableIntent(ctx, snapshot); err != nil {
 		return execution.Record{}, err
 	}
 	// 一次性登记完整 Action 清单，使后续领取、串行控制和故障恢复都以数据库记录为准。
@@ -50,7 +50,7 @@ func (p *PlanProcessor) ExecuteNext(ctx context.Context) (execution.Record, erro
 
 	// ClaimNext 只会领取序号最小且前置 Action 均已成功的记录，并为当前 Worker 建立租约。
 	claimed, err := p.executionStore.ClaimNext(ctx, execution.Claim{
-		PlanID: snapshot.Plan.ID, OwnerID: p.workerID, LeaseDuration: p.leaseDuration,
+		IntentID: snapshot.ExecutionIntent.ID, OwnerID: p.workerID, LeaseDuration: p.leaseDuration,
 	})
 	if err != nil {
 		if errors.Is(err, execution.ErrNoClaimable) {
@@ -58,7 +58,7 @@ func (p *PlanProcessor) ExecuteNext(ctx context.Context) (execution.Record, erro
 		}
 		return execution.Record{}, fmt.Errorf("claim next action execution: %w", err)
 	}
-	action := plannedAction(workflow.ExecutableActions(snapshot), claimed.ActionID)
+	action := intendedAction(workflow.ExecutableActions(snapshot), claimed.ActionID)
 	// 执行前再次核对持久化记录，避免同一 Action ID 被绑定到不同的冻结内容。
 	if action == nil || action.Digest != claimed.ActionDigest || action.ToolName != claimed.ToolName {
 		return claimed, fmt.Errorf("%w: claimed execution does not match frozen action", execution.ErrConflict)
@@ -94,7 +94,7 @@ func (p *PlanProcessor) ExecuteNext(ctx context.Context) (execution.Record, erro
 				unknown, storeErr := p.executionStore.MarkUnknown(persistCtx, claimed.ActionID, p.workerID,
 					operation.ID, string(operation.Status), validateErr.Error(), p.pollSchedule(claimed))
 				failure := unknownResultFailure(workflow.FailureStageActionExecution, "action_operation_mismatch",
-					"平台返回的 Operation 与冻结 Action 不匹配，需要先对账", snapshot.Plan.ID, claimed.ActionID,
+					"平台返回的 Operation 与冻结 Action 不匹配，需要先对账", snapshot.ExecutionIntent.ID, claimed.ActionID,
 					operation, errors.Join(callErr, validateErr))
 				recordErr := p.recordFailure(failure)
 				if storeErr != nil {
@@ -107,7 +107,7 @@ func (p *PlanProcessor) ExecuteNext(ctx context.Context) (execution.Record, erro
 		unknown, storeErr := p.executionStore.MarkUnknown(persistCtx, claimed.ActionID, p.workerID,
 			operation.ID, string(operation.Status), callErr.Error(), p.pollSchedule(claimed))
 		failure := unknownResultFailure(workflow.FailureStageActionExecution, "action_result_unknown",
-			"动作调用结果未知，需要查询原 Operation 后再决定后续动作", snapshot.Plan.ID, claimed.ActionID,
+			"动作调用结果未知，需要查询原 Operation 后再决定后续动作", snapshot.ExecutionIntent.ID, claimed.ActionID,
 			operation, callErr)
 		recordErr := p.recordFailure(failure)
 		if storeErr != nil {
@@ -119,7 +119,7 @@ func (p *PlanProcessor) ExecuteNext(ctx context.Context) (execution.Record, erro
 		unknown, storeErr := p.executionStore.MarkUnknown(persistCtx, claimed.ActionID, p.workerID,
 			operation.ID, string(operation.Status), err.Error(), p.pollSchedule(claimed))
 		failure := unknownResultFailure(workflow.FailureStageActionExecution, "action_operation_mismatch",
-			"平台返回的 Operation 与冻结 Action 不匹配，需要先对账", snapshot.Plan.ID, claimed.ActionID,
+			"平台返回的 Operation 与冻结 Action 不匹配，需要先对账", snapshot.ExecutionIntent.ID, claimed.ActionID,
 			operation, err)
 		recordErr := p.recordFailure(failure)
 		if storeErr != nil {
@@ -143,7 +143,7 @@ func (p *PlanProcessor) ExecuteNext(ctx context.Context) (execution.Record, erro
 		unknown, err := p.executionStore.MarkUnknown(persistCtx, claimed.ActionID, p.workerID,
 			operation.ID, string(operation.Status), "platform returned unknown operation status", p.pollSchedule(claimed))
 		failure := unknownResultFailure(workflow.FailureStageActionExecution, "unknown_action_status",
-			"平台返回了无法识别的 Operation 状态，需要先对账", snapshot.Plan.ID, claimed.ActionID,
+			"平台返回了无法识别的 Operation 状态，需要先对账", snapshot.ExecutionIntent.ID, claimed.ActionID,
 			operation, errors.New("platform returned unknown operation status"))
 		recordErr := p.recordFailure(failure)
 		if err != nil {
@@ -154,15 +154,15 @@ func (p *PlanProcessor) ExecuteNext(ctx context.Context) (execution.Record, erro
 }
 
 // RenewActionLease 允许长时间运行的 Worker 主动续租；正常提交调用期间 Controller 也会自动续租。
-func (p *PlanProcessor) RenewActionLease(ctx context.Context, actionID string) (execution.Record, error) {
+func (p *ExecutionCoordinator) RenewActionLease(ctx context.Context, actionID string) (execution.Record, error) {
 	if p == nil || p.executionStore == nil || p.workerID == "" || p.leaseDuration <= 0 {
-		return execution.Record{}, fmt.Errorf("plan processor execution is not initialized")
+		return execution.Record{}, fmt.Errorf("execution coordinator is not initialized")
 	}
 	return p.executionStore.Renew(ctx, actionID, p.workerID, p.leaseDuration)
 }
 
 // executeActionWithLease 在短提交超时内分发受控 Action，并在提交期间续租当前 Action。
-func (p *PlanProcessor) executeActionWithLease(ctx context.Context, incidentID string, action workflow.PlannedAction, claimed execution.Record) (platform.Operation, error) {
+func (p *ExecutionCoordinator) executeActionWithLease(ctx context.Context, incidentID string, action workflow.IntendedAction, claimed execution.Record) (platform.Operation, error) {
 	arguments := cloneMap(action.Arguments)
 	expectedVersion, _ := arguments["expected_version"].(string)
 	// Controller 统一控制这些协议字段，禁止冻结参数覆盖真实执行语义和幂等键。
@@ -241,7 +241,7 @@ func (p *PlanProcessor) executeActionWithLease(ctx context.Context, incidentID s
 }
 
 // pollSchedule 根据领取次数做指数退避，并保留首次提交时确定的 Operation 总截止时间。
-func (p *PlanProcessor) pollSchedule(claimed execution.Record) execution.PollSchedule {
+func (p *ExecutionCoordinator) pollSchedule(claimed execution.Record) execution.PollSchedule {
 	now := time.Now().UTC()
 	deadline := now.Add(p.operationTimeout)
 	if claimed.OperationDeadline != nil {
@@ -262,7 +262,7 @@ func (p *PlanProcessor) pollSchedule(claimed execution.Record) execution.PollSch
 }
 
 // finishTimedOutAction 把长期 pending/running/unknown 的 Operation 收敛为失败并重新进入调查。
-func (p *PlanProcessor) finishTimedOutAction(ctx context.Context, snapshot workflow.Snapshot, claimed execution.Record) (execution.Record, error) {
+func (p *ExecutionCoordinator) finishTimedOutAction(ctx context.Context, snapshot workflow.Snapshot, claimed execution.Record) (execution.Record, error) {
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	message := "platform operation exceeded its execution deadline"
@@ -271,7 +271,7 @@ func (p *PlanProcessor) finishTimedOutAction(ctx context.Context, snapshot workf
 	if err != nil {
 		return claimed, fmt.Errorf("complete timed out action execution: %w", err)
 	}
-	records, err := p.executionStore.ListPlan(persistCtx, claimed.PlanID)
+	records, err := p.executionStore.ListIntent(persistCtx, claimed.IntentID)
 	if err != nil {
 		return recorded, err
 	}
@@ -279,8 +279,8 @@ func (p *PlanProcessor) finishTimedOutAction(ctx context.Context, snapshot workf
 	return recorded, errors.Join(ErrOperationTimedOut, transitionErr)
 }
 
-// finishAction 持久化平台终态，并根据 Plan 内全部 Action 的状态推进 Workflow。
-func (p *PlanProcessor) finishAction(ctx context.Context, snapshot workflow.Snapshot, claimed execution.Record, operation platform.Operation, callErr error) (execution.Record, error) {
+// finishAction 持久化平台终态，并根据 ExecutionIntent 内全部 Action 的状态推进 Workflow。
+func (p *ExecutionCoordinator) finishAction(ctx context.Context, snapshot workflow.Snapshot, claimed execution.Record, operation platform.Operation, callErr error) (execution.Record, error) {
 	status := execution.StatusSucceeded
 	message := ""
 	if operation.Status != platform.OperationSucceeded {
@@ -299,7 +299,7 @@ func (p *PlanProcessor) finishAction(ctx context.Context, snapshot workflow.Snap
 			stageID = stage.StageID
 		}
 		if _, err := p.workflow.RecordActionResult(workflow.ActionResult{
-			PlanID: snapshot.Plan.ID, StageID: stageID, ActionID: claimed.ActionID,
+			IntentID: snapshot.ExecutionIntent.ID, StageID: stageID, ActionID: claimed.ActionID,
 			ActionDigest: claimed.ActionDigest, OperationID: operation.ID,
 			OperationStatus: string(operation.Status), Output: cloneMap(operation.Result),
 		}); err != nil {
@@ -311,7 +311,7 @@ func (p *PlanProcessor) finishAction(ctx context.Context, snapshot workflow.Snap
 	if err != nil {
 		return claimed, errors.Join(fmt.Errorf("complete action execution: %w", err), p.persistCheckpoint(ctx))
 	}
-	records, err := p.executionStore.ListPlan(ctx, claimed.PlanID)
+	records, err := p.executionStore.ListIntent(ctx, claimed.IntentID)
 	if err != nil {
 		return recorded, fmt.Errorf("list action executions after completion: %w", err)
 	}
@@ -330,7 +330,7 @@ func (p *PlanProcessor) finishAction(ctx context.Context, snapshot workflow.Snap
 }
 
 // reconcileExecutionStage 将 Action 执行状态汇总为修复阶段结果：任一失败即失败，全部成功才完成。
-func (p *PlanProcessor) reconcileExecutionStage(snapshot workflow.Snapshot, records []execution.Record) (bool, error) {
+func (p *ExecutionCoordinator) reconcileExecutionStage(snapshot workflow.Snapshot, records []execution.Record) (bool, error) {
 	actions := workflow.ExecutableActions(snapshot)
 	records = currentActionRecords(records, actions)
 	if len(records) == 0 {
@@ -338,13 +338,13 @@ func (p *PlanProcessor) reconcileExecutionStage(snapshot workflow.Snapshot, reco
 	}
 	for _, record := range records {
 		if record.Status == execution.StatusFailed {
-			if p.workflow.Snapshot().State != workflow.StateRemediating {
+			if p.workflow.Snapshot().State != workflow.StateExecuting {
 				return true, nil
 			}
 			failure := actionExecutionFailure(record)
 			_, err := p.workflow.FailCurrentStage(record.LastError,
 				map[string]string{
-					"plan_id": record.PlanID, "action_id": record.ActionID, "operation_id": record.OperationID,
+					"intent_id": record.IntentID, "action_id": record.ActionID, "operation_id": record.OperationID,
 					"operation_status": record.OperationStatus,
 				},
 				failure)
@@ -357,14 +357,14 @@ func (p *PlanProcessor) reconcileExecutionStage(snapshot workflow.Snapshot, reco
 	if len(records) != len(actions) {
 		return false, nil
 	}
-	if p.workflow.Snapshot().State != workflow.StateRemediating {
+	if p.workflow.Snapshot().State != workflow.StateExecuting {
 		return true, nil
 	}
 	_, err := p.workflow.CompleteCurrentStage("all current stage actions completed successfully")
 	return true, err
 }
 
-func (p *PlanProcessor) recordFailure(failure workflow.StageFailure) error {
+func (p *ExecutionCoordinator) recordFailure(failure workflow.StageFailure) error {
 	_, err := p.workflow.RecordFailure(failure)
 	return err
 }
@@ -372,7 +372,7 @@ func (p *PlanProcessor) recordFailure(failure workflow.StageFailure) error {
 func actionExecutionFailure(record execution.Record) workflow.StageFailure {
 	value := workflow.StageFailure{
 		Stage: workflow.FailureStageActionExecution, Message: record.LastError,
-		PlanID: record.PlanID, ActionID: record.ActionID, OperationID: record.OperationID,
+		IntentID: record.IntentID, ActionID: record.ActionID, OperationID: record.OperationID,
 		OperationStatus: record.OperationStatus, NextAction: workflow.FailureNextNeedsAgent,
 	}
 	switch platform.OperationStatus(record.OperationStatus) {
@@ -403,22 +403,22 @@ func actionExecutionFailure(record execution.Record) workflow.StageFailure {
 	return value
 }
 
-// validateExecutablePlan 确认每个冻结 Action 都有匹配的成功 Dry Run、可执行 Policy 和必要的持久化审批。
-func (p *PlanProcessor) validateExecutablePlan(ctx context.Context, snapshot workflow.Snapshot) error {
+// validateExecutableIntent 确认每个冻结 Action 都有匹配的成功 Dry Run、可执行 Policy 和必要的持久化审批。
+func (p *ExecutionCoordinator) validateExecutableIntent(ctx context.Context, snapshot workflow.Snapshot) error {
 	actions := workflow.ExecutableActions(snapshot)
-	if len(actions) == 0 || len(snapshot.PlanDryRuns) != len(actions) || len(snapshot.PlanPolicies) != len(actions) {
-		return fmt.Errorf("executable plan requires actions, successful dry runs and policy decisions")
+	if len(actions) == 0 || len(snapshot.ActionDryRuns) != len(actions) || len(snapshot.ActionPolicies) != len(actions) {
+		return fmt.Errorf("executable intent requires actions, successful dry runs and policy decisions")
 	}
 	for _, action := range actions {
-		dryRun := actionDryRun(snapshot.PlanDryRuns, action.ID)
-		policy := actionPolicy(snapshot.PlanPolicies, action.ID)
-		if dryRun == nil || dryRun.Status != workflow.PlanDryRunSucceeded || dryRun.ActionDigest != action.Digest {
+		dryRun := actionDryRun(snapshot.ActionDryRuns, action.ID)
+		policy := actionPolicy(snapshot.ActionPolicies, action.ID)
+		if dryRun == nil || dryRun.Status != workflow.ActionDryRunSucceeded || dryRun.ActionDigest != action.Digest {
 			return fmt.Errorf("action %q does not have a matching successful dry run", action.ID)
 		}
-		if policy == nil || policy.ActionDigest != action.Digest || policy.Outcome == workflow.PlanPolicyRejected {
+		if policy == nil || policy.ActionDigest != action.Digest || policy.Outcome == workflow.ActionPolicyRejected {
 			return fmt.Errorf("action %q does not have an executable policy decision", action.ID)
 		}
-		if policy.Outcome == workflow.PlanPolicyApprovalRequired {
+		if policy.Outcome == workflow.ActionPolicyApprovalRequired {
 			if p.approvalStore == nil {
 				return fmt.Errorf("approval store is required to execute action %q", action.ID)
 			}
@@ -426,7 +426,7 @@ func (p *PlanProcessor) validateExecutablePlan(ctx context.Context, snapshot wor
 			if err != nil {
 				return fmt.Errorf("read action %q approval: %w", action.ID, err)
 			}
-			if persisted.Status != approval.StatusApproved || persisted.PlanID != snapshot.Plan.ID || persisted.ActionDigest != action.Digest {
+			if persisted.Status != approval.StatusApproved || persisted.IntentID != snapshot.ExecutionIntent.ID || persisted.ActionDigest != action.Digest {
 				return fmt.Errorf("action %q does not have a matching approved decision", action.ID)
 			}
 		}
@@ -434,13 +434,13 @@ func (p *PlanProcessor) validateExecutablePlan(ctx context.Context, snapshot wor
 	return nil
 }
 
-// executionSpecs 按 Plan 中的顺序生成不可变执行规格和稳定幂等键。
+// executionSpecs 按 ExecutionIntent 中的顺序生成不可变执行规格和稳定幂等键。
 func executionSpecs(snapshot workflow.Snapshot) []execution.Spec {
 	actions := workflow.ExecutableActions(snapshot)
 	result := make([]execution.Spec, len(actions))
 	for index, action := range actions {
 		result[index] = execution.Spec{
-			IncidentID: snapshot.IncidentID, PlanID: snapshot.Plan.ID, ActionID: action.ID,
+			IncidentID: snapshot.IncidentID, IntentID: snapshot.ExecutionIntent.ID, ActionID: action.ID,
 			ActionDigest: action.Digest, Sequence: actionSequence(snapshot, action.ID, index+1), ToolName: action.ToolName,
 			IdempotencyKey: action.ID + ":execute",
 		}
@@ -449,11 +449,11 @@ func executionSpecs(snapshot workflow.Snapshot) []execution.Spec {
 }
 
 func actionSequence(snapshot workflow.Snapshot, actionID string, fallback int) int {
-	if snapshot.Plan == nil || len(snapshot.Plan.Stages) == 0 {
+	if snapshot.ExecutionIntent == nil || len(snapshot.ExecutionIntent.Stages) == 0 {
 		return fallback
 	}
 	sequence := 0
-	for _, stage := range snapshot.Plan.Stages {
+	for _, stage := range snapshot.ExecutionIntent.Stages {
 		for _, action := range stage.Actions {
 			sequence++
 			if action.ID == actionID {
@@ -464,7 +464,7 @@ func actionSequence(snapshot workflow.Snapshot, actionID string, fallback int) i
 	return fallback
 }
 
-func currentActionRecords(records []execution.Record, actions []workflow.PlannedAction) []execution.Record {
+func currentActionRecords(records []execution.Record, actions []workflow.IntendedAction) []execution.Record {
 	allowed := make(map[string]struct{}, len(actions))
 	for _, action := range actions {
 		allowed[action.ID] = struct{}{}
@@ -479,7 +479,7 @@ func currentActionRecords(records []execution.Record, actions []workflow.Planned
 }
 
 // actionPolicy 按 Action ID 查找对应的 Policy 决策。
-func actionPolicy(values []workflow.PlanPolicyDecision, actionID string) *workflow.PlanPolicyDecision {
+func actionPolicy(values []workflow.ActionPolicyDecision, actionID string) *workflow.ActionPolicyDecision {
 	for index := range values {
 		if values[index].ActionID == actionID {
 			return &values[index]
@@ -489,7 +489,7 @@ func actionPolicy(values []workflow.PlanPolicyDecision, actionID string) *workfl
 }
 
 // validatePlatformOperation 校验平台返回的 Operation 确实属于当前冻结 Action 请求。
-func validatePlatformOperation(operation platform.Operation, incidentID string, action workflow.PlannedAction, idempotencyKey string) error {
+func validatePlatformOperation(operation platform.Operation, incidentID string, action workflow.IntendedAction, idempotencyKey string) error {
 	if strings.TrimSpace(operation.ID) == "" {
 		return fmt.Errorf("platform operation ID is required")
 	}

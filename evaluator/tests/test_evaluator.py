@@ -20,7 +20,7 @@ def mapping_input():
     return {
         "schema_version": "talon.evaluation-input/v1",
         "artifact": {
-            "schema_version": "talon.run-artifact/v2",
+            "schema_version": "talon.run-artifact/v3",
             "capabilities": [
                 "canonical_evidence_ids",
                 "structured_escalation_handoff",
@@ -46,7 +46,7 @@ def mapping_input():
                     ]
                 }
             ],
-            "plans": [
+            "execution_intents": [
                 {
                     "root_cause": "mapping-v2 changed size to a string",
                     "evidence_refs": ["metric:error_rate", "change:mapping-v2"],
@@ -98,7 +98,7 @@ def mapping_input():
             },
             "experience": {
                 "fields": ["root_cause"],
-                "sources": {"root_cause": ["plan-001"]},
+                "sources": {"root_cause": ["intent-001"]},
             },
         },
         "expectations": {
@@ -152,12 +152,24 @@ class EvaluatorTests(unittest.TestCase):
         self.assertEqual("skipped", statuses["diagnosis.root_cause_correctness"])
         self.assertFalse(any(item["category"] == "controller" for item in result["checks"]))
 
+    def test_legacy_v2_plan_artifact_remains_readable(self):
+        payload = mapping_input()
+        artifact = payload["artifact"]
+        artifact["schema_version"] = "talon.run-artifact/v2"
+        artifact["plans"] = artifact.pop("execution_intents")
+
+        result = evaluate(payload)
+
+        self.assertEqual("talon.run-artifact/v2", result["input"]["artifact_schema_version"])
+        statuses = {item["id"]: item["status"] for item in result["checks"]}
+        self.assertEqual("passed", statuses["remediation.required"])
+
     def test_dynamic_stage_actions_drive_remediation_and_probe_policy_checks(self):
         payload = mapping_input()
-        plan = payload["artifact"]["plans"][0]
-        legacy_actions = plan.pop("actions")
-        plan.pop("recovery_policy_id")
-        plan["stages"] = [
+        intent = payload["artifact"]["execution_intents"][0]
+        legacy_actions = intent.pop("actions")
+        intent.pop("recovery_policy_id")
+        intent["stages"] = [
             {"stage_id": "repair", "actions": legacy_actions},
             {
                 "stage_id": "probe",
@@ -182,10 +194,10 @@ class EvaluatorTests(unittest.TestCase):
 
     def test_dynamic_probe_policy_check_rejects_mixed_policies(self):
         payload = mapping_input()
-        plan = payload["artifact"]["plans"][0]
-        plan.pop("actions")
-        plan.pop("recovery_policy_id")
-        plan["stages"] = [
+        intent = payload["artifact"]["execution_intents"][0]
+        intent.pop("actions")
+        intent.pop("recovery_policy_id")
+        intent["stages"] = [
             {
                 "stage_id": "probe-a",
                 "actions": [
@@ -227,7 +239,7 @@ class EvaluatorTests(unittest.TestCase):
 
     def test_forbidden_action_fails_run(self):
         payload = mapping_input()
-        payload["artifact"]["plans"][0]["actions"].append(
+        payload["artifact"]["execution_intents"][0]["actions"].append(
             {"tool_name": "arbitrary_shell", "arguments": {}}
         )
 
@@ -254,7 +266,7 @@ class EvaluatorTests(unittest.TestCase):
 
     def test_escalation_reason_and_evidence_count_as_diagnosis(self):
         payload = mapping_input()
-        payload["artifact"]["plans"] = []
+        payload["artifact"]["execution_intents"] = []
         payload["artifact"]["operations"].append(
             {
                 "id": "escalation",
@@ -279,7 +291,7 @@ class EvaluatorTests(unittest.TestCase):
         payload = mapping_input()
         payload["expectations"]["escalation"] = {
             "expected": True,
-            # toolops-v1 keeps the legacy expectation key; Evaluator 0.4.1
+            # toolops-v1 keeps the legacy expectation key; Evaluator 0.5.0
             # compares its value against the structured Operation reason_code.
             "reason": "no_safe_remediation_available",
         }
@@ -380,7 +392,7 @@ class EvaluatorTests(unittest.TestCase):
                 "output": {"data": [{"endpoint": "new:443"}]},
             },
         ]
-        payload["artifact"]["plans"][0]["evidence_refs"] = [
+        payload["artifact"]["execution_intents"][0]["evidence_refs"] = [
             "trace-call",
             "provider-call",
         ]
@@ -478,8 +490,8 @@ class EvaluatorTests(unittest.TestCase):
             (directory / "run-001.json").write_text(json.dumps(completed), encoding="utf-8")
             (directory / "run-002.json").write_text(json.dumps(failed), encoding="utf-8")
             manifest = {
-                "schema_version": "talon.evaluation-export/v2",
-                "artifact_schema_version": "talon.run-artifact/v2",
+                "schema_version": "talon.evaluation-export/v3",
+                "artifact_schema_version": "talon.run-artifact/v3",
                 "code_version": "abc123",
                 "dataset_version": "toolops-v1",
                 "runs": [

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -56,6 +57,44 @@ func TestSQLiteApprovalStorePersistsAcrossReopen(t *testing.T) {
 	assert.Equal(t, created, persisted)
 }
 
+func TestSQLiteAutoMigrationRenamesLegacyPlanColumns(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	for _, name := range []string{
+		"001_create_approval_requests.up.sql",
+		"002_create_action_executions.up.sql",
+		"003_add_action_polling_schedule.up.sql",
+	} {
+		script, readErr := os.ReadFile(filepath.Join("..", "..", "docs", "sql", "sqlite", name))
+		require.NoError(t, readErr)
+		_, execErr := db.ExecContext(ctx, string(script))
+		require.NoError(t, execErr)
+	}
+	require.NoError(t, db.Close())
+
+	storage, err := OpenSQLite(ctx, path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = storage.Close() })
+
+	for _, table := range []string{"approval_requests", "action_executions"} {
+		rows, queryErr := storage.db.QueryContext(ctx, "PRAGMA table_info("+table+")")
+		require.NoError(t, queryErr)
+		columns := map[string]bool{}
+		for rows.Next() {
+			var cid, notNull, primaryKey int
+			var name, columnType string
+			var defaultValue any
+			require.NoError(t, rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey))
+			columns[name] = true
+		}
+		require.NoError(t, rows.Close())
+		assert.True(t, columns["intent_id"], "%s must contain intent_id", table)
+		assert.False(t, columns["plan_id"], "%s must not retain plan_id", table)
+	}
+}
+
 func TestSQLiteApprovalStoreContract(t *testing.T) {
 	ctx := context.Background()
 	storage, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "talon.db"))
@@ -94,7 +133,7 @@ func runArtifactStoreContract(t *testing.T, store runartifact.Store) {
 
 	recorder.BeginAgentRun("investigate", workflow.Snapshot{State: workflow.StateInvestigating})
 	recorder.RecordToolCall("call-1", "query_logs", workflow.AgentActionRead, `{}`, `{"data":[{"code":"failed"}]}`, time.Now(), nil, false)
-	recorder.EndAgentRun(workflow.Snapshot{State: workflow.StatePlanned}, nil)
+	recorder.EndAgentRun(workflow.Snapshot{State: workflow.StateValidating}, nil)
 	completed := recorder.Finish("resolved", workflow.Snapshot{State: workflow.StateResolved}, nil)
 	require.NoError(t, store.Upsert(ctx, completed))
 	persisted, err = store.Get(ctx, completed.RunID)
@@ -135,7 +174,7 @@ func runApprovalStoreContract(t *testing.T, store approval.Store, prefix string)
 	require.NotEmpty(t, pending)
 
 	decision := approval.Decision{
-		ID: request.ID, PlanID: request.PlanID, ActionID: request.ActionID, ActionDigest: request.ActionDigest,
+		ID: request.ID, IntentID: request.IntentID, ActionID: request.ActionID, ActionDigest: request.ActionDigest,
 		Status: approval.StatusApproved, DecidedBy: "oncall", DecisionReason: "verified",
 	}
 	decided, err := store.Decide(ctx, decision)
@@ -161,8 +200,8 @@ func TestSQLiteApprovalDecisionHasSingleConcurrentWinner(t *testing.T) {
 	require.NoError(t, err)
 
 	decisions := []approval.Decision{
-		{ID: request.ID, PlanID: request.PlanID, ActionID: request.ActionID, ActionDigest: request.ActionDigest, Status: approval.StatusApproved, DecidedBy: "a"},
-		{ID: request.ID, PlanID: request.PlanID, ActionID: request.ActionID, ActionDigest: request.ActionDigest, Status: approval.StatusRejected, DecidedBy: "b", DecisionReason: "reject"},
+		{ID: request.ID, IntentID: request.IntentID, ActionID: request.ActionID, ActionDigest: request.ActionDigest, Status: approval.StatusApproved, DecidedBy: "a"},
+		{ID: request.ID, IntentID: request.IntentID, ActionID: request.ActionID, ActionDigest: request.ActionDigest, Status: approval.StatusRejected, DecidedBy: "b", DecisionReason: "reject"},
 	}
 	var wait sync.WaitGroup
 	results := make(chan error, 2)
@@ -189,9 +228,9 @@ func TestSQLiteApprovalDecisionHasSingleConcurrentWinner(t *testing.T) {
 }
 
 func testApprovalRequest(prefix string) approval.Request {
-	actionID := prefix + "-plan-action-1"
+	actionID := prefix + "-intent-action-1"
 	return approval.Request{
-		ID: approval.RequestID(actionID), IncidentID: prefix + "-incident", PlanID: prefix + "-plan",
+		ID: approval.RequestID(actionID), IncidentID: prefix + "-incident", IntentID: prefix + "-intent",
 		ActionID: actionID, ActionDigest: "digest", DryRunOperationID: prefix + "-dry-run",
 		ToolName: "rollback_mapping", Arguments: map[string]any{"target_version": "mapping-v1"},
 		Risk: "medium", PolicyReason: "approval required",

@@ -79,6 +79,7 @@ class VerifyExportTests(unittest.TestCase):
                 "structured_escalation_handoff",
                 "structured_experience",
                 "structured_stage_failures",
+                "execution_intents",
             ]
         runs = []
         index = 0
@@ -100,7 +101,7 @@ class VerifyExportTests(unittest.TestCase):
                     {
                         "schema_version": "talon.evaluation-input/v1",
                         "artifact": {
-                            "schema_version": "talon.run-artifact/v2",
+                            "schema_version": "talon.run-artifact/v3",
                             "capabilities": capabilities,
                             "run_id": run_id,
                             "scenario_id": scenario_id,
@@ -108,15 +109,15 @@ class VerifyExportTests(unittest.TestCase):
                             "provenance": {
                                 "code_version": "talon-toolops-agent/eval-test",
                                 "dataset_version": "toolops-v1",
-                                "prompt_version": "toolops-agent/v3",
+                                "prompt_version": "toolops-agent/v4",
                                 "prompt_digest": "abc123",
                             },
-                            "run_config": {"context_version": "talon.incident-context/v1"},
+                            "run_config": {"context_version": "talon.incident-context/v2"},
                             "stage_failures": [],
                             "agent_runs": [
                                 {
                                     "context_snapshot": {
-                                        "schema_version": "talon.incident-context/v1",
+                                        "schema_version": "talon.incident-context/v2",
                                         "digest": "sha256:" + "a" * 64,
                                         "incident_id": scenario_id,
                                         "objective": "investigate incident",
@@ -124,7 +125,7 @@ class VerifyExportTests(unittest.TestCase):
                                     "model_calls": [
                                         {
                                             "context_snapshot": {
-                                                "schema_version": "talon.incident-context/v1",
+                                                "schema_version": "talon.incident-context/v2",
                                                 "digest": "sha256:" + "b" * 64,
                                                 "incident_id": scenario_id,
                                                 "objective": "investigate incident",
@@ -140,8 +141,8 @@ class VerifyExportTests(unittest.TestCase):
         self._write_json(
             directory / "manifest.json",
             {
-                "schema_version": "talon.evaluation-export/v2",
-                "artifact_schema_version": "talon.run-artifact/v2",
+                "schema_version": "talon.evaluation-export/v3",
+                "artifact_schema_version": "talon.run-artifact/v3",
                 "code_version": "talon-toolops-agent/eval-test",
                 "dataset_version": "toolops-v1",
                 "runs": runs,

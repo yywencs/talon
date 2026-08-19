@@ -15,7 +15,7 @@ description: >-
 3. 仅在需要区分 DNS、握手、连接池或上游失败时调用 `query_traces`。
 4. 调用 `get_connection_metadata` 读取解析地址、连接状态、连接池代次和解析缓存代次。
 5. 将日志或 Trace 的失败阶段与连接元数据相互验证，再选择刷新连接或重建连接池等可用能力。
-6. 获取恢复策略并调用 `submit_plan`；把最近一次实际观察到的 generation 作为 `expected_*_generation`。
+6. 获取恢复策略并调用 `submit_execution_intent`；把最近一次实际观察到的 generation 作为 `expected_*_generation`。
 
 ## 参数语义
 
@@ -32,7 +32,7 @@ description: >-
   `needs_agent`，不要直接 `escalate`；该失败探测是重建能力前置条件的一部分。
 - 被 `needs_agent` 唤回后，必须重新读取连接元数据，并使用 `query_logs` 查询失败 probe
   之后的新连接日志；需要明确记录连接池代次是否改变、DNS 缓存代次是否未变，以及日志中
-  是否出现复用 resolver cache 的新证据。将这些新证据引用到第二周期 Plan。若刷新已成功、
+  是否出现复用 resolver cache 的新证据。将这些新证据引用到第二周期 Execution Intent。若刷新已成功、
   probe 已 `hard_stop` 且重建能力可用，则提交“重建连接池/清理 DNS 缓存 → probe”；高风险
   能力是否审批由 Harness 决定。
 - 上述日志时间窗必须以 `harness_facts.virtual_time` 为基准，禁止使用 `generated_at`、
@@ -45,7 +45,7 @@ description: >-
 ## 证据与停止条件
 
 - 至少保留故障指标、连接错误以及连接元数据三类证据。
-- 已定位失败阶段且修复动作及其前置版本明确时，停止继续查询并提交 Plan。
+- 已定位失败阶段且修复动作及其前置版本明确时，停止继续查询并提交 Execution Intent。
 - 证据否定连接假设并指向凭据或 mapping 故障时，引用新证据调用 `unload_skill`；下一轮再加载对应 Skill。若证据表明是复合故障，则保留本 Skill 并追加对应 Skill。
 - 连接状态无法可靠读取、没有安全修复能力或冲突后无法获得新状态时，调用 `escalate_incident`。
 
@@ -54,4 +54,4 @@ description: >-
 - 不查询凭据和配置版本，除非现有连接证据明确否定 connection 假设。
 - 不重复读取连接元数据，除非执行、冲突或外部事件可能已经改变状态。
 - 不把探测成功等同于最终状态已经恢复。
-- 不直接执行修复；只通过 `submit_plan` 提交结构化动作。
+- 不直接执行修复；只通过 `submit_execution_intent` 提交结构化动作。

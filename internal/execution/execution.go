@@ -1,4 +1,4 @@
-// Package execution 定义 Plan Action 的持久化执行状态、租约及其持久化端口。
+// Package execution 定义 ExecutionIntent Action 的持久化执行状态、租约及其持久化端口。
 package execution
 
 import (
@@ -25,10 +25,10 @@ const (
 	StatusFailed    Status = "failed"
 )
 
-// Spec 是从冻结 Plan 派生的不可变执行说明。
+// Spec 是从冻结 ExecutionIntent 派生的不可变执行说明。
 type Spec struct {
 	IncidentID     string `json:"incident_id"`
-	PlanID         string `json:"plan_id"`
+	IntentID       string `json:"intent_id"`
 	ActionID       string `json:"action_id"`
 	ActionDigest   string `json:"action_digest"`
 	Sequence       int    `json:"sequence"`
@@ -61,7 +61,7 @@ type PollSchedule struct {
 
 // Claim 描述 Worker 申请执行租约的参数。
 type Claim struct {
-	PlanID        string
+	IntentID      string
 	OwnerID       string
 	LeaseDuration time.Duration
 }
@@ -75,5 +75,5 @@ type Store interface {
 	MarkUnknown(ctx context.Context, actionID, ownerID, operationID, operationStatus, message string, schedule PollSchedule) (Record, error)
 	Complete(ctx context.Context, actionID, ownerID, operationID, operationStatus string, status Status, message string) (Record, error)
 	Get(ctx context.Context, actionID string) (Record, error)
-	ListPlan(ctx context.Context, planID string) ([]Record, error)
+	ListIntent(ctx context.Context, intentID string) ([]Record, error)
 }

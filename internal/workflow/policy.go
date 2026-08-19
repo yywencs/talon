@@ -18,8 +18,8 @@ const (
 	// AgentActionRecallEvidence 代表按引用回看当前 Incident 已保存的历史证据。
 	// 回看不会产生新证据，也不能扩大 Agent 的 Incident 数据边界。
 	AgentActionRecallEvidence AgentAction = "recall_evidence"
-	// AgentActionSubmitPlan 代表 Agent 提交结构化 Plan，不代表直接执行修复。
-	AgentActionSubmitPlan AgentAction = "submit_plan"
+	// AgentActionSubmitExecutionIntent 代表 Agent 提交结构化 ExecutionIntent，不代表直接执行修复。
+	AgentActionSubmitExecutionIntent AgentAction = "submit_execution_intent"
 	// AgentActionQueryOperation 代表查询当前修复、探测或恢复 Operation 的状态。
 	AgentActionQueryOperation AgentAction = "query_operation"
 	// AgentActionEscalate 代表 Agent 停止自治并提交证据，请求人工接管。
@@ -43,7 +43,7 @@ var stateAgentActions = map[State]agentActionSet{
 		AgentActionEscalate,
 	),
 	StateInvestigating: investigationActions(),
-	StatePlanned: agentActions(
+	StateValidating: agentActions(
 		AgentActionRead,
 		AgentActionRecallEvidence,
 		AgentActionEscalate,
@@ -53,7 +53,7 @@ var stateAgentActions = map[State]agentActionSet{
 		AgentActionRecallEvidence,
 		AgentActionEscalate,
 	),
-	StateRemediating: agentActions(
+	StateExecuting: agentActions(
 		AgentActionQueryOperation,
 		AgentActionEscalate,
 	),
@@ -87,7 +87,7 @@ func investigationActions() agentActionSet {
 		AgentActionRecallEvidence,
 		AgentActionManageSkill,
 		AgentActionQueryOperation,
-		AgentActionSubmitPlan,
+		AgentActionSubmitExecutionIntent,
 		AgentActionEscalate,
 	)
 }

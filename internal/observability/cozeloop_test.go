@@ -97,10 +97,10 @@ func TestIncidentCallbackAgentAndEinoSpansUseOneRedactedTrace(t *testing.T) {
 			TotalTokens:      18,
 		},
 	})
-	FinishAgentRun(run, nil, "planned", []WorkflowTransition{{
-		From: "investigating", To: "planned", Event: "plan_submitted", Actor: "agent", Version: 2,
+	FinishAgentRun(run, nil, "validating", []WorkflowTransition{{
+		From: "investigating", To: "validating", Event: "execution_intent_submitted", Actor: "agent", Version: 2,
 	}}, map[string]any{"result": "Bearer agent-output-secret"})
-	_, err = RunCallback(ctx, "toolops.plan.dry_run", map[string]any{"plan_id": "plan-001"},
+	_, err = RunCallback(ctx, "toolops.intent.dry_run", map[string]any{"intent_id": "intent-001"},
 		func(context.Context) (map[string]any, error) {
 			return map[string]any{"status": "succeeded"}, nil
 		})
@@ -121,7 +121,7 @@ func TestIncidentCallbackAgentAndEinoSpansUseOneRedactedTrace(t *testing.T) {
 			incident = span
 		case "toolops.agent.run":
 			agentRun = span
-		case "toolops.plan.dry_run":
+		case "toolops.intent.dry_run":
 			dryRun = span
 		case "ToolOpsModel":
 			chat = span

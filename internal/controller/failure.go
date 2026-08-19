@@ -10,12 +10,12 @@ import (
 
 // classifyControllerError 只识别可以由稳定 error identity 判断的错误。
 // 未识别错误采用 fail-closed 的 unclassified/escalate，禁止解析错误字符串猜测语义。
-func classifyControllerError(stage workflow.FailureStage, code, safeSummary, planID, actionID string,
+func classifyControllerError(stage workflow.FailureStage, code, safeSummary, intentID, actionID string,
 	operation platform.Operation, err error,
 ) workflow.StageFailure {
 	value := workflow.StageFailure{
 		Stage: stage, Code: code, SafeSummary: safeSummary, Message: errorMessage(err),
-		PlanID: planID, ActionID: actionID, OperationID: operation.ID,
+		IntentID: intentID, ActionID: actionID, OperationID: operation.ID,
 		OperationStatus: string(operation.Status),
 	}
 	switch {
@@ -40,24 +40,24 @@ func classifyControllerError(stage workflow.FailureStage, code, safeSummary, pla
 	return value
 }
 
-func invalidResponseFailure(stage workflow.FailureStage, code, safeSummary, planID, actionID string,
+func invalidResponseFailure(stage workflow.FailureStage, code, safeSummary, intentID, actionID string,
 	operation platform.Operation,
 ) workflow.StageFailure {
 	return workflow.StageFailure{
 		Stage: stage, Category: workflow.FailureCategoryInvalidResponse, Code: code,
 		SafeSummary: safeSummary, NextAction: workflow.FailureNextEscalate,
-		PlanID: planID, ActionID: actionID, OperationID: operation.ID,
+		IntentID: intentID, ActionID: actionID, OperationID: operation.ID,
 		OperationStatus: string(operation.Status),
 	}
 }
 
-func unknownResultFailure(stage workflow.FailureStage, code, safeSummary, planID, actionID string,
+func unknownResultFailure(stage workflow.FailureStage, code, safeSummary, intentID, actionID string,
 	operation platform.Operation, err error,
 ) workflow.StageFailure {
 	return workflow.StageFailure{
 		Stage: stage, Category: workflow.FailureCategoryResultUnknown, Code: code,
 		SafeSummary: safeSummary, Message: errorMessage(err), NextAction: workflow.FailureNextReconcile,
-		PlanID: planID, ActionID: actionID, OperationID: operation.ID,
+		IntentID: intentID, ActionID: actionID, OperationID: operation.ID,
 		OperationStatus: string(operation.Status),
 	}
 }

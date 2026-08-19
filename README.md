@@ -1,6 +1,6 @@
 # Talon ToolOps Agent
 
-Talon 当前实现了从异常调查、Plan 校验、受控修复、小流量探测到逐级恢复的 ToolOps Agent 闭环。
+Talon 当前实现了 ReAct 驱动的 ToolOps Agent 闭环：模型根据最新观察决定一个有界的 `ExecutionIntent`，Harness 完成校验、受控执行和 Checkpoint，再把结果交回模型决定下一步。
 
 ## 构建带版本的二进制
 
@@ -25,7 +25,7 @@ make build VERSION=v1.2.0 COMMIT=a84f21c7d812
 
 ## 独立迭代 Prompt
 
-Agent Prompt 位于 `prompts/toolops-agent`，每个已发布版本使用独立目录。例如 `v1`、`v2` 和 `v3`。版本目录包含三个文件：
+Agent Prompt 位于 `prompts/toolops-agent`，每个已发布版本使用独立目录。例如 `v1` 至 `v4`。版本目录包含三个文件：
 
 - `system.md`：System Prompt，必须保留 `{{incident_id}}` 占位符。
 - `default-instruction.md`：没有显式任务指令时使用的默认指令。
@@ -34,16 +34,16 @@ Agent Prompt 位于 `prompts/toolops-agent`，每个已发布版本使用独立�
 通过 `.env` 指向该目录后，修改 Prompt 无需重新构建二进制，下次启动进程即可生效：
 
 ```dotenv
-LLM_PROMPTS_DIR=prompts/toolops-agent/v3
+LLM_PROMPTS_DIR=prompts/toolops-agent/v4
 ```
 
-目录未配置时使用编译进二进制的 `v3`。每次运行都会把 manifest 中的 `prompt_version` 和根据实际 Prompt 内容自动计算的 `prompt_digest` 写入 RunArtifact。已发布目录应保持不可变；需要修改时复制为新目录、更新 manifest 的版本 ID，再通过 `LLM_PROMPTS_DIR` 切换。digest 可以识别已发布内容是否被意外修改。
+目录未配置时使用编译进二进制的 `v4`。每次运行都会把 manifest 中的 `prompt_version` 和根据实际 Prompt 内容自动计算的 `prompt_digest` 写入 RunArtifact。已发布目录应保持不可变；需要修改时复制为新目录、更新 manifest 的版本 ID，再通过 `LLM_PROMPTS_DIR` 切换。digest 可以识别已发布内容是否被意外修改。
 
 ## Incident 上下文快照
 
 每次 Controller 启动新的 Agent Run 时，Talon 都会先生成初始的
-`talon.incident-context/v1`；此后每次调用模型前都会重新生成最新状态栏。快照只汇总当前 Workflow、Active Skills、调用预算、
-此前成功只读调用的 Evidence Ref/ID、历史 Plan 和最近一次结构化失败，不复制原始工具
+`talon.incident-context/v2`；此后每次调用模型前都会重新生成最新状态栏。快照只汇总当前 Workflow、Active Skills、调用预算、
+此前成功只读调用的 Evidence Ref/ID、历史 Execution Intent 和最近一次结构化失败，不复制原始工具
 输出，也不读取 Simulator 隐藏状态或 expectations。
 
 初始快照记录在 `RunArtifact.agent_runs[].context_snapshot`；每次模型调用前实际注入的
@@ -60,7 +60,7 @@ Incident 已持久化的历史观察。返回内容会再次脱敏、限制为 3
 ## 执行失败规范化
 
 Dry Run、Remediation、Probe、Recovery 的失败都会先转换成统一的结构化事实，记录
-`stage/category/code/safe_summary/retryable/next_action` 以及关联的 Plan、Action 和
+`stage/category/code/safe_summary/retryable/next_action` 以及关联的 Execution Intent、Action 和
 Operation。Workflow 和评测器只依赖稳定字段做判断；平台原始错误只保留用于审计，
 不会直接进入 Agent 上下文。无法识别的新错误统一记录为 `unclassified`，设置
 `fallback=true` 并保守升级；修复结果不确定时记录为 `result_unknown/reconcile`，禁止
@@ -115,7 +115,7 @@ go run ./cmd/talon-export \
   --output evaluation-data/<git-commit>-toolops-v1
 ```
 
-命令固定从 `DATABASE_DSN` 指向的 PostgreSQL 读取 `talon.run-artifact/v2`。输出目录必须尚不存在；目录中每个 `run_id` 对应一份 `talon.evaluation-input/v1` JSON，`manifest.json` 记录本批次的版本、运行 outcome 和文件清单。
+命令固定从 `DATABASE_DSN` 指向的 PostgreSQL 读取 `talon.run-artifact/v3`。输出目录必须尚不存在；目录中每个 `run_id` 对应一份 `talon.evaluation-input/v1` JSON，`manifest.json` 记录本批次的版本、运行 outcome 和文件清单。
 
 对整个导出目录生成批量评测报告：
 
@@ -143,7 +143,7 @@ Artifact 混入新批次。需要固定版本或调整矩阵时：
 
 ```bash
 make eval-baseline \
-  EVAL_VERSION=eval-20260818-prompt-v3 \
+  EVAL_VERSION=eval-20260818-prompt-v4 \
   EVAL_DATASET=toolops-v1 \
   EVAL_REPEAT=3
 ```

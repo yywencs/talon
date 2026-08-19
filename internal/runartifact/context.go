@@ -9,26 +9,26 @@ import (
 
 // IncidentContextSchemaVersion 表示 Incident 上下文序列化结构的版本。
 // 消费方应使用该版本识别不兼容的快照结构。
-const IncidentContextSchemaVersion = "talon.incident-context/v1"
+const IncidentContextSchemaVersion = "talon.incident-context/v2"
 
 // IncidentContextSnapshot 表示每轮 Agent 运行前生成的、大小受限且模型可见的状态快照。
 // 同一份快照也会持久化到 RunArtifact，供运行回放和评测使用。
 type IncidentContextSnapshot struct {
-	SchemaVersion    string                        `json:"schema_version"`
-	Digest           string                        `json:"digest"`
-	GeneratedAt      time.Time                     `json:"generated_at"`
-	VirtualTime      time.Time                     `json:"virtual_time,omitempty"`
-	IncidentID       string                        `json:"incident_id"`
-	Objective        string                        `json:"objective"`
-	Workflow         IncidentContextWorkflow       `json:"workflow"`
-	ActiveSkills     []IncidentContextSkill        `json:"active_skills"`
-	Budget           IncidentContextBudget         `json:"budget"`
-	Evidence         []IncidentContextEvidence     `json:"evidence"`
-	Plans            []IncidentContextPlan         `json:"plans"`
-	ActionResults    []IncidentContextActionResult `json:"action_results,omitempty"`
-	LatestCheckpoint *IncidentContextCheckpoint    `json:"latest_checkpoint,omitempty"`
-	LatestFailure    *IncidentContextFailure       `json:"latest_failure,omitempty"`
-	Constraints      []string                      `json:"constraints"`
+	SchemaVersion    string                           `json:"schema_version"`
+	Digest           string                           `json:"digest"`
+	GeneratedAt      time.Time                        `json:"generated_at"`
+	VirtualTime      time.Time                        `json:"virtual_time,omitempty"`
+	IncidentID       string                           `json:"incident_id"`
+	Objective        string                           `json:"objective"`
+	Workflow         IncidentContextWorkflow          `json:"workflow"`
+	ActiveSkills     []IncidentContextSkill           `json:"active_skills"`
+	Budget           IncidentContextBudget            `json:"budget"`
+	Evidence         []IncidentContextEvidence        `json:"evidence"`
+	ExecutionIntents []IncidentContextExecutionIntent `json:"execution_intents"`
+	ActionResults    []IncidentContextActionResult    `json:"action_results,omitempty"`
+	LatestCheckpoint *IncidentContextCheckpoint       `json:"latest_checkpoint,omitempty"`
+	LatestFailure    *IncidentContextFailure          `json:"latest_failure,omitempty"`
+	Constraints      []string                         `json:"constraints"`
 }
 
 // IncidentContextWorkflow 描述当前工作流状态，以及该状态下 Agent 可以请求的操作。
@@ -69,8 +69,8 @@ type IncidentContextEvidence struct {
 	ObservedAt  time.Time `json:"observed_at"`
 }
 
-// IncidentContextPlan 汇总此前提交的 Plan，以及生成快照时观察到的执行结果。
-type IncidentContextPlan struct {
+// IncidentContextExecutionIntent 汇总此前提交的 ExecutionIntent，以及生成快照时观察到的执行结果。
+type IncidentContextExecutionIntent struct {
 	ID           string   `json:"id"`
 	Summary      string   `json:"summary"`
 	RootCause    string   `json:"root_cause"`
@@ -136,8 +136,8 @@ func SealIncidentContextSnapshot(value IncidentContextSnapshot) IncidentContextS
 			value.Evidence[index].EvidenceIDs = []string{}
 		}
 	}
-	if value.Plans == nil {
-		value.Plans = []IncidentContextPlan{}
+	if value.ExecutionIntents == nil {
+		value.ExecutionIntents = []IncidentContextExecutionIntent{}
 	}
 	if value.ActionResults == nil {
 		value.ActionResults = []IncidentContextActionResult{}
@@ -147,12 +147,12 @@ func SealIncidentContextSnapshot(value IncidentContextSnapshot) IncidentContextS
 			value.ActionResults[index].Output = map[string]any{}
 		}
 	}
-	for index := range value.Plans {
-		if value.Plans[index].EvidenceRefs == nil {
-			value.Plans[index].EvidenceRefs = []string{}
+	for index := range value.ExecutionIntents {
+		if value.ExecutionIntents[index].EvidenceRefs == nil {
+			value.ExecutionIntents[index].EvidenceRefs = []string{}
 		}
-		if value.Plans[index].Actions == nil {
-			value.Plans[index].Actions = []string{}
+		if value.ExecutionIntents[index].Actions == nil {
+			value.ExecutionIntents[index].Actions = []string{}
 		}
 	}
 	if value.Constraints == nil {

@@ -186,8 +186,8 @@ class JudgeTests(unittest.TestCase):
             (directory / "manifest.json").write_text(
                 json.dumps(
                     {
-                        "schema_version": "talon.evaluation-export/v2",
-                        "artifact_schema_version": "talon.run-artifact/v2",
+                        "schema_version": "talon.evaluation-export/v3",
+                        "artifact_schema_version": "talon.run-artifact/v3",
                         "code_version": "abc123",
                         "dataset_version": "toolops-v1",
                         "runs": [

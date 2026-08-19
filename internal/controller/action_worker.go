@@ -13,14 +13,14 @@ import (
 // ActionWorker 持续推进一个 IncidentWorkflow 的异步修复 Operation。
 // 执行进度保存在 execution.Store 中，因此 Worker 重启后可以继续轮询原 Operation。
 type ActionWorker struct {
-	processor     *PlanProcessor
+	processor     *ExecutionCoordinator
 	retryInterval time.Duration
 }
 
 // NewActionWorker 创建异步 Action 调度器。
-func NewActionWorker(processor *PlanProcessor, retryInterval time.Duration) (*ActionWorker, error) {
+func NewActionWorker(processor *ExecutionCoordinator, retryInterval time.Duration) (*ActionWorker, error) {
 	if processor == nil || processor.executionStore == nil || processor.workflow == nil {
-		return nil, fmt.Errorf("initialized plan processor is required")
+		return nil, fmt.Errorf("initialized execution coordinator is required")
 	}
 	if retryInterval <= 0 {
 		return nil, fmt.Errorf("worker retry interval must be positive")
@@ -38,7 +38,7 @@ func (w *ActionWorker) Run(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if w.processor.workflow.Snapshot().State != workflow.StateRemediating {
+		if w.processor.workflow.Snapshot().State != workflow.StateExecuting {
 			return nil
 		}
 
@@ -46,7 +46,7 @@ func (w *ActionWorker) Run(ctx context.Context) error {
 		if err != nil && !errors.Is(err, execution.ErrNoClaimable) && !errors.Is(err, ErrActionExecutionUnknown) {
 			return err
 		}
-		if w.processor.workflow.Snapshot().State != workflow.StateRemediating {
+		if w.processor.workflow.Snapshot().State != workflow.StateExecuting {
 			return err
 		}
 		delay := w.nextDelay(ctx, record)
@@ -62,10 +62,10 @@ func (w *ActionWorker) nextDelay(ctx context.Context, current execution.Record) 
 		return nonNegative(current.NextPollAt.Sub(now))
 	}
 	snapshot := w.processor.workflow.Snapshot()
-	if snapshot.Plan == nil {
+	if snapshot.ExecutionIntent == nil {
 		return w.retryInterval
 	}
-	records, err := w.processor.executionStore.ListPlan(ctx, snapshot.Plan.ID)
+	records, err := w.processor.executionStore.ListIntent(ctx, snapshot.ExecutionIntent.ID)
 	if err != nil {
 		return w.retryInterval
 	}

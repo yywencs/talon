@@ -175,8 +175,8 @@ func (d Driver) valid() bool {
 
 func validateSchema(ctx context.Context, db *sql.DB) error {
 	checks := map[string]string{
-		"approval_requests": `SELECT 1 FROM approval_requests WHERE 1 = 0`,
-		"action_executions": `SELECT next_poll_at_unix_ns, operation_deadline_unix_ns FROM action_executions WHERE 1 = 0`,
+		"approval_requests": `SELECT intent_id FROM approval_requests WHERE 1 = 0`,
+		"action_executions": `SELECT intent_id, next_poll_at_unix_ns, operation_deadline_unix_ns FROM action_executions WHERE 1 = 0`,
 		"run_artifacts":     `SELECT run_id, artifact FROM run_artifacts WHERE 1 = 0`,
 	}
 	for table, query := range checks {

@@ -26,15 +26,15 @@ func TestExecutionStoreLeaseTakeoverAndStrictOrder(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, records, 2)
 
-	first, err := store.ClaimNext(ctx, execution.Claim{PlanID: specs[0].PlanID, OwnerID: "worker-a", LeaseDuration: time.Minute})
+	first, err := store.ClaimNext(ctx, execution.Claim{IntentID: specs[0].IntentID, OwnerID: "worker-a", LeaseDuration: time.Minute})
 	require.NoError(t, err)
 	assert.Equal(t, specs[0].ActionID, first.ActionID)
 	assert.Equal(t, 1, first.Attempt)
-	_, err = store.ClaimNext(ctx, execution.Claim{PlanID: specs[0].PlanID, OwnerID: "worker-b", LeaseDuration: time.Minute})
+	_, err = store.ClaimNext(ctx, execution.Claim{IntentID: specs[0].IntentID, OwnerID: "worker-b", LeaseDuration: time.Minute})
 	assert.ErrorIs(t, err, execution.ErrNoClaimable)
 
 	now = now.Add(2 * time.Minute)
-	takenOver, err := store.ClaimNext(ctx, execution.Claim{PlanID: specs[0].PlanID, OwnerID: "worker-b", LeaseDuration: time.Minute})
+	takenOver, err := store.ClaimNext(ctx, execution.Claim{IntentID: specs[0].IntentID, OwnerID: "worker-b", LeaseDuration: time.Minute})
 	require.NoError(t, err)
 	assert.Equal(t, specs[0].ActionID, takenOver.ActionID)
 	assert.Equal(t, 2, takenOver.Attempt)
@@ -43,7 +43,7 @@ func TestExecutionStoreLeaseTakeoverAndStrictOrder(t *testing.T) {
 	_, err = store.Complete(ctx, takenOver.ActionID, "worker-b", "operation-1", "succeeded", execution.StatusSucceeded, "")
 	require.NoError(t, err)
 
-	second, err := store.ClaimNext(ctx, execution.Claim{PlanID: specs[0].PlanID, OwnerID: "worker-c", LeaseDuration: time.Minute})
+	second, err := store.ClaimNext(ctx, execution.Claim{IntentID: specs[0].IntentID, OwnerID: "worker-c", LeaseDuration: time.Minute})
 	require.NoError(t, err)
 	assert.Equal(t, specs[1].ActionID, second.ActionID)
 }
@@ -59,9 +59,9 @@ func TestExecutionStoreSameOwnerReusesLiveLeaseWithoutNewAttempt(t *testing.T) {
 	spec := executionSpecsForTest("owned")[:1]
 	_, err = store.Prepare(ctx, spec)
 	require.NoError(t, err)
-	first, err := store.ClaimNext(ctx, execution.Claim{PlanID: spec[0].PlanID, OwnerID: "worker", LeaseDuration: time.Minute})
+	first, err := store.ClaimNext(ctx, execution.Claim{IntentID: spec[0].IntentID, OwnerID: "worker", LeaseDuration: time.Minute})
 	require.NoError(t, err)
-	repeated, err := store.ClaimNext(ctx, execution.Claim{PlanID: spec[0].PlanID, OwnerID: "worker", LeaseDuration: time.Minute})
+	repeated, err := store.ClaimNext(ctx, execution.Claim{IntentID: spec[0].IntentID, OwnerID: "worker", LeaseDuration: time.Minute})
 	require.NoError(t, err)
 	assert.Equal(t, first.ActionID, repeated.ActionID)
 	assert.Equal(t, first.Attempt, repeated.Attempt)
@@ -83,7 +83,7 @@ func TestExecutionStoreConcurrentClaimHasSingleWinner(t *testing.T) {
 		go func(worker string) {
 			defer wait.Done()
 			_, claimErr := database.Executions().ClaimNext(ctx, execution.Claim{
-				PlanID: spec[0].PlanID, OwnerID: worker, LeaseDuration: time.Minute,
+				IntentID: spec[0].IntentID, OwnerID: worker, LeaseDuration: time.Minute,
 			})
 			results <- claimErr
 		}(owner)
@@ -113,7 +113,7 @@ func runExecutionStoreContract(t *testing.T, store execution.Store, prefix strin
 	require.NoError(t, err)
 	assert.Equal(t, records, repeated)
 
-	first, err := store.ClaimNext(ctx, execution.Claim{PlanID: specs[0].PlanID, OwnerID: "contract-worker", LeaseDuration: time.Minute})
+	first, err := store.ClaimNext(ctx, execution.Claim{IntentID: specs[0].IntentID, OwnerID: "contract-worker", LeaseDuration: time.Minute})
 	require.NoError(t, err)
 	now := time.Now().UTC()
 	_, err = store.RecordOperation(ctx, first.ActionID, "contract-worker", "contract-operation-1", "running", execution.PollSchedule{
@@ -121,20 +121,20 @@ func runExecutionStoreContract(t *testing.T, store execution.Store, prefix strin
 	})
 	require.NoError(t, err)
 	time.Sleep(2 * time.Millisecond)
-	first, err = store.ClaimNext(ctx, execution.Claim{PlanID: specs[0].PlanID, OwnerID: "contract-worker", LeaseDuration: time.Minute})
+	first, err = store.ClaimNext(ctx, execution.Claim{IntentID: specs[0].IntentID, OwnerID: "contract-worker", LeaseDuration: time.Minute})
 	require.NoError(t, err)
 	first, err = store.Complete(ctx, first.ActionID, "contract-worker", "contract-operation-1", "succeeded", execution.StatusSucceeded, "")
 	require.NoError(t, err)
 	assert.Equal(t, execution.StatusSucceeded, first.Status)
 
-	second, err := store.ClaimNext(ctx, execution.Claim{PlanID: specs[0].PlanID, OwnerID: "contract-worker", LeaseDuration: time.Minute})
+	second, err := store.ClaimNext(ctx, execution.Claim{IntentID: specs[0].IntentID, OwnerID: "contract-worker", LeaseDuration: time.Minute})
 	require.NoError(t, err)
 	assert.Equal(t, specs[1].ActionID, second.ActionID)
 }
 
 func executionSpecsForTest(prefix string) []execution.Spec {
 	return []execution.Spec{
-		{IncidentID: prefix + "-incident", PlanID: prefix + "-plan", ActionID: prefix + "-action-1", ActionDigest: "digest-1", Sequence: 1, ToolName: "first", IdempotencyKey: prefix + "-action-1:execute"},
-		{IncidentID: prefix + "-incident", PlanID: prefix + "-plan", ActionID: prefix + "-action-2", ActionDigest: "digest-2", Sequence: 2, ToolName: "second", IdempotencyKey: prefix + "-action-2:execute"},
+		{IncidentID: prefix + "-incident", IntentID: prefix + "-intent", ActionID: prefix + "-action-1", ActionDigest: "digest-1", Sequence: 1, ToolName: "first", IdempotencyKey: prefix + "-action-1:execute"},
+		{IncidentID: prefix + "-incident", IntentID: prefix + "-intent", ActionID: prefix + "-action-2", ActionDigest: "digest-2", Sequence: 2, ToolName: "second", IdempotencyKey: prefix + "-action-2:execute"},
 	}
 }

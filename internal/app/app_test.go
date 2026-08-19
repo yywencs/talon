@@ -17,32 +17,32 @@ import (
 	"github.com/wen/opentalon/internal/workflow"
 )
 
-type planInvestigator struct {
+type intentInvestigator struct {
 	flow       *workflow.IncidentWorkflow
 	incidentID string
 }
 
-func (p *planInvestigator) IncidentID() string { return p.incidentID }
+func (p *intentInvestigator) IncidentID() string { return p.incidentID }
 
-func (p *planInvestigator) Investigate(context.Context, string) error {
-	_, err := p.flow.SubmitPlan(workflow.PlanDraft{
+func (p *intentInvestigator) Investigate(context.Context, string) error {
+	_, err := p.flow.SubmitExecutionIntent(workflow.ExecutionIntentDraft{
 		Summary: "rollback mapping regression", RootCause: "mapping-v2 changed size to a string",
 		EvidenceRefs: []string{"metric:error_rate", "log:invalid_parameter_type", "change:mapping-v2"},
-		Stages: []workflow.PlanStageDraft{
-			{StageID: "rollback", Goal: "rollback mapping", Actions: []workflow.PlannedAction{{
+		Stages: []workflow.ExecutionStageDraft{
+			{StageID: "rollback", Goal: "rollback mapping", Actions: []workflow.IntendedAction{{
 				Key: "rollback-mapping", ToolName: "rollback_mapping",
 				Arguments: map[string]any{
 					"tool_id": "generate_image", "target_version": "mapping-v1", "expected_version": "mapping-v2",
 				},
 			}}, CheckpointPolicy: workflow.CheckpointPolicy{DefaultDecision: workflow.CheckpointContinue}},
-			{StageID: "probe", Goal: "verify the repaired route", Actions: []workflow.PlannedAction{{
+			{StageID: "probe", Goal: "verify the repaired route", Actions: []workflow.IntendedAction{{
 				Key: "probe-route", Kind: workflow.ActionKindProbe, ToolName: "request_probe",
 				Arguments: map[string]any{"route_id": "route-a", "policy_id": "default-safe-recovery", "idempotency_key": "probe-mapping"},
 			}}, CheckpointPolicy: workflow.CheckpointPolicy{Rules: []workflow.CheckpointRule{{
 				SourceActionID: "probe-route", OutputPath: "output.outcome", Equals: "healthy",
 				Decision: workflow.CheckpointContinue, NextStageID: "recovery",
 			}}, DefaultDecision: workflow.CheckpointNeedsAgent}},
-			{StageID: "recovery", Goal: "restore baseline traffic", Actions: []workflow.PlannedAction{{
+			{StageID: "recovery", Goal: "restore baseline traffic", Actions: []workflow.IntendedAction{{
 				Key: "recover-route", Kind: workflow.ActionKindRecovery, ToolName: "request_recovery",
 				Arguments: map[string]any{"route_id": "route-a", "policy_id": "default-safe-recovery", "idempotency_key": "recover-mapping"},
 			}}, CheckpointPolicy: workflow.CheckpointPolicy{Rules: []workflow.CheckpointRule{{
@@ -65,7 +65,7 @@ func TestRunCompletesScriptedEndToEndScenario(t *testing.T) {
 		Storage: database, Output: &output, AutoApprove: true,
 		ClockPollInterval: time.Millisecond, WorkerRetryInterval: time.Millisecond,
 		InvestigatorFactory: func(flow *workflow.IncidentWorkflow, _ platform.ToolOpsPlatform) (controller.Investigator, error) {
-			return &planInvestigator{flow: flow, incidentID: flow.Snapshot().IncidentID}, nil
+			return &intentInvestigator{flow: flow, incidentID: flow.Snapshot().IncidentID}, nil
 		},
 	})
 	require.NoError(t, err)
@@ -73,19 +73,19 @@ func TestRunCompletesScriptedEndToEndScenario(t *testing.T) {
 	assert.Equal(t, workflow.StateResolved, result.Controller.Snapshot.State)
 	assert.Equal(t, 80, result.World.Routes["route-a"].Weight)
 	assert.Equal(t, 20, result.World.Routes["route-b"].Weight)
-	assert.Equal(t, "talon.run-artifact/v2", result.Artifact.SchemaVersion)
+	assert.Equal(t, "talon.run-artifact/v3", result.Artifact.SchemaVersion)
 	assert.Equal(t, "toolops-v1", result.Artifact.Provenance.DatasetVersion)
 	assert.NotEmpty(t, result.Artifact.Provenance.CodeVersion)
-	assert.Equal(t, "toolops-agent/v3", result.Artifact.Provenance.PromptVersion)
+	assert.Equal(t, "toolops-agent/v4", result.Artifact.Provenance.PromptVersion)
 	assert.Len(t, result.Artifact.Provenance.PromptDigest, 64)
 	assert.Equal(t, 24, result.Artifact.RunConfig.AgentMaxSteps)
 	assert.True(t, result.Artifact.RunConfig.AutoApprove)
 	assert.Equal(t, "completed", result.Artifact.Outcome)
 	assert.Equal(t, string(controller.StopResolved), result.Artifact.StopReason)
 	assert.Equal(t, 1, result.Artifact.Summary.AgentRuns)
-	require.Len(t, result.Artifact.Plans, 1)
-	require.Len(t, result.Artifact.AgentRuns[0].Plans, 1)
-	assert.Equal(t, "rollback mapping regression", result.Artifact.Plans[0].Summary)
+	require.Len(t, result.Artifact.ExecutionIntents, 1)
+	require.Len(t, result.Artifact.AgentRuns[0].ExecutionIntents, 1)
+	assert.Equal(t, "rollback mapping regression", result.Artifact.ExecutionIntents[0].Summary)
 	assert.NotEmpty(t, result.Artifact.WorkflowHistory)
 	assert.Equal(t, workflow.StateResolved, result.Artifact.FinalState.WorkflowState)
 	require.Len(t, result.Artifact.FinalState.Routes, 2)
@@ -97,7 +97,7 @@ func TestRunCompletesScriptedEndToEndScenario(t *testing.T) {
 	assert.Contains(t, output.String(), "SIMULATOR AUTO-APPROVE")
 	assert.Contains(t, output.String(), "code_version=")
 	assert.Contains(t, output.String(), "dataset_version=toolops-v1")
-	assert.Contains(t, output.String(), "remediating -> checkpoint")
+	assert.Contains(t, output.String(), "executing -> checkpoint")
 	assert.Contains(t, output.String(), "checkpoint -> resolved")
 	assert.Contains(t, output.String(), "[result] reason=resolved state=resolved")
 }
@@ -112,7 +112,7 @@ func TestRunStopsAtApprovalWhenAutoApprovalDisabled(t *testing.T) {
 		Storage: database, AutoApprove: false,
 		ClockPollInterval: time.Millisecond, WorkerRetryInterval: time.Millisecond,
 		InvestigatorFactory: func(flow *workflow.IncidentWorkflow, _ platform.ToolOpsPlatform) (controller.Investigator, error) {
-			return &planInvestigator{flow: flow, incidentID: flow.Snapshot().IncidentID}, nil
+			return &intentInvestigator{flow: flow, incidentID: flow.Snapshot().IncidentID}, nil
 		},
 	})
 	require.NoError(t, err)
@@ -146,7 +146,7 @@ func testDatasetRoot(t *testing.T) string {
 	return filepath.Clean(filepath.Join(filepath.Dir(filename), "..", "..", "data", "toolops-v1"))
 }
 
-var _ controller.Investigator = (*planInvestigator)(nil)
+var _ controller.Investigator = (*intentInvestigator)(nil)
 
 func activeArtifactConfig(values []runartifact.ConfigState) string {
 	for _, value := range values {

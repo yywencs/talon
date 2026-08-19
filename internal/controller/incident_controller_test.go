@@ -33,7 +33,7 @@ func (s *scriptedInvestigator) Investigate(_ context.Context, instruction string
 func TestIncidentControllerRunsFromProtectedToResolved(t *testing.T) {
 	service := executionPlatform("safe_fix")
 	controller, _, database, investigator := incidentControllerForTest(t, service, func(instance *workflow.IncidentWorkflow) *scriptedInvestigator {
-		return planSubmittingInvestigator(instance, "safe_fix")
+		return intentSubmittingInvestigator(instance, "safe_fix")
 	})
 	defer database.Close()
 
@@ -54,12 +54,12 @@ func TestIncidentControllerRunsDynamicStagesWithResolvedOutputBinding(t *testing
 	orchestrator, _, database, _ := incidentControllerForTest(t, service, func(instance *workflow.IncidentWorkflow) *scriptedInvestigator {
 		value := &scriptedInvestigator{incidentID: instance.Snapshot().IncidentID, workflow: instance}
 		value.run = func(_ int, _ string) error {
-			_, err := instance.SubmitPlan(workflow.PlanDraft{
+			_, err := instance.SubmitExecutionIntent(workflow.ExecutionIntentDraft{
 				Summary: "refresh and probe", RootCause: "stale route", EvidenceRefs: []string{"trace:dynamic"},
-				Stages: []workflow.PlanStageDraft{
-					{StageID: "refresh", Goal: "refresh route", Actions: []workflow.PlannedAction{{Key: "refresh-route", ToolName: "refresh_route"}},
+				Stages: []workflow.ExecutionStageDraft{
+					{StageID: "refresh", Goal: "refresh route", Actions: []workflow.IntendedAction{{Key: "refresh-route", ToolName: "refresh_route"}},
 						CheckpointPolicy: workflow.CheckpointPolicy{DefaultDecision: workflow.CheckpointContinue}},
-					{StageID: "probe", Goal: "probe route", Actions: []workflow.PlannedAction{{Key: "probe-route", ToolName: "probe_route",
+					{StageID: "probe", Goal: "probe route", Actions: []workflow.IntendedAction{{Key: "probe-route", ToolName: "probe_route",
 						ArgumentReferences: map[string]workflow.ActionOutputReference{"route_id": {
 							SourceActionID: "refresh-route", OutputPath: "output.route.id", ExpectedType: workflow.ActionOutputString, Required: true,
 						}}}}, CheckpointPolicy: workflow.CheckpointPolicy{Rules: []workflow.CheckpointRule{{
@@ -103,7 +103,7 @@ func TestDynamicActionApprovalBindsResolvedArgumentsAndDigest(t *testing.T) {
 	orchestrator, _, database, _ := incidentControllerForTest(t, service, func(instance *workflow.IncidentWorkflow) *scriptedInvestigator {
 		value := &scriptedInvestigator{incidentID: instance.Snapshot().IncidentID, workflow: instance}
 		value.run = func(_ int, _ string) error {
-			_, err := instance.SubmitPlan(dynamicRouteDraft(workflow.CheckpointSucceeded))
+			_, err := instance.SubmitExecutionIntent(dynamicRouteDraft(workflow.CheckpointSucceeded))
 			return err
 		}
 		return value
@@ -113,9 +113,9 @@ func TestDynamicActionApprovalBindsResolvedArgumentsAndDigest(t *testing.T) {
 	waiting, err := orchestrator.Run(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, StopAwaitingApproval, waiting.Reason)
-	require.NotNil(t, waiting.Snapshot.Plan)
+	require.NotNil(t, waiting.Snapshot.ExecutionIntent)
 	require.Len(t, waiting.Snapshot.ResolvedActions, 2)
-	template := waiting.Snapshot.Plan.Stages[1].Actions[0]
+	template := waiting.Snapshot.ExecutionIntent.Stages[1].Actions[0]
 	resolved := waiting.Snapshot.ResolvedActions[1]
 	assert.NotEqual(t, template.Digest, resolved.Digest)
 	pending, err := database.Approvals().ListPending(context.Background())
@@ -124,12 +124,12 @@ func TestDynamicActionApprovalBindsResolvedArgumentsAndDigest(t *testing.T) {
 	assert.Equal(t, resolved.Digest, pending[0].ActionDigest)
 	assert.Equal(t, "route-approved", pending[0].Arguments["route_id"])
 
-	_, err = orchestrator.planProcessor.Approve(context.Background(), ApprovalRequest{
-		PlanID: waiting.Snapshot.Plan.ID, ActionID: resolved.ActionID, ActionDigest: template.Digest, Approver: "oncall",
+	_, err = orchestrator.executionCoordinator.Approve(context.Background(), ApprovalRequest{
+		IntentID: waiting.Snapshot.ExecutionIntent.ID, ActionID: resolved.ActionID, ActionDigest: template.Digest, Approver: "oncall",
 	})
 	require.Error(t, err, "an approval for the unresolved template digest must not be reusable")
-	_, err = orchestrator.planProcessor.Approve(context.Background(), ApprovalRequest{
-		PlanID: waiting.Snapshot.Plan.ID, ActionID: resolved.ActionID, ActionDigest: resolved.Digest, Approver: "oncall",
+	_, err = orchestrator.executionCoordinator.Approve(context.Background(), ApprovalRequest{
+		IntentID: waiting.Snapshot.ExecutionIntent.ID, ActionID: resolved.ActionID, ActionDigest: resolved.Digest, Approver: "oncall",
 	})
 	require.NoError(t, err)
 	result, err := orchestrator.Run(context.Background())
@@ -144,9 +144,9 @@ func TestDynamicCheckpointNeedsAgentInvokesAgentWithNewActionEvidence(t *testing
 		value := &scriptedInvestigator{incidentID: instance.Snapshot().IncidentID, workflow: instance}
 		value.run = func(run int, _ string) error {
 			if run == 1 {
-				_, err := instance.SubmitPlan(workflow.PlanDraft{
+				_, err := instance.SubmitExecutionIntent(workflow.ExecutionIntentDraft{
 					Summary: "inspect route", RootCause: "unknown route state", EvidenceRefs: []string{"trace:dynamic"},
-					Stages: []workflow.PlanStageDraft{{StageID: "inspect", Goal: "inspect", Actions: []workflow.PlannedAction{{Key: "inspect-route", ToolName: "inspect_route"}},
+					Stages: []workflow.ExecutionStageDraft{{StageID: "inspect", Goal: "inspect", Actions: []workflow.IntendedAction{{Key: "inspect-route", ToolName: "inspect_route"}},
 						CheckpointPolicy: workflow.CheckpointPolicy{DefaultDecision: workflow.CheckpointNeedsAgent, DefaultReason: "semantic judgment required"}}},
 				})
 				return err
@@ -168,13 +168,13 @@ func TestDynamicCheckpointNeedsAgentInvokesAgentWithNewActionEvidence(t *testing
 	assert.NotEmpty(t, result.Snapshot.ActionResults[0].EvidenceRef)
 }
 
-func dynamicRouteDraft(finalDecision workflow.CheckpointDecision) workflow.PlanDraft {
-	return workflow.PlanDraft{
+func dynamicRouteDraft(finalDecision workflow.CheckpointDecision) workflow.ExecutionIntentDraft {
+	return workflow.ExecutionIntentDraft{
 		Summary: "refresh and probe", RootCause: "stale route", EvidenceRefs: []string{"trace:dynamic"},
-		Stages: []workflow.PlanStageDraft{
-			{StageID: "refresh", Goal: "refresh route", Actions: []workflow.PlannedAction{{Key: "refresh-route", ToolName: "refresh_route"}},
+		Stages: []workflow.ExecutionStageDraft{
+			{StageID: "refresh", Goal: "refresh route", Actions: []workflow.IntendedAction{{Key: "refresh-route", ToolName: "refresh_route"}},
 				CheckpointPolicy: workflow.CheckpointPolicy{DefaultDecision: workflow.CheckpointContinue}},
-			{StageID: "probe", Goal: "probe route", Actions: []workflow.PlannedAction{{Key: "probe-route", ToolName: "probe_route",
+			{StageID: "probe", Goal: "probe route", Actions: []workflow.IntendedAction{{Key: "probe-route", ToolName: "probe_route",
 				ArgumentReferences: map[string]workflow.ActionOutputReference{"route_id": {
 					SourceActionID: "refresh-route", OutputPath: "output.route.id", ExpectedType: workflow.ActionOutputString, Required: true,
 				}}}}, CheckpointPolicy: workflow.CheckpointPolicy{DefaultDecision: finalDecision}},
@@ -186,7 +186,7 @@ func TestIncidentControllerStopsForActionApproval(t *testing.T) {
 	service := executionPlatform("risky_fix")
 	service.capabilities[0].Risk = "medium"
 	controller, _, database, _ := incidentControllerForTest(t, service, func(instance *workflow.IncidentWorkflow) *scriptedInvestigator {
-		return planSubmittingInvestigator(instance, "risky_fix")
+		return intentSubmittingInvestigator(instance, "risky_fix")
 	})
 	defer database.Close()
 
@@ -204,17 +204,17 @@ func TestIncidentControllerResumesAfterApproval(t *testing.T) {
 	service := executionPlatform("risky_fix")
 	service.capabilities[0].Risk = "medium"
 	controller, _, database, _ := incidentControllerForTest(t, service, func(instance *workflow.IncidentWorkflow) *scriptedInvestigator {
-		return planSubmittingInvestigator(instance, "risky_fix")
+		return intentSubmittingInvestigator(instance, "risky_fix")
 	})
 	defer database.Close()
 
 	waiting, err := controller.Run(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, StopAwaitingApproval, waiting.Reason)
-	require.NotNil(t, waiting.Snapshot.Plan)
-	action := waiting.Snapshot.Plan.Stages[0].Actions[0]
-	_, err = controller.planProcessor.Approve(context.Background(), ApprovalRequest{
-		PlanID: waiting.Snapshot.Plan.ID, ActionID: action.ID, ActionDigest: action.Digest,
+	require.NotNil(t, waiting.Snapshot.ExecutionIntent)
+	action := waiting.Snapshot.ExecutionIntent.Stages[0].Actions[0]
+	_, err = controller.executionCoordinator.Approve(context.Background(), ApprovalRequest{
+		IntentID: waiting.Snapshot.ExecutionIntent.ID, ActionID: action.ID, ActionDigest: action.Digest,
 		Approver: "oncall", Reason: "verified dry run and rollback scope",
 	})
 	require.NoError(t, err)
@@ -233,7 +233,7 @@ func TestIncidentControllerReinvestigatesWithExecutionFailure(t *testing.T) {
 		value := &scriptedInvestigator{incidentID: instance.Snapshot().IncidentID, workflow: instance}
 		value.run = func(run int, _ string) error {
 			if run == 1 {
-				_, err := instance.SubmitPlan(testPlanDraft("failing_fix"))
+				_, err := instance.SubmitExecutionIntent(testExecutionIntentDraft("failing_fix"))
 				return err
 			}
 			_, err := instance.Apply(workflow.Event{
@@ -282,35 +282,35 @@ func incidentControllerForTest(
 	require.NoError(t, err)
 	database, err := storage.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "talon.db"))
 	require.NoError(t, err)
-	processor, err := NewPlanProcessor(service, instance,
+	processor, err := NewExecutionCoordinator(service, instance,
 		WithApprovalStore(database.Approvals()),
 		WithExecutionStore(database.Executions(), "controller-worker", time.Second),
 		WithAsyncExecution(fastAsyncExecutionConfig()))
 	require.NoError(t, err)
 	investigator := buildInvestigator(instance)
 	controller, err := NewIncidentController(IncidentControllerConfig{
-		Workflow: instance, Investigator: investigator, PlanProcessor: processor,
+		Workflow: instance, Investigator: investigator, ExecutionCoordinator: processor,
 		WorkerRetryInterval: time.Millisecond,
 	})
 	require.NoError(t, err)
 	return controller, instance, database, investigator
 }
 
-func planSubmittingInvestigator(instance *workflow.IncidentWorkflow, toolName string) *scriptedInvestigator {
+func intentSubmittingInvestigator(instance *workflow.IncidentWorkflow, toolName string) *scriptedInvestigator {
 	value := &scriptedInvestigator{incidentID: instance.Snapshot().IncidentID, workflow: instance}
 	value.run = func(_ int, _ string) error {
-		_, err := instance.SubmitPlan(testPlanDraft(toolName))
+		_, err := instance.SubmitExecutionIntent(testExecutionIntentDraft(toolName))
 		return err
 	}
 	return value
 }
 
-func testPlanDraft(toolName string) workflow.PlanDraft {
-	return workflow.PlanDraft{
+func testExecutionIntentDraft(toolName string) workflow.ExecutionIntentDraft {
+	return workflow.ExecutionIntentDraft{
 		Summary: "repair incident", RootCause: "confirmed test failure",
 		EvidenceRefs: []string{"trace:controller"},
-		Stages: []workflow.PlanStageDraft{{StageID: "repair", Goal: "repair incident",
-			Actions:          []workflow.PlannedAction{{Key: "repair", ToolName: toolName, Arguments: map[string]any{}}},
+		Stages: []workflow.ExecutionStageDraft{{StageID: "repair", Goal: "repair incident",
+			Actions:          []workflow.IntendedAction{{Key: "repair", ToolName: toolName, Arguments: map[string]any{}}},
 			CheckpointPolicy: workflow.CheckpointPolicy{DefaultDecision: workflow.CheckpointSucceeded}}},
 	}
 }

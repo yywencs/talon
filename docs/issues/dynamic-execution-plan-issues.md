@@ -1,5 +1,9 @@
 # 动态执行计划评测问题记录
 
+> 历史命名说明：本文保留 2026-08-18 评测时的 `Plan`、`planned` 和 `submit_plan`
+> 原始术语用于追溯旧 Artifact。当前运行时对应名称为有界 `ExecutionIntent`、
+> `validating` 和 `submit_execution_intent`，Agent 采用观察后逐步决策的 ReAct 闭环。
+
 本文记录 Talon 从固定 `Plan + ProbeProcessor + RecoveryProcessor` 改为动态线性 Stage、
 确定性 Checkpoint 与 ReAct Agent 恢复机制后，在 `toolops-v1` 真实 Baseline 中发现的问题。
 

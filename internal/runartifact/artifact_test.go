@@ -23,13 +23,13 @@ func TestRecorderSummarizesModelsEvidenceAndBlockedCalls(t *testing.T) {
 			CompletionTokensDetails: schema.CompletionTokensDetails{ReasoningTokens: 2}},
 	}}, nil, IncidentContextSnapshot{IncidentID: "incident-001", Objective: "investigate"})
 	recorder.RecordToolCall("call-1", "query_logs", workflow.AgentActionRead, `{}`, `{"data":[{"code":"connection_refused"}],"evidence_ids":["log.connection_refused"]}`, started, nil, false)
-	recorder.RecordToolCall("call-2", "submit_plan", workflow.AgentActionSubmitPlan, `{}`, `{"data":null,"error":"not allowed in state planned"}`, started, nil, true)
+	recorder.RecordToolCall("call-2", "submit_execution_intent", workflow.AgentActionSubmitExecutionIntent, `{}`, `{"data":null,"error":"not allowed in state validating"}`, started, nil, true)
 	require.NoError(t, recorder.ValidateEvidenceRefs([]string{"call-1"}))
 	current := recorder.Snapshot()
 	require.NoError(t, recorder.ValidateEvidenceRefs([]string{current.AgentRuns[0].ToolCalls[0].EvidenceRef}))
 	require.ErrorContains(t, recorder.ValidateEvidenceRefs([]string{"call-2"}), "does not identify a successful read")
-	recorder.EndAgentRun(workflow.Snapshot{State: workflow.StatePlanned}, nil)
-	recorder.RecordFinalState(nil, FinalState{WorkflowState: workflow.StatePlanned})
+	recorder.EndAgentRun(workflow.Snapshot{State: workflow.StateValidating}, nil)
+	recorder.RecordFinalState(nil, FinalState{WorkflowState: workflow.StateValidating})
 
 	artifact := recorder.Finish("resolved", workflow.Snapshot{}, nil)
 	assert.Equal(t, SchemaVersion, artifact.SchemaVersion)
@@ -38,7 +38,7 @@ func TestRecorderSummarizesModelsEvidenceAndBlockedCalls(t *testing.T) {
 	assert.Equal(t, "test-data", artifact.Provenance.DatasetVersion)
 	assert.Equal(t, "test-model", artifact.RunConfig.Model)
 	assert.Equal(t, IncidentContextSchemaVersion, artifact.RunConfig.ContextVersion)
-	assert.Equal(t, workflow.StatePlanned, artifact.FinalState.WorkflowState)
+	assert.Equal(t, workflow.StateValidating, artifact.FinalState.WorkflowState)
 	require.Len(t, artifact.AgentRuns, 1)
 	assert.Equal(t, 1, artifact.Summary.ModelCalls)
 	assert.Equal(t, 2, artifact.Summary.ToolCalls)
@@ -75,7 +75,7 @@ func TestRecorderStoresSealedIncidentContextOnCurrentAgentRun(t *testing.T) {
 	assert.Equal(t, "incident-001", contextSnapshot.IncidentID)
 	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, contextSnapshot.Digest)
 	assert.NotNil(t, contextSnapshot.ActiveSkills)
-	assert.NotNil(t, contextSnapshot.Plans)
+	assert.NotNil(t, contextSnapshot.ExecutionIntents)
 	assert.NotNil(t, contextSnapshot.Constraints)
 }
 
@@ -139,16 +139,16 @@ func TestRecorderPersistsDynamicStageResolutionAndCheckpointTrail(t *testing.T) 
 	recorder := New("dynamic", Provenance{CodeVersion: "test"}, RunConfig{})
 	snapshot := workflow.Snapshot{
 		State: workflow.StateResolved,
-		ResolvedActions: []workflow.ResolvedAction{{PlanID: "plan", StageID: "probe", ActionID: "probe-action",
+		ResolvedActions: []workflow.ResolvedAction{{IntentID: "intent", StageID: "probe", ActionID: "probe-action",
 			TemplateDigest: "template", Digest: "resolved", ToolName: "probe_route",
 			OriginalArguments: map[string]any{}, Arguments: map[string]any{"route_id": "route-new"},
 			Sources: []workflow.ResolvedArgumentSource{{Argument: "route_id", SourceResultID: "refresh:result",
 				Reference: workflow.ActionOutputReference{SourceActionID: "refresh", OutputPath: "output.route.id", ExpectedType: workflow.ActionOutputString, Required: true}}}}},
-		ActionResults: []workflow.ActionResult{{ResultID: "refresh:result", PlanID: "plan", StageID: "refresh",
+		ActionResults: []workflow.ActionResult{{ResultID: "refresh:result", IntentID: "intent", StageID: "refresh",
 			ActionID: "refresh", ActionDigest: "digest", OperationID: "operation", OperationStatus: "succeeded",
 			Output: map[string]any{"route": map[string]any{"id": "route-new"}}, EvidenceRef: "action:refresh:evidence"}},
-		AllPlanDryRuns:  []workflow.PlanDryRun{{PlanID: "plan", ActionID: "probe-action", ActionDigest: "resolved", Status: workflow.PlanDryRunSucceeded}},
-		AllPlanPolicies: []workflow.PlanPolicyDecision{{PlanID: "plan", ActionID: "probe-action", ActionDigest: "resolved", Outcome: workflow.PlanPolicyAutoApproved}},
+		AllActionDryRuns:  []workflow.ActionDryRun{{IntentID: "intent", ActionID: "probe-action", ActionDigest: "resolved", Status: workflow.ActionDryRunSucceeded}},
+		AllActionPolicies: []workflow.ActionPolicyDecision{{IntentID: "intent", ActionID: "probe-action", ActionDigest: "resolved", Outcome: workflow.ActionPolicyAutoApproved}},
 		Checkpoints: []workflow.DecisionCheckpoint{{CheckpointID: "checkpoint", StageID: "probe", Decision: workflow.CheckpointSucceeded,
 			DecisionReason: "healthy", NewEvidenceRefs: []string{"action:refresh:evidence"}}},
 	}
@@ -160,8 +160,8 @@ func TestRecorderPersistsDynamicStageResolutionAndCheckpointTrail(t *testing.T) 
 	require.Len(t, artifact.ResolvedActions, 1)
 	assert.Equal(t, "route-new", artifact.ResolvedActions[0].Arguments["route_id"])
 	require.Len(t, artifact.ActionResults, 1)
-	require.Len(t, artifact.PlanDryRuns, 1)
-	require.Len(t, artifact.PlanPolicies, 1)
+	require.Len(t, artifact.ActionDryRuns, 1)
+	require.Len(t, artifact.ActionPolicies, 1)
 	require.Len(t, artifact.Checkpoints, 1)
 	assert.Equal(t, workflow.CheckpointSucceeded, artifact.Checkpoints[0].Decision)
 	assert.Contains(t, artifact.Capabilities, CapabilityDynamicExecutionStages)
@@ -173,7 +173,7 @@ func TestRecorderNormalizesEmptyCollectionsToJSONArrays(t *testing.T) {
 	artifact := recorder.Finish("escalated", workflow.Snapshot{State: workflow.StateEscalated}, nil)
 	payload, err := json.Marshal(artifact)
 	require.NoError(t, err)
-	assert.NotContains(t, string(payload), `"plans":null`)
+	assert.NotContains(t, string(payload), `"execution_intents":null`)
 	assert.NotContains(t, string(payload), `"agent_runs":null`)
 	assert.NotContains(t, string(payload), `"operations":null`)
 	assert.NotContains(t, string(payload), `"workflow_history":null`)

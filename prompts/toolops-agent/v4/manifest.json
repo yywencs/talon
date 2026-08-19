@@ -1,0 +1,4 @@
+{
+  "id": "toolops-agent/v4",
+  "description": "将完整计划语义替换为 ReAct 驱动的有界 Execution Intent 与动态 Stage"
+}

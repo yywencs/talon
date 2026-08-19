@@ -43,14 +43,14 @@ var activeSkillCoreToolNames = []string{
 	"get_remediation_capabilities",
 	"get_recovery_policies",
 	"get_operation",
-	"submit_plan",
+	"submit_execution_intent",
 	"unload_skill",
 }
 
 // Option 配置 Incident 工具集的可选能力。
 type Option func(*options)
 
-// WithWorkflow 让工具集增加 submit_plan，并为工具记录 AgentAction 分类。
+// WithWorkflow 让工具集增加 submit_execution_intent，并为工具记录 AgentAction 分类。
 func WithWorkflow(value *workflow.IncidentWorkflow) Option {
 	return func(target *options) { target.workflow = value }
 }
@@ -126,11 +126,11 @@ func New(ctx context.Context, service platform.ToolOpsPlatform, incidentID strin
 		for _, capability := range capabilities {
 			remediationCapabilities[capability.Name] = capability
 		}
-		planTool, planErr := newSubmitPlanTool(config.workflow, remediationCapabilities)
-		if planErr != nil {
-			return nil, planErr
+		intentTool, intentErr := newSubmitExecutionIntentTool(config.workflow, remediationCapabilities)
+		if intentErr != nil {
+			return nil, intentErr
 		}
-		if err := set.add(ctx, planTool); err != nil {
+		if err := set.add(ctx, intentTool); err != nil {
 			return nil, err
 		}
 	}
@@ -190,7 +190,7 @@ func (s *Set) ToolsForActions(actions []workflow.AgentAction) []einotool.BaseToo
 
 // AgentToolNamesForSkills 返回渐进披露后的工具白名单。基础指标、日志、Trace
 // 和状态查询在 Skill 加载前后始终可见；至少加载一个 Skill 后才增加领域查询、
-// Plan、恢复策略和卸载能力。
+// ExecutionIntent、恢复策略和卸载能力。
 func AgentToolNamesForSkills(skillTools []string, hasActiveSkill bool) []string {
 	capacity := len(discoveryAgentToolNames) + len(skillTools)
 	if hasActiveSkill {
@@ -296,8 +296,8 @@ func agentActionForTool(name string) (workflow.AgentAction, bool) {
 		return workflow.AgentActionQueryOperation, true
 	case "load_skill", "unload_skill":
 		return workflow.AgentActionManageSkill, true
-	case "submit_plan":
-		return workflow.AgentActionSubmitPlan, true
+	case "submit_execution_intent":
+		return workflow.AgentActionSubmitExecutionIntent, true
 	case "escalate_incident":
 		return workflow.AgentActionEscalate, true
 	default:

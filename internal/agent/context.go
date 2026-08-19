@@ -13,12 +13,12 @@ import (
 )
 
 const (
-	contextMessageMarker      = "TALON_INCIDENT_CONTEXT_V1"
-	activeSkillsMessageMarker = "TALON_ACTIVE_SKILLS_V1"
-	maxContextEvidence        = 32
-	maxContextPlans           = 4
-	maxContextIDs             = 16
-	maxContextTextRunes       = 2048
+	contextMessageMarker       = "TALON_INCIDENT_CONTEXT_V1"
+	activeSkillsMessageMarker  = "TALON_ACTIVE_SKILLS_V1"
+	maxContextEvidence         = 32
+	maxContextExecutionIntents = 4
+	maxContextIDs              = 16
+	maxContextTextRunes        = 2048
 )
 
 type activeSkillContext struct {
@@ -34,7 +34,7 @@ type activeSkillsContext struct {
 
 // modelIncidentContext 只定义快照向模型展示时的信任边界，不改变持久化的
 // IncidentContextSnapshot。Harness 事实、工具观察索引和 Agent 历史假设必须
-// 分开放置，避免模型把历史 Plan 中的推断误认为系统确认的当前事实。
+// 分开放置，避免模型把历史 ExecutionIntent 中的推断误认为系统确认的当前事实。
 type modelIncidentContext struct {
 	SchemaVersion    string                    `json:"schema_version"`
 	Digest           string                    `json:"digest"`
@@ -62,12 +62,12 @@ type modelHarnessFacts struct {
 }
 
 type modelIncidentHypothesis struct {
-	PlanID                 string   `json:"plan_id"`
+	IntentID               string   `json:"intent_id"`
 	Hypothesis             string   `json:"hypothesis"`
 	Summary                string   `json:"summary"`
 	SupportingEvidenceRefs []string `json:"supporting_evidence_refs"`
 	ProposedActions        []string `json:"proposed_actions"`
-	PlanOutcome            string   `json:"plan_outcome"`
+	IntentOutcome          string   `json:"intent_outcome"`
 }
 
 type incidentContextObjectiveKey struct{}
@@ -125,7 +125,7 @@ func (a *ToolOpsAgent) buildIncidentContext(ctx context.Context, objective strin
 			Version: workflowSnapshot.Version, AllowedActions: allowedActions,
 		},
 		ActiveSkills: activeSkills, Budget: budget,
-		Evidence: contextEvidence(artifact), Plans: contextPlans(workflowSnapshot),
+		Evidence: contextEvidence(artifact), ExecutionIntents: contextExecutionIntents(workflowSnapshot),
 		ActionResults: contextActionResults(workflowSnapshot), LatestCheckpoint: contextCheckpoint(workflowSnapshot),
 		LatestFailure: contextFailure(workflowSnapshot), Constraints: contextConstraints(workflowSnapshot),
 	})
@@ -159,28 +159,28 @@ func contextEvidence(artifact runartifact.RunArtifact) []runartifact.IncidentCon
 	return result
 }
 
-// contextPlans 返回数量受限的近期 Plan 历史，并根据当前工作流快照推导各 Plan 的结果。
-func contextPlans(snapshot workflow.Snapshot) []runartifact.IncidentContextPlan {
-	start := max(0, len(snapshot.Plans)-maxContextPlans)
-	result := make([]runartifact.IncidentContextPlan, 0, len(snapshot.Plans)-start)
-	for index := start; index < len(snapshot.Plans); index++ {
-		plan := snapshot.Plans[index]
+// contextExecutionIntents 返回数量受限的近期 ExecutionIntent 历史，并根据当前工作流快照推导各 ExecutionIntent 的结果。
+func contextExecutionIntents(snapshot workflow.Snapshot) []runartifact.IncidentContextExecutionIntent {
+	start := max(0, len(snapshot.ExecutionIntents)-maxContextExecutionIntents)
+	result := make([]runartifact.IncidentContextExecutionIntent, 0, len(snapshot.ExecutionIntents)-start)
+	for index := start; index < len(snapshot.ExecutionIntents); index++ {
+		intent := snapshot.ExecutionIntents[index]
 		actions := make([]string, 0)
-		for _, stage := range plan.Stages {
+		for _, stage := range intent.Stages {
 			for _, action := range stage.Actions {
 				actions = append(actions, stage.StageID+":"+action.ToolName)
 			}
 		}
 		outcome := "superseded"
-		if snapshot.Plan != nil && snapshot.Plan.ID == plan.ID {
+		if snapshot.ExecutionIntent != nil && snapshot.ExecutionIntent.ID == intent.ID {
 			outcome = string(snapshot.State)
-		} else if index == len(snapshot.Plans)-1 {
+		} else if index == len(snapshot.ExecutionIntents)-1 {
 			outcome = "submitted"
 		}
-		result = append(result, runartifact.IncidentContextPlan{
-			ID: compactContextText(plan.ID, 256), Summary: compactContextText(plan.Summary, maxContextTextRunes),
-			RootCause:    compactContextText(plan.RootCause, maxContextTextRunes),
-			EvidenceRefs: compactContextStrings(plan.EvidenceRefs, maxContextIDs, 256),
+		result = append(result, runartifact.IncidentContextExecutionIntent{
+			ID: compactContextText(intent.ID, 256), Summary: compactContextText(intent.Summary, maxContextTextRunes),
+			RootCause:    compactContextText(intent.RootCause, maxContextTextRunes),
+			EvidenceRefs: compactContextStrings(intent.EvidenceRefs, maxContextIDs, 256),
 			Actions:      compactContextStrings(actions, maxContextIDs, 128), Outcome: outcome,
 		})
 	}
@@ -243,7 +243,7 @@ func contextFailure(snapshot workflow.Snapshot) *runartifact.IncidentContextFail
 
 // safeContextMetadata 仅复制安全且有助于关联失败记录与工作流记录的元数据字段。
 func safeContextMetadata(metadata map[string]string) map[string]string {
-	keys := []string{"operation_id", "route_id", "policy_id", "outcome", "action_id", "plan_id"}
+	keys := []string{"operation_id", "route_id", "policy_id", "outcome", "action_id", "intent_id"}
 	result := make(map[string]string)
 	for _, key := range keys {
 		if value := compactContextText(metadata[key], 256); value != "" {
@@ -274,11 +274,11 @@ func contextConstraints(snapshot workflow.Snapshot) []string {
 // renderIncidentContext 将已封存的快照按来源和信任边界序列化为用户消息。
 // 工具观察和历史 Agent 文本只作为数据使用，不能覆盖系统提示词。
 func renderIncidentContext(snapshot runartifact.IncidentContextSnapshot, instruction string) (string, error) {
-	hypotheses := make([]modelIncidentHypothesis, 0, len(snapshot.Plans))
-	for _, plan := range snapshot.Plans {
+	hypotheses := make([]modelIncidentHypothesis, 0, len(snapshot.ExecutionIntents))
+	for _, intent := range snapshot.ExecutionIntents {
 		hypotheses = append(hypotheses, modelIncidentHypothesis{
-			PlanID: plan.ID, Hypothesis: plan.RootCause, Summary: plan.Summary,
-			SupportingEvidenceRefs: plan.EvidenceRefs, ProposedActions: plan.Actions, PlanOutcome: plan.Outcome,
+			IntentID: intent.ID, Hypothesis: intent.RootCause, Summary: intent.Summary,
+			SupportingEvidenceRefs: intent.EvidenceRefs, ProposedActions: intent.Actions, IntentOutcome: intent.Outcome,
 		})
 	}
 	view := modelIncidentContext{

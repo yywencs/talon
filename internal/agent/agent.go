@@ -373,10 +373,10 @@ func skillPolicyAllowsTool(session *skill.Session, name string) bool {
 }
 
 // workflowToolGuard 在每次工具真正执行前重新读取 Workflow 状态并校验 AgentAction。
-// 模型在一轮 ReAct 开始时拿到的工具列表可能因 submit_plan 或 escalate 等调用而过期，
+// 模型在一轮 ReAct 开始时拿到的工具列表可能因 submit_execution_intent 或 escalate 等调用而过期，
 // 因此不能只依赖“模型是否看得见工具”；未分类或当前状态已禁止的工具会返回结构化拒绝结果。
 // escalate_incident 成功后，Guard 还负责提交 EventEscalated，使平台操作和状态机保持一致。
-// load_skill、unload_skill、submit_plan 或 escalate_incident 成功推进到目标状态后，
+// load_skill、unload_skill、submit_execution_intent 或 escalate_incident 成功推进到目标状态后，
 // Guard 直接结束当前 ReAct，避免在同一轮使用过期工具集或额外消耗 Graph 步数。
 func workflowToolGuard(instance *workflow.IncidentWorkflow, tools *toolset.Set, skills *skill.Session, recorder *runartifact.Recorder) compose.ToolMiddleware {
 	return compose.ToolMiddleware{
@@ -467,11 +467,11 @@ func returnAfterTerminalAction(ctx context.Context, instance *workflow.IncidentW
 		return nil
 	}
 	state := instance.Snapshot().State
-	if (action == workflow.AgentActionSubmitPlan && state != workflow.StatePlanned) ||
+	if (action == workflow.AgentActionSubmitExecutionIntent && state != workflow.StateValidating) ||
 		(action == workflow.AgentActionEscalate && state != workflow.StateEscalated) {
 		return nil
 	}
-	if action != workflow.AgentActionSubmitPlan && action != workflow.AgentActionEscalate {
+	if action != workflow.AgentActionSubmitExecutionIntent && action != workflow.AgentActionEscalate {
 		return nil
 	}
 	if err := react.SetReturnDirectly(ctx); err != nil {

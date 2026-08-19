@@ -18,7 +18,7 @@ const (
 	defaultInstructionFile = "default-instruction.md"
 	promptManifestFile     = "manifest.json"
 	incidentIDPlaceholder  = "{{incident_id}}"
-	defaultPromptDirectory = "toolops-agent/v3"
+	defaultPromptDirectory = "toolops-agent/v4"
 )
 
 // PromptSet 是一次 Agent 运行使用的完整 Prompt 资源。

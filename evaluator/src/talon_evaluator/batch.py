@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, List, Mapping
 
 from .core import EVALUATOR_VERSION, EvaluationInputError, evaluate
 
-EXPORT_SCHEMA_VERSION = "talon.evaluation-export/v2"
+EXPORT_SCHEMA_VERSION = "talon.evaluation-export/v3"
 BATCH_RESULT_SCHEMA_VERSION = "talon.evaluation-batch-result/v1"
 
 

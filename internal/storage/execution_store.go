@@ -23,7 +23,7 @@ func newSQLExecutionStore(db *sql.DB, driver Driver) *sqlExecutionStore {
 	return &sqlExecutionStore{db: db, driver: driver, now: time.Now}
 }
 
-// Prepare 原子创建一个冻结 Plan 的 Action 执行记录；相同规格可幂等重试，内容不一致则返回冲突。
+// Prepare 原子创建一个冻结 ExecutionIntent 的 Action 执行记录；相同规格可幂等重试，内容不一致则返回冲突。
 func (s *sqlExecutionStore) Prepare(ctx context.Context, specs []execution.Spec) ([]execution.Record, error) {
 	if len(specs) == 0 {
 		return nil, fmt.Errorf("action execution specs are required")
@@ -44,10 +44,10 @@ func (s *sqlExecutionStore) Prepare(ctx context.Context, specs []execution.Spec)
 		}
 		seen[spec.ActionID] = struct{}{}
 		_, err := tx.ExecContext(ctx, bindSQL(s.driver, `INSERT INTO action_executions (
-    action_id, incident_id, plan_id, action_digest, sequence_no, tool_name,
+    action_id, incident_id, intent_id, action_digest, sequence_no, tool_name,
     idempotency_key, status, created_at_unix_ns, updated_at_unix_ns
 ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-ON CONFLICT DO NOTHING`), spec.ActionID, spec.IncidentID, spec.PlanID, spec.ActionDigest,
+ON CONFLICT DO NOTHING`), spec.ActionID, spec.IncidentID, spec.IntentID, spec.ActionDigest,
 			spec.Sequence, spec.ToolName, spec.IdempotencyKey, now, now)
 		if err != nil {
 			return nil, fmt.Errorf("prepare action execution %q: %w", spec.ActionID, err)
@@ -63,7 +63,7 @@ ON CONFLICT DO NOTHING`), spec.ActionID, spec.IncidentID, spec.PlanID, spec.Acti
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit action execution preparation: %w", err)
 	}
-	records, err := s.ListPlan(ctx, specs[0].PlanID)
+	records, err := s.ListIntent(ctx, specs[0].IntentID)
 	if err != nil {
 		return nil, err
 	}
@@ -78,28 +78,28 @@ ON CONFLICT DO NOTHING`), spec.ActionID, spec.IncidentID, spec.PlanID, spec.Acti
 		}
 	}
 	if len(selected) != len(specs) {
-		return nil, fmt.Errorf("%w: plan %q has unexpected action execution records", execution.ErrConflict, specs[0].PlanID)
+		return nil, fmt.Errorf("%w: intent %q has unexpected action execution records", execution.ErrConflict, specs[0].IntentID)
 	}
 	return selected, nil
 }
 
 func (s *sqlExecutionStore) ClaimNext(ctx context.Context, claim execution.Claim) (execution.Record, error) {
-	claim.PlanID = strings.TrimSpace(claim.PlanID)
+	claim.IntentID = strings.TrimSpace(claim.IntentID)
 	claim.OwnerID = strings.TrimSpace(claim.OwnerID)
-	if claim.PlanID == "" || claim.OwnerID == "" || claim.LeaseDuration <= 0 {
-		return execution.Record{}, fmt.Errorf("plan ID, owner ID and positive lease duration are required")
+	if claim.IntentID == "" || claim.OwnerID == "" || claim.LeaseDuration <= 0 {
+		return execution.Record{}, fmt.Errorf("intent ID, owner ID and positive lease duration are required")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return execution.Record{}, fmt.Errorf("begin action execution claim: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	query := selectExecution + ` WHERE current.plan_id = ?
+	query := selectExecution + ` WHERE current.intent_id = ?
 AND current.status <> 'succeeded'
 AND (current.next_poll_at_unix_ns IS NULL OR current.next_poll_at_unix_ns <= ?)
 AND NOT EXISTS (
     SELECT 1 FROM action_executions previous
-    WHERE previous.plan_id = current.plan_id
+    WHERE previous.intent_id = current.intent_id
       AND previous.sequence_no < current.sequence_no
       AND previous.status <> 'succeeded'
 )
@@ -109,7 +109,7 @@ LIMIT 1`
 		query += ` FOR UPDATE`
 	}
 	now := s.now().UTC()
-	record, err := scanExecution(tx.QueryRowContext(ctx, bindSQL(s.driver, query), claim.PlanID, now.UnixNano()))
+	record, err := scanExecution(tx.QueryRowContext(ctx, bindSQL(s.driver, query), claim.IntentID, now.UnixNano()))
 	if errors.Is(err, execution.ErrNotFound) {
 		return execution.Record{}, execution.ErrNoClaimable
 	}
@@ -229,10 +229,10 @@ func (s *sqlExecutionStore) Get(ctx context.Context, actionID string) (execution
 	return getExecution(ctx, s.db, s.driver, strings.TrimSpace(actionID))
 }
 
-func (s *sqlExecutionStore) ListPlan(ctx context.Context, planID string) ([]execution.Record, error) {
-	rows, err := s.db.QueryContext(ctx, bindSQL(s.driver, selectExecution+` WHERE current.plan_id = ? ORDER BY current.sequence_no`), strings.TrimSpace(planID))
+func (s *sqlExecutionStore) ListIntent(ctx context.Context, intentID string) ([]execution.Record, error) {
+	rows, err := s.db.QueryContext(ctx, bindSQL(s.driver, selectExecution+` WHERE current.intent_id = ? ORDER BY current.sequence_no`), strings.TrimSpace(intentID))
 	if err != nil {
-		return nil, fmt.Errorf("list plan action executions: %w", err)
+		return nil, fmt.Errorf("list intent action executions: %w", err)
 	}
 	defer rows.Close()
 	var records []execution.Record
@@ -244,7 +244,7 @@ func (s *sqlExecutionStore) ListPlan(ctx context.Context, planID string) ([]exec
 		records = append(records, record)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate plan action executions: %w", err)
+		return nil, fmt.Errorf("iterate intent action executions: %w", err)
 	}
 	return records, nil
 }
@@ -261,7 +261,7 @@ func (s *sqlExecutionStore) requireOwnedUpdate(ctx context.Context, actionID str
 }
 
 const selectExecution = `SELECT
-    current.incident_id, current.plan_id, current.action_id, current.action_digest,
+    current.incident_id, current.intent_id, current.action_id, current.action_digest,
     current.sequence_no, current.tool_name, current.idempotency_key, current.status,
     current.owner_id, current.lease_until_unix_ns, current.next_poll_at_unix_ns,
     current.operation_deadline_unix_ns, current.attempt, current.operation_id,
@@ -282,7 +282,7 @@ func scanExecution(row scanner) (execution.Record, error) {
 	var leaseUntil, nextPollAt, operationDeadline, finishedAt sql.NullInt64
 	var createdAt, updatedAt int64
 	if err := row.Scan(
-		&record.IncidentID, &record.PlanID, &record.ActionID, &record.ActionDigest,
+		&record.IncidentID, &record.IntentID, &record.ActionID, &record.ActionDigest,
 		&record.Sequence, &record.ToolName, &record.IdempotencyKey, &record.Status,
 		&record.OwnerID, &leaseUntil, &nextPollAt, &operationDeadline, &record.Attempt, &record.OperationID,
 		&record.OperationStatus, &record.LastError, &createdAt, &updatedAt, &finishedAt,
@@ -325,7 +325,7 @@ func validatePollSchedule(schedule execution.PollSchedule) error {
 
 func validateExecutionSpec(spec execution.Spec) error {
 	for field, value := range map[string]string{
-		"incident_id": spec.IncidentID, "plan_id": spec.PlanID, "action_id": spec.ActionID,
+		"incident_id": spec.IncidentID, "intent_id": spec.IntentID, "action_id": spec.ActionID,
 		"action_digest": spec.ActionDigest, "tool_name": spec.ToolName, "idempotency_key": spec.IdempotencyKey,
 	} {
 		if strings.TrimSpace(value) == "" {

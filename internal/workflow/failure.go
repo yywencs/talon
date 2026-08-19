@@ -21,7 +21,7 @@ const (
 type FailureCategory string
 
 const (
-	FailureCategoryPlanInvalid           FailureCategory = "plan_invalid"
+	FailureCategoryIntentInvalid         FailureCategory = "intent_invalid"
 	FailureCategoryPreconditionChanged   FailureCategory = "precondition_changed"
 	FailureCategoryAuthorizationRequired FailureCategory = "authorization_required"
 	FailureCategoryExecutionFailed       FailureCategory = "execution_failed"
@@ -55,7 +55,7 @@ type StageFailure struct {
 	NextAction      FailureNextAction `json:"next_action"`
 	Retryable       bool              `json:"retryable"`
 	Fallback        bool              `json:"fallback,omitempty"`
-	PlanID          string            `json:"plan_id,omitempty"`
+	IntentID        string            `json:"intent_id,omitempty"`
 	ActionID        string            `json:"action_id,omitempty"`
 	OperationID     string            `json:"operation_id,omitempty"`
 	OperationStatus string            `json:"operation_status,omitempty"`
@@ -67,7 +67,7 @@ func normalizeStageFailure(value StageFailure, now time.Time) (StageFailure, err
 	value.Code = strings.TrimSpace(value.Code)
 	value.SafeSummary = strings.TrimSpace(value.SafeSummary)
 	value.Message = strings.TrimSpace(value.Message)
-	value.PlanID = strings.TrimSpace(value.PlanID)
+	value.IntentID = strings.TrimSpace(value.IntentID)
 	value.ActionID = strings.TrimSpace(value.ActionID)
 	value.OperationID = strings.TrimSpace(value.OperationID)
 	value.OperationStatus = strings.TrimSpace(value.OperationStatus)
@@ -113,7 +113,7 @@ func (s FailureStage) valid() bool {
 
 func (c FailureCategory) valid() bool {
 	switch c {
-	case FailureCategoryPlanInvalid, FailureCategoryPreconditionChanged,
+	case FailureCategoryIntentInvalid, FailureCategoryPreconditionChanged,
 		FailureCategoryAuthorizationRequired, FailureCategoryExecutionFailed,
 		FailureCategoryHealthGateFailed, FailureCategoryPlatformUnavailable,
 		FailureCategoryTimedOut, FailureCategoryInvalidResponse,

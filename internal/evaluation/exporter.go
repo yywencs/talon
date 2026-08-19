@@ -17,7 +17,7 @@ import (
 
 const (
 	InputSchemaVersion  = "talon.evaluation-input/v1"
-	ExportSchemaVersion = "talon.evaluation-export/v2"
+	ExportSchemaVersion = "talon.evaluation-export/v3"
 	manifestFileName    = "manifest.json"
 )
 

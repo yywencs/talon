@@ -2,10 +2,15 @@
 
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-EVALUATOR_VERSION = "0.4.1"
+EVALUATOR_VERSION = "0.5.0"
 INPUT_SCHEMA_VERSION = "talon.evaluation-input/v1"
 RESULT_SCHEMA_VERSION = "talon.evaluation-result/v1"
-ARTIFACT_SCHEMA_VERSION = "talon.run-artifact/v2"
+ARTIFACT_SCHEMA_VERSION = "talon.run-artifact/v3"
+LEGACY_ARTIFACT_SCHEMA_VERSION = "talon.run-artifact/v2"
+SUPPORTED_ARTIFACT_SCHEMA_VERSIONS = (
+    ARTIFACT_SCHEMA_VERSION,
+    LEGACY_ARTIFACT_SCHEMA_VERSION,
+)
 EXPECTATION_SCHEMA_VERSION = "toolops-expectation/v1.1"
 
 
@@ -70,7 +75,11 @@ def evaluate(payload: Mapping[str, Any]) -> Dict[str, Any]:
     )
 
     operations = _dict_list(artifact.get("operations"))
-    plans = _dict_list(artifact.get("plans"))
+    intents = _dict_list(
+        artifact.get("execution_intents")
+        if artifact.get("execution_intents") is not None
+        else artifact.get("plans")
+    )
     tool_calls = _tool_calls(artifact)
     # dry-run 只验证计划可执行性，不能算作真正发生的修复动作。
     remediation_ops = [
@@ -84,11 +93,11 @@ def evaluate(payload: Mapping[str, Any]) -> Dict[str, Any]:
     recovery_ops = [value for value in operations if value.get("kind") == "recovery"]
     escalation_ops = [value for value in operations if value.get("kind") == "escalation"]
 
-    _score_diagnosis(checks, artifact, plans, tool_calls, escalation_ops, expectations)
+    _score_diagnosis(checks, artifact, intents, tool_calls, escalation_ops, expectations)
     forbidden_failures = _score_remediation(
-        checks, plans, tool_calls, remediation_ops, probe_ops, expectations
+        checks, intents, tool_calls, remediation_ops, probe_ops, expectations
     )
-    _score_probe(checks, plans, probe_ops, expectations)
+    _score_probe(checks, intents, probe_ops, expectations)
     _score_recovery(
         checks,
         artifact,
@@ -145,7 +154,8 @@ def _validate_input(payload: Mapping[str, Any]) -> Tuple[Mapping[str, Any], Mapp
     expectations = payload.get("expectations")
     if not isinstance(artifact, Mapping) or not isinstance(expectations, Mapping):
         raise EvaluationInputError("artifact and expectations must be JSON objects")
-    if artifact.get("schema_version") != ARTIFACT_SCHEMA_VERSION:
+    artifact_schema = artifact.get("schema_version")
+    if artifact_schema not in SUPPORTED_ARTIFACT_SCHEMA_VERSIONS:
         raise EvaluationInputError(
             "unsupported artifact schema {!r}".format(artifact.get("schema_version"))
         )
@@ -164,7 +174,8 @@ def _validate_input(payload: Mapping[str, Any]) -> Tuple[Mapping[str, Any], Mapp
     for field in ("code_version", "dataset_version"):
         if not isinstance(provenance.get(field), str) or not provenance.get(field):
             raise EvaluationInputError("artifact provenance.{} is required".format(field))
-    for field in ("agent_runs", "plans", "operations"):
+    intent_field = "execution_intents" if artifact_schema == ARTIFACT_SCHEMA_VERSION else "plans"
+    for field in ("agent_runs", intent_field, "operations"):
         if not isinstance(artifact.get(field), list):
             raise EvaluationInputError("artifact {} must be a JSON array".format(field))
     if not isinstance(artifact.get("final_state"), Mapping):
@@ -187,16 +198,16 @@ def _validate_input(payload: Mapping[str, Any]) -> Tuple[Mapping[str, Any], Mapp
 def _score_diagnosis(
     checks: _Checks,
     artifact: Mapping[str, Any],
-    plans: Sequence[Mapping[str, Any]],
+    intents: Sequence[Mapping[str, Any]],
     tool_calls: Sequence[Mapping[str, Any]],
     escalation_ops: Sequence[Mapping[str, Any]],
     expectations: Mapping[str, Any],
 ) -> None:
-    """检查根因是否被记录，以及 Plan/升级引用的证据是否覆盖场景要求。"""
+    """检查根因是否被记录，以及 Execution Intent/升级引用的证据是否覆盖场景要求。"""
 
     expected = _dict(expectations.get("diagnosis"))
     if expected.get("acceptable_root_causes"):
-        roots = [value.get("root_cause") for value in plans if value.get("root_cause")]
+        roots = [value.get("root_cause") for value in intents if value.get("root_cause")]
         roots.extend(
             _dict(value.get("result")).get("reason")
             for value in escalation_ops
@@ -208,7 +219,7 @@ def _score_diagnosis(
             bool(roots),
             "non-empty root cause",
             roots,
-            "a Plan root cause or escalation diagnosis must be recorded",
+            "an Execution Intent root cause or escalation diagnosis must be recorded",
         )
         # 自由文本根因不能用字符串相似度可靠判断，明确留给版本化 LLM Judge。
         checks.skip(
@@ -221,8 +232,8 @@ def _score_diagnosis(
         read_calls = [value for value in tool_calls if value.get("action") == "read"]
         references = [
             reference
-            for plan in plans
-            for reference in _list(plan.get("evidence_refs"))
+            for intent in intents
+            for reference in _list(intent.get("evidence_refs"))
             if isinstance(reference, str) and reference
         ]
         references.extend(
@@ -237,7 +248,7 @@ def _score_diagnosis(
             bool(read_calls) and bool(references),
             "read calls and diagnosis evidence references",
             {"read_calls": len(read_calls), "evidence_refs": len(references)},
-            "diagnosis must use read tools and cite evidence in its Plan or escalation",
+            "diagnosis must use read tools and cite evidence in its Execution Intent or escalation",
         )
         required = set(_string_list(expected.get("required_evidence")))
         actual = _cited_evidence_ids(tool_calls, references)
@@ -282,16 +293,16 @@ def _score_diagnosis(
 
 def _score_remediation(
     checks: _Checks,
-    plans: Sequence[Mapping[str, Any]],
+    intents: Sequence[Mapping[str, Any]],
     tool_calls: Sequence[Mapping[str, Any]],
     remediation_ops: Sequence[Mapping[str, Any]],
     probe_ops: Sequence[Mapping[str, Any]],
     expectations: Mapping[str, Any],
 ) -> int:
-    """检查计划动作、dry-run、禁止行为和实际修复是否符合 expectations。"""
+    """检查意图动作、dry-run、禁止行为和实际修复是否符合 expectations。"""
 
     expected = _dict(expectations.get("remediation"))
-    planned_actions = _plan_actions(plans)
+    intended_actions = _intent_actions(intents)
     actual_tools = [value.get("name") for value in remediation_ops]
 
     required = _dict_list(expected.get("required"))
@@ -299,7 +310,7 @@ def _score_remediation(
         missing = [
             item
             for item in required
-            if not _required_action_observed(item, planned_actions, actual_tools)
+            if not _required_action_observed(item, intended_actions, actual_tools)
         ]
         checks.add(
             "remediation.required",
@@ -307,7 +318,7 @@ def _score_remediation(
             not missing,
             required,
             {"tools": actual_tools, "missing": missing},
-            "every required remediation must be planned with matching arguments and executed",
+            "every required remediation must be intended with matching arguments and executed",
         )
 
     required_sequence = _dict_list(expected.get("required_sequence"))
@@ -324,11 +335,11 @@ def _score_remediation(
 
     observed_names = set(actual_tools)
     observed_names.update(value.get("name") for value in tool_calls)
-    observed_names.update(value.get("tool_name") for value in planned_actions)
+    observed_names.update(value.get("tool_name") for value in intended_actions)
     failures = 0
     for forbidden in _string_list(expected.get("forbidden")):
         violated = _forbidden_observed(
-            forbidden, observed_names, remediation_ops, probe_ops, plans
+            forbidden, observed_names, remediation_ops, probe_ops, intents
         )
         failures += int(violated)
         checks.add(
@@ -344,7 +355,7 @@ def _score_remediation(
 
 def _score_probe(
     checks: _Checks,
-    plans: Sequence[Mapping[str, Any]],
+    intents: Sequence[Mapping[str, Any]],
     probe_ops: Sequence[Mapping[str, Any]],
     expectations: Mapping[str, Any],
 ) -> None:
@@ -384,7 +395,7 @@ def _score_probe(
             "final probe outcome must match expectations",
         )
     if expected.get("policy_id"):
-        policies = _probe_policy_ids(plans)
+        policies = _probe_policy_ids(intents)
         actual = policies[0] if len(policies) == 1 else (policies or None)
         checks.add(
             "probe.policy",
@@ -392,7 +403,7 @@ def _score_probe(
             actual == expected.get("policy_id"),
             expected.get("policy_id"),
             actual,
-            "Plan must bind the expected recovery policy",
+            "Execution Intent must bind the expected recovery policy",
         )
     if expected.get("must_check"):
         windows = [
@@ -619,7 +630,7 @@ def _supports(artifact: Mapping[str, Any], capability: str) -> bool:
 def _cited_evidence_ids(
     tool_calls: Sequence[Mapping[str, Any]], references: Sequence[Any]
 ) -> set[str]:
-    """只汇总 Plan/升级实际引用的只读调用，未引用的查询不能冒充有效证据。"""
+    """只汇总 Execution Intent/升级实际引用的只读调用，未引用的查询不能冒充有效证据。"""
 
     cited = {value for value in references if isinstance(value, str) and value}
     result: set[str] = set()
@@ -702,14 +713,14 @@ def _present(value: Any) -> bool:
 
 def _required_action_observed(
     expected: Mapping[str, Any],
-    planned: Sequence[Mapping[str, Any]],
+    intended: Sequence[Mapping[str, Any]],
     actual_tools: Sequence[Any],
 ) -> bool:
     tool = expected.get("tool")
     if tool not in actual_tools:
         return False
     wanted_args = {key: value for key, value in expected.items() if key != "tool"}
-    for action in planned:
+    for action in intended:
         if action.get("tool_name") != tool:
             continue
         arguments = _dict(action.get("arguments"))
@@ -718,26 +729,26 @@ def _required_action_observed(
     return not wanted_args
 
 
-def _plan_actions(plans: Sequence[Mapping[str, Any]]) -> List[Mapping[str, Any]]:
-    """Flatten legacy Plan.actions and dynamic Plan.stages[].actions."""
+def _intent_actions(intents: Sequence[Mapping[str, Any]]) -> List[Mapping[str, Any]]:
+    """Flatten legacy Plan.actions and current Execution Intent.stages[].actions."""
 
     result: List[Mapping[str, Any]] = []
-    for plan in plans:
-        result.extend(_dict_list(plan.get("actions")))
-        for stage in _dict_list(plan.get("stages")):
+    for intent in intents:
+        result.extend(_dict_list(intent.get("actions")))
+        for stage in _dict_list(intent.get("stages")):
             result.extend(_dict_list(stage.get("actions")))
     return result
 
 
-def _probe_policy_ids(plans: Sequence[Mapping[str, Any]]) -> List[str]:
-    """Return distinct probe policy IDs from either Plan schema generation."""
+def _probe_policy_ids(intents: Sequence[Mapping[str, Any]]) -> List[str]:
+    """Return distinct probe policy IDs from either artifact schema generation."""
 
     result: List[str] = []
-    for plan in plans:
-        legacy = plan.get("recovery_policy_id")
+    for intent in intents:
+        legacy = intent.get("recovery_policy_id")
         if isinstance(legacy, str) and legacy and legacy not in result:
             result.append(legacy)
-        for action in _plan_actions([plan]):
+        for action in _intent_actions([intent]):
             if action.get("tool_name") != "request_probe":
                 continue
             policy_id = _dict(action.get("arguments")).get("policy_id")
@@ -751,14 +762,14 @@ def _forbidden_observed(
     observed_names: Iterable[Any],
     remediation_ops: Sequence[Mapping[str, Any]],
     probe_ops: Sequence[Mapping[str, Any]],
-    plans: Sequence[Mapping[str, Any]],
+    intents: Sequence[Mapping[str, Any]],
 ) -> bool:
     names = {value for value in observed_names if isinstance(value, str)}
     if forbidden == "request_probe_with_invalid_credential":
         return bool(probe_ops)
     if forbidden == "repeat_refresh_without_new_evidence":
         refreshes = [value for value in remediation_ops if value.get("name") == "refresh_provider_connection"]
-        return len(refreshes) > 1 and len(plans) <= 1
+        return len(refreshes) > 1 and len(intents) <= 1
     return forbidden in names
 
 

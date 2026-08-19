@@ -18,8 +18,8 @@ func TestIncidentWorkflowHappyPath(t *testing.T) {
 		want  State
 	}{
 		{event: Event{Type: EventStartInvestigation, Actor: ActorController}, want: StateInvestigating},
-		{event: Event{Type: EventPlanSubmitted, Actor: ActorAgent}, want: StatePlanned},
-		{event: Event{Type: EventPlanApproved, Actor: ActorWorkflow}, want: StateRemediating},
+		{event: Event{Type: EventExecutionIntentSubmitted, Actor: ActorAgent}, want: StateValidating},
+		{event: Event{Type: EventExecutionAuthorized, Actor: ActorWorkflow}, want: StateExecuting},
 		{event: Event{Type: EventStageCheckpoint, Actor: ActorWorkflow}, want: StateCheckpoint},
 		{event: Event{Type: EventCheckpointSucceeded, Actor: ActorWorkflow}, want: StateResolved},
 	}
@@ -45,18 +45,18 @@ func TestIncidentWorkflowApprovalAndReinvestigation(t *testing.T) {
 	workflow := newTestWorkflow(t, nil)
 	applyEvents(t, workflow,
 		Event{Type: EventStartInvestigation, Actor: ActorController},
-		Event{Type: EventPlanSubmitted, Actor: ActorAgent},
+		Event{Type: EventExecutionIntentSubmitted, Actor: ActorAgent},
 		Event{Type: EventApprovalRequired, Actor: ActorWorkflow},
 	)
 	assert.Equal(t, StateAwaitingApproval, workflow.Snapshot().State)
 
-	_, err := workflow.Apply(Event{Type: EventPlanRejected, Actor: ActorHuman, Reason: "风险范围过大"})
+	_, err := workflow.Apply(Event{Type: EventExecutionIntentRejected, Actor: ActorHuman, Reason: "风险范围过大"})
 	require.NoError(t, err)
 	assert.Equal(t, StateInvestigating, workflow.Snapshot().State)
 
-	_, err = workflow.Apply(Event{Type: EventPlanSubmitted, Actor: ActorAgent})
+	_, err = workflow.Apply(Event{Type: EventExecutionIntentSubmitted, Actor: ActorAgent})
 	require.NoError(t, err)
-	assert.Equal(t, StatePlanned, workflow.Snapshot().State)
+	assert.Equal(t, StateValidating, workflow.Snapshot().State)
 }
 
 func TestIncidentWorkflowEscalationRequiresHumanResume(t *testing.T) {
@@ -64,7 +64,7 @@ func TestIncidentWorkflowEscalationRequiresHumanResume(t *testing.T) {
 	_, err := workflow.Apply(Event{Type: EventEscalated, Actor: ActorAgent, Reason: "需要更高权限"})
 	require.NoError(t, err)
 	assert.Equal(t, StateEscalated, workflow.Snapshot().State)
-	assert.Equal(t, StateRemediating, workflow.Snapshot().SuspendedState)
+	assert.Equal(t, StateExecuting, workflow.Snapshot().SuspendedState)
 
 	_, err = workflow.Apply(Event{Type: EventHumanResumed, Actor: ActorAgent})
 	require.Error(t, err)
@@ -97,24 +97,24 @@ func TestIncidentWorkflowAgentActionWhitelist(t *testing.T) {
 
 	require.NoError(t, workflow.AuthorizeAgentAction(AgentActionEscalate))
 	assert.ErrorIs(t, workflow.AuthorizeAgentAction(AgentActionRead), ErrAgentActionDenied)
-	assert.ErrorIs(t, workflow.AuthorizeAgentAction(AgentActionSubmitPlan), ErrAgentActionDenied)
+	assert.ErrorIs(t, workflow.AuthorizeAgentAction(AgentActionSubmitExecutionIntent), ErrAgentActionDenied)
 
 	applyEvents(t, workflow, Event{Type: EventStartInvestigation, Actor: ActorController})
 	require.NoError(t, workflow.AuthorizeAgentAction(AgentActionRead))
 	require.NoError(t, workflow.AuthorizeAgentAction(AgentActionQueryOperation))
-	require.NoError(t, workflow.AuthorizeAgentAction(AgentActionSubmitPlan))
+	require.NoError(t, workflow.AuthorizeAgentAction(AgentActionSubmitExecutionIntent))
 
-	applyEvents(t, workflow, Event{Type: EventPlanSubmitted, Actor: ActorAgent})
+	applyEvents(t, workflow, Event{Type: EventExecutionIntentSubmitted, Actor: ActorAgent})
 	require.NoError(t, workflow.AuthorizeAgentAction(AgentActionRead))
-	assert.ErrorIs(t, workflow.AuthorizeAgentAction(AgentActionSubmitPlan), ErrAgentActionDenied)
+	assert.ErrorIs(t, workflow.AuthorizeAgentAction(AgentActionSubmitExecutionIntent), ErrAgentActionDenied)
 
 	applyEvents(t, workflow,
-		Event{Type: EventPlanApproved, Actor: ActorWorkflow},
+		Event{Type: EventExecutionAuthorized, Actor: ActorWorkflow},
 		Event{Type: EventStageCheckpoint, Actor: ActorWorkflow},
 	)
 	require.NoError(t, workflow.AuthorizeAgentAction(AgentActionRead))
 	require.NoError(t, workflow.AuthorizeAgentAction(AgentActionQueryOperation))
-	assert.ErrorIs(t, workflow.AuthorizeAgentAction(AgentActionSubmitPlan), ErrAgentActionDenied)
+	assert.ErrorIs(t, workflow.AuthorizeAgentAction(AgentActionSubmitExecutionIntent), ErrAgentActionDenied)
 }
 
 func TestIncidentWorkflowAllowedAgentActionsAreStable(t *testing.T) {
@@ -127,7 +127,7 @@ func TestIncidentWorkflowAllowedAgentActionsAreStable(t *testing.T) {
 		AgentActionQueryOperation,
 		AgentActionRead,
 		AgentActionRecallEvidence,
-		AgentActionSubmitPlan,
+		AgentActionSubmitExecutionIntent,
 	}, workflow.AllowedAgentActions())
 }
 
@@ -145,84 +145,84 @@ func TestSkillEventsAreAuditedWithoutLeavingInvestigation(t *testing.T) {
 	assert.Equal(t, uint64(3), instance.Snapshot().Version)
 }
 
-func TestIncidentWorkflowSubmitPlanFreezesDraft(t *testing.T) {
+func TestIncidentWorkflowSubmitExecutionIntentFreezesDraft(t *testing.T) {
 	fixedNow := time.Date(2026, 8, 10, 9, 5, 0, 0, time.UTC)
 	workflow := newTestWorkflow(t, func() time.Time { return fixedNow })
 	applyEvents(t, workflow, Event{Type: EventStartInvestigation, Actor: ActorController})
-	draft := PlanDraft{
+	draft := ExecutionIntentDraft{
 		Summary: "回滚错误的 Mapping 配置", RootCause: "mapping schema regression",
 		EvidenceRefs: []string{"log:invalid_parameter_type", "change:mapping-v2"},
-		Stages: []PlanStageDraft{{StageID: "rollback", Goal: "rollback mapping", Actions: []PlannedAction{{
+		Stages: []ExecutionStageDraft{{StageID: "rollback", Goal: "rollback mapping", Actions: []IntendedAction{{
 			Key: "rollback-mapping", ToolName: "rollback_mapping",
 			Arguments: map[string]any{"target_version": "mapping-v1"},
 		}}}},
 	}
 
-	submission, err := workflow.SubmitPlan(draft)
+	submission, err := workflow.SubmitExecutionIntent(draft)
 	require.NoError(t, err)
-	assert.Equal(t, StatePlanned, workflow.Snapshot().State)
-	assert.Equal(t, "incident-001-plan-2", submission.Plan.ID)
-	assert.Equal(t, fixedNow, submission.Plan.SubmittedAt)
-	assert.Equal(t, submission.Plan.ID, submission.Transition.Metadata["plan_id"])
+	assert.Equal(t, StateValidating, workflow.Snapshot().State)
+	assert.Equal(t, "incident-001-intent-2", submission.ExecutionIntent.ID)
+	assert.Equal(t, fixedNow, submission.ExecutionIntent.SubmittedAt)
+	assert.Equal(t, submission.ExecutionIntent.ID, submission.Transition.Metadata["intent_id"])
 
 	draft.Stages[0].Actions[0].Arguments["target_version"] = "mutated"
 	snapshot := workflow.Snapshot()
-	require.NotNil(t, snapshot.Plan)
-	require.Len(t, snapshot.Plan.Stages, 1)
-	require.Len(t, snapshot.Plan.Stages[0].Actions, 1)
-	assert.Equal(t, "incident-001-plan-2-action-1", snapshot.Plan.Stages[0].Actions[0].ID)
-	assert.NotEmpty(t, snapshot.Plan.Stages[0].Actions[0].Digest)
-	assert.Equal(t, "mapping-v1", snapshot.Plan.Stages[0].Actions[0].Arguments["target_version"])
-	_, err = workflow.SubmitPlan(draft)
+	require.NotNil(t, snapshot.ExecutionIntent)
+	require.Len(t, snapshot.ExecutionIntent.Stages, 1)
+	require.Len(t, snapshot.ExecutionIntent.Stages[0].Actions, 1)
+	assert.Equal(t, "incident-001-intent-2-action-1", snapshot.ExecutionIntent.Stages[0].Actions[0].ID)
+	assert.NotEmpty(t, snapshot.ExecutionIntent.Stages[0].Actions[0].Digest)
+	assert.Equal(t, "mapping-v1", snapshot.ExecutionIntent.Stages[0].Actions[0].Arguments["target_version"])
+	_, err = workflow.SubmitExecutionIntent(draft)
 	assert.ErrorIs(t, err, ErrAgentActionDenied)
 }
 
-func TestIncidentWorkflowUsesIndependentPlanIDPrefix(t *testing.T) {
-	instance, err := NewIncidentWorkflow(Config{IncidentID: "scenario-001", PlanIDPrefix: "run-abc"})
+func TestIncidentWorkflowUsesIndependentIntentIDPrefix(t *testing.T) {
+	instance, err := NewIncidentWorkflow(Config{IncidentID: "scenario-001", IntentIDPrefix: "run-abc"})
 	require.NoError(t, err)
 	applyEvents(t, instance, Event{Type: EventStartInvestigation, Actor: ActorController})
-	submission, err := instance.SubmitPlan(PlanDraft{
+	submission, err := instance.SubmitExecutionIntent(ExecutionIntentDraft{
 		Summary: "repair", RootCause: "cause", EvidenceRefs: []string{"evidence"},
-		Stages: []PlanStageDraft{{StageID: "repair", Goal: "repair", Actions: []PlannedAction{{
+		Stages: []ExecutionStageDraft{{StageID: "repair", Goal: "repair", Actions: []IntendedAction{{
 			Key: "repair", ToolName: "repair", Arguments: map[string]any{"id": "value"},
 		}}}},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "scenario-001", instance.Snapshot().IncidentID)
-	assert.Equal(t, "run-abc-plan-2", submission.Plan.ID)
-	assert.Equal(t, "run-abc-plan-2-action-1", submission.Plan.Stages[0].Actions[0].ID)
+	assert.Equal(t, "run-abc-intent-2", submission.ExecutionIntent.ID)
+	assert.Equal(t, "run-abc-intent-2-action-1", submission.ExecutionIntent.Stages[0].Actions[0].ID)
 }
 
-func TestIncidentWorkflowSubmitPlanValidatesRequiredFields(t *testing.T) {
+func TestIncidentWorkflowSubmitExecutionIntentValidatesRequiredFields(t *testing.T) {
 	workflow := newTestWorkflow(t, nil)
 	applyEvents(t, workflow, Event{Type: EventStartInvestigation, Actor: ActorController})
 
-	_, err := workflow.SubmitPlan(PlanDraft{})
+	_, err := workflow.SubmitExecutionIntent(ExecutionIntentDraft{})
 	require.Error(t, err)
 	assert.Equal(t, StateInvestigating, workflow.Snapshot().State)
-	assert.Zero(t, workflow.Snapshot().Plan)
+	assert.Zero(t, workflow.Snapshot().ExecutionIntent)
 }
 
-func TestIncidentWorkflowSnapshotRetainsEverySubmittedPlan(t *testing.T) {
+func TestIncidentWorkflowSnapshotRetainsEverySubmittedIntent(t *testing.T) {
 	instance := newTestWorkflow(t, nil)
 	applyEvents(t, instance, Event{Type: EventStartInvestigation, Actor: ActorController})
-	draft := PlanDraft{Summary: "first plan", RootCause: "first hypothesis", EvidenceRefs: []string{"log:first"},
-		Stages: []PlanStageDraft{{StageID: "repair", Goal: "repair", Actions: []PlannedAction{{Key: "repair", ToolName: "repair", Arguments: map[string]any{}}}}}}
-	first, err := instance.SubmitPlan(draft)
+	draft := ExecutionIntentDraft{Summary: "first intent", RootCause: "first hypothesis", EvidenceRefs: []string{"log:first"},
+		Stages: []ExecutionStageDraft{{StageID: "repair", Goal: "repair", Actions: []IntendedAction{{Key: "repair", ToolName: "repair", Arguments: map[string]any{}}}}}}
+	first, err := instance.SubmitExecutionIntent(draft)
 	require.NoError(t, err)
-	_, err = instance.Apply(Event{Type: EventPlanRejected, Actor: ActorWorkflow, Reason: "probe produced contrary evidence"})
+	_, err = instance.Apply(Event{Type: EventExecutionIntentRejected, Actor: ActorWorkflow, Reason: "probe produced contrary evidence"})
 	require.NoError(t, err)
-	draft.Summary, draft.RootCause, draft.EvidenceRefs = "second plan", "revised hypothesis", []string{"log:first", "trace:new"}
-	second, err := instance.SubmitPlan(draft)
+	draft.Summary, draft.RootCause, draft.EvidenceRefs = "second intent", "revised hypothesis", []string{"log:first", "trace:new"}
+	second, err := instance.SubmitExecutionIntent(draft)
 	require.NoError(t, err)
 
 	snapshot := instance.Snapshot()
-	require.Len(t, snapshot.Plans, 2)
-	assert.Equal(t, first.Plan.ID, snapshot.Plans[0].ID)
-	assert.Equal(t, second.Plan.ID, snapshot.Plans[1].ID)
-	assert.Equal(t, second.Plan.ID, snapshot.Plan.ID)
-	snapshot.Plans[0].EvidenceRefs[0] = "mutated"
-	assert.Equal(t, "log:first", instance.Snapshot().Plans[0].EvidenceRefs[0])
+	require.Len(t, snapshot.ExecutionIntents, 2)
+	assert.Equal(t, first.ExecutionIntent.ID, snapshot.ExecutionIntents[0].ID)
+	assert.Equal(t, second.ExecutionIntent.ID, snapshot.ExecutionIntents[1].ID)
+	assert.Equal(t, second.ExecutionIntent.ID, snapshot.ExecutionIntent.ID)
+	snapshot.ExecutionIntents[0].EvidenceRefs[0] = "mutated"
+	assert.Equal(t, "log:first", instance.Snapshot().ExecutionIntents[0].EvidenceRefs[0])
 }
 
 func TestIncidentWorkflowSnapshotDoesNotShareMetadata(t *testing.T) {
@@ -279,8 +279,8 @@ func workflowAtRemediating(t *testing.T) *IncidentWorkflow {
 	workflow := newTestWorkflow(t, nil)
 	applyEvents(t, workflow,
 		Event{Type: EventStartInvestigation, Actor: ActorController},
-		Event{Type: EventPlanSubmitted, Actor: ActorAgent},
-		Event{Type: EventPlanApproved, Actor: ActorWorkflow},
+		Event{Type: EventExecutionIntentSubmitted, Actor: ActorAgent},
+		Event{Type: EventExecutionAuthorized, Actor: ActorWorkflow},
 	)
 	return workflow
 }

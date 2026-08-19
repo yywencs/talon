@@ -12,7 +12,7 @@ import (
 func TestLoadPromptSetUsesEmbeddedDefaults(t *testing.T) {
 	prompts, err := LoadPromptSet("")
 	require.NoError(t, err)
-	assert.Equal(t, "toolops-agent/v3", prompts.Version)
+	assert.Equal(t, "toolops-agent/v4", prompts.Version)
 	assert.Len(t, prompts.Digest, 64)
 	assert.Contains(t, prompts.SystemTemplate, incidentIDPlaceholder)
 	assert.Contains(t, prompts.SystemTemplate, "把根因拆分为可独立验证的原子事实")

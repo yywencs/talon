@@ -12,7 +12,7 @@ import (
 
 // ApprovalRequest 将人工身份和决定绑定到明确的冻结 Action。
 type ApprovalRequest struct {
-	PlanID       string `json:"plan_id"`
+	IntentID     string `json:"intent_id"`
 	ActionID     string `json:"action_id"`
 	ActionDigest string `json:"action_digest"`
 	Approver     string `json:"approver"`
@@ -21,32 +21,32 @@ type ApprovalRequest struct {
 
 // EvaluatePolicy 在全部 Action Dry Run 成功后逐个执行关闭式风险判断。
 // 只有显式 low 且无需审批的 Action 自动通过，其他可用 Action 默认等待人工审批。
-func (p *PlanProcessor) EvaluatePolicy(ctx context.Context) ([]workflow.PlanPolicyDecision, error) {
+func (p *ExecutionCoordinator) EvaluatePolicy(ctx context.Context) ([]workflow.ActionPolicyDecision, error) {
 	if p == nil || p.platform == nil || p.workflow == nil {
-		return nil, fmt.Errorf("plan processor is not initialized")
+		return nil, fmt.Errorf("execution coordinator is not initialized")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	snapshot := p.workflow.Snapshot()
-	if len(snapshot.PlanPolicies) > 0 {
-		if requiresHumanApproval(snapshot.PlanPolicies) && p.approvalStore == nil {
-			return snapshot.PlanPolicies, fmt.Errorf("approval store is required for actions awaiting human approval")
+	if len(snapshot.ActionPolicies) > 0 {
+		if requiresHumanApproval(snapshot.ActionPolicies) && p.approvalStore == nil {
+			return snapshot.ActionPolicies, fmt.Errorf("approval store is required for actions awaiting human approval")
 		}
 		if err := p.ensureApprovalRequests(ctx, snapshot); err != nil {
-			return snapshot.PlanPolicies, err
+			return snapshot.ActionPolicies, err
 		}
-		return snapshot.PlanPolicies, nil
+		return snapshot.ActionPolicies, nil
 	}
-	if snapshot.State != workflow.StatePlanned {
-		return nil, fmt.Errorf("%w: plan policy is not allowed in state %q", workflow.ErrInvalidTransition, snapshot.State)
+	if snapshot.State != workflow.StateValidating {
+		return nil, fmt.Errorf("%w: intent policy is not allowed in state %q", workflow.ErrInvalidTransition, snapshot.State)
 	}
-	if snapshot.Plan == nil {
-		return nil, fmt.Errorf("planned workflow has no frozen plan")
+	if snapshot.ExecutionIntent == nil {
+		return nil, fmt.Errorf("validating workflow has no frozen intent")
 	}
 	actions := workflow.ExecutableActions(snapshot)
-	if len(actions) == 0 || len(snapshot.PlanDryRuns) != len(actions) {
-		return nil, fmt.Errorf("plan policy requires a successful dry run for every action")
+	if len(actions) == 0 || len(snapshot.ActionDryRuns) != len(actions) {
+		return nil, fmt.Errorf("intent policy requires a successful dry run for every action")
 	}
 
 	capabilities, err := p.platform.GetRemediationCapabilities(ctx, platform.StateQuery{
@@ -55,21 +55,21 @@ func (p *PlanProcessor) EvaluatePolicy(ctx context.Context) ([]workflow.PlanPoli
 	if err != nil {
 		return nil, fmt.Errorf("get remediation capabilities for policy: %w", err)
 	}
-	decisions := make([]workflow.PlanPolicyDecision, 0, len(actions))
+	decisions := make([]workflow.ActionPolicyDecision, 0, len(actions))
 	for _, action := range actions {
-		dryRun := actionDryRun(snapshot.PlanDryRuns, action.ID)
-		if dryRun == nil || dryRun.PlanID != snapshot.Plan.ID || dryRun.ActionDigest != action.Digest ||
-			dryRun.Status != workflow.PlanDryRunSucceeded || strings.TrimSpace(dryRun.OperationID) == "" {
-			return nil, fmt.Errorf("plan policy requires a successful dry run with operation ID for action %q", action.ID)
+		dryRun := actionDryRun(snapshot.ActionDryRuns, action.ID)
+		if dryRun == nil || dryRun.IntentID != snapshot.ExecutionIntent.ID || dryRun.ActionDigest != action.Digest ||
+			dryRun.Status != workflow.ActionDryRunSucceeded || strings.TrimSpace(dryRun.OperationID) == "" {
+			return nil, fmt.Errorf("intent policy requires a successful dry run with operation ID for action %q", action.ID)
 		}
-		decisions = append(decisions, evaluateCapabilityPolicy(snapshot.Plan.ID, action, dryRun.OperationID, capabilities))
+		decisions = append(decisions, evaluateCapabilityPolicy(snapshot.ExecutionIntent.ID, action, dryRun.OperationID, capabilities))
 	}
 	if requiresHumanApproval(decisions) && p.approvalStore == nil {
 		return decisions, fmt.Errorf("approval store is required for actions awaiting human approval")
 	}
-	recorded, err := p.workflow.RecordPlanPolicyDecisions(decisions)
+	recorded, err := p.workflow.RecordActionPolicyDecisions(decisions)
 	if err != nil {
-		return nil, fmt.Errorf("record plan policy decisions: %w", err)
+		return nil, fmt.Errorf("record intent policy decisions: %w", err)
 	}
 	if err := p.ensureApprovalRequests(ctx, p.workflow.Snapshot()); err != nil {
 		return recorded, err
@@ -78,75 +78,75 @@ func (p *PlanProcessor) EvaluatePolicy(ctx context.Context) ([]workflow.PlanPoli
 }
 
 // Approve 由人工批准 awaiting_approval 中的一个冻结 Action。
-func (p *PlanProcessor) Approve(ctx context.Context, request ApprovalRequest) (workflow.PlanApproval, error) {
-	return p.decideApproval(ctx, request, workflow.PlanApprovalApproved)
+func (p *ExecutionCoordinator) Approve(ctx context.Context, request ApprovalRequest) (workflow.ActionApproval, error) {
+	return p.decideApproval(ctx, request, workflow.ActionApprovalApproved)
 }
 
 // Reject 由人工拒绝 awaiting_approval 中的一个冻结 Action，拒绝原因必填。
-func (p *PlanProcessor) Reject(ctx context.Context, request ApprovalRequest) (workflow.PlanApproval, error) {
-	return p.decideApproval(ctx, request, workflow.PlanApprovalRejected)
+func (p *ExecutionCoordinator) Reject(ctx context.Context, request ApprovalRequest) (workflow.ActionApproval, error) {
+	return p.decideApproval(ctx, request, workflow.ActionApprovalRejected)
 }
 
-func (p *PlanProcessor) decideApproval(ctx context.Context, request ApprovalRequest, decision workflow.PlanApprovalDecision) (workflow.PlanApproval, error) {
+func (p *ExecutionCoordinator) decideApproval(ctx context.Context, request ApprovalRequest, decision workflow.ActionApprovalDecision) (workflow.ActionApproval, error) {
 	if p == nil || p.workflow == nil {
-		return workflow.PlanApproval{}, fmt.Errorf("plan processor is not initialized")
+		return workflow.ActionApproval{}, fmt.Errorf("execution coordinator is not initialized")
 	}
 	if err := ctx.Err(); err != nil {
-		return workflow.PlanApproval{}, err
+		return workflow.ActionApproval{}, err
 	}
 	if p.approvalStore == nil {
-		return workflow.PlanApproval{}, fmt.Errorf("approval store is required for human decisions")
+		return workflow.ActionApproval{}, fmt.Errorf("approval store is required for human decisions")
 	}
 	status := approval.StatusApproved
-	if decision == workflow.PlanApprovalRejected {
+	if decision == workflow.ActionApprovalRejected {
 		status = approval.StatusRejected
 	}
 	if _, err := p.approvalStore.Decide(ctx, approval.Decision{
-		ID: approval.RequestID(request.ActionID), PlanID: request.PlanID, ActionID: request.ActionID,
+		ID: approval.RequestID(request.ActionID), IntentID: request.IntentID, ActionID: request.ActionID,
 		ActionDigest: request.ActionDigest, Status: status, DecidedBy: request.Approver,
 		DecisionReason: request.Reason,
 	}); err != nil {
-		return workflow.PlanApproval{}, fmt.Errorf("persist plan action approval: %w", err)
+		return workflow.ActionApproval{}, fmt.Errorf("persist intent action approval: %w", err)
 	}
-	result, err := p.workflow.RecordPlanApproval(workflow.PlanApproval{
-		PlanID: request.PlanID, ActionID: request.ActionID, ActionDigest: request.ActionDigest,
+	result, err := p.workflow.RecordActionApproval(workflow.ActionApproval{
+		IntentID: request.IntentID, ActionID: request.ActionID, ActionDigest: request.ActionDigest,
 		Decision: decision, Approver: request.Approver, Reason: request.Reason,
 	})
 	if err != nil {
-		return workflow.PlanApproval{}, fmt.Errorf("record plan approval: %w", err)
+		return workflow.ActionApproval{}, fmt.Errorf("record intent approval: %w", err)
 	}
 	if err := p.persistCheckpoint(ctx); err != nil {
-		return result, fmt.Errorf("persist plan approval checkpoint: %w", err)
+		return result, fmt.Errorf("persist intent approval checkpoint: %w", err)
 	}
 	return result, nil
 }
 
 // ListPendingApprovals 返回当前持久化审批收件箱中的待处理 Action。
-func (p *PlanProcessor) ListPendingApprovals(ctx context.Context) ([]approval.Request, error) {
+func (p *ExecutionCoordinator) ListPendingApprovals(ctx context.Context) ([]approval.Request, error) {
 	if p == nil || p.approvalStore == nil {
 		return nil, fmt.Errorf("approval store is not configured")
 	}
 	return p.approvalStore.ListPending(ctx)
 }
 
-func (p *PlanProcessor) ensureApprovalRequests(ctx context.Context, snapshot workflow.Snapshot) error {
+func (p *ExecutionCoordinator) ensureApprovalRequests(ctx context.Context, snapshot workflow.Snapshot) error {
 	if p.approvalStore == nil {
 		return nil
 	}
-	if snapshot.Plan == nil {
-		return fmt.Errorf("persist approval requests: workflow has no frozen plan")
+	if snapshot.ExecutionIntent == nil {
+		return fmt.Errorf("persist approval requests: workflow has no frozen intent")
 	}
-	for _, policy := range snapshot.PlanPolicies {
-		if policy.Outcome != workflow.PlanPolicyApprovalRequired {
+	for _, policy := range snapshot.ActionPolicies {
+		if policy.Outcome != workflow.ActionPolicyApprovalRequired {
 			continue
 		}
-		action := plannedAction(workflow.ExecutableActions(snapshot), policy.ActionID)
+		action := intendedAction(workflow.ExecutableActions(snapshot), policy.ActionID)
 		if action == nil || action.Digest != policy.ActionDigest {
 			return fmt.Errorf("persist approval request: policy does not match frozen action %q", policy.ActionID)
 		}
 		_, err := p.approvalStore.Create(ctx, approval.Request{
 			ID: approval.RequestID(action.ID), IncidentID: snapshot.IncidentID,
-			PlanID: snapshot.Plan.ID, ActionID: action.ID, ActionDigest: action.Digest,
+			IntentID: snapshot.ExecutionIntent.ID, ActionID: action.ID, ActionDigest: action.Digest,
 			DryRunOperationID: policy.DryRunOperationID, ToolName: action.ToolName,
 			Arguments: cloneMap(action.Arguments), Risk: policy.Risk, PolicyReason: policy.Reason,
 		})
@@ -157,7 +157,7 @@ func (p *PlanProcessor) ensureApprovalRequests(ctx context.Context, snapshot wor
 	return nil
 }
 
-func plannedAction(values []workflow.PlannedAction, actionID string) *workflow.PlannedAction {
+func intendedAction(values []workflow.IntendedAction, actionID string) *workflow.IntendedAction {
 	for index := range values {
 		if values[index].ID == actionID {
 			return &values[index]
@@ -166,25 +166,25 @@ func plannedAction(values []workflow.PlannedAction, actionID string) *workflow.P
 	return nil
 }
 
-func requiresHumanApproval(decisions []workflow.PlanPolicyDecision) bool {
+func requiresHumanApproval(decisions []workflow.ActionPolicyDecision) bool {
 	for _, decision := range decisions {
-		if decision.Outcome == workflow.PlanPolicyApprovalRequired {
+		if decision.Outcome == workflow.ActionPolicyApprovalRequired {
 			return true
 		}
 	}
 	return false
 }
 
-func evaluateCapabilityPolicy(planID string, action workflow.PlannedAction, dryRunOperationID string, capabilities []platform.RemediationCapability) workflow.PlanPolicyDecision {
-	decision := workflow.PlanPolicyDecision{
-		PlanID: planID, ActionID: action.ID, ActionDigest: action.Digest,
+func evaluateCapabilityPolicy(intentID string, action workflow.IntendedAction, dryRunOperationID string, capabilities []platform.RemediationCapability) workflow.ActionPolicyDecision {
+	decision := workflow.ActionPolicyDecision{
+		IntentID: intentID, ActionID: action.ID, ActionDigest: action.Digest,
 		DryRunOperationID: dryRunOperationID, Risk: "unknown",
-		Outcome: workflow.PlanPolicyRejected, ReasonCode: "capability_not_available",
-		Reason: "planned remediation capability is no longer available",
+		Outcome: workflow.ActionPolicyRejected, ReasonCode: "capability_not_available",
+		Reason: "remediation capability is no longer available",
 	}
 	if action.Kind == workflow.ActionKindProbe || action.Kind == workflow.ActionKindRecovery {
 		decision.Risk = "low"
-		decision.Outcome = workflow.PlanPolicyAutoApproved
+		decision.Outcome = workflow.ActionPolicyAutoApproved
 		decision.ReasonCode = "harness_managed_action"
 		decision.Reason = "probe and recovery actions are constrained by a validated harness recovery policy"
 		return decision
@@ -205,24 +205,24 @@ func evaluateCapabilityPolicy(planID string, action workflow.PlannedAction, dryR
 	}
 	decision.Risk = risk
 	if capability.RequiresApproval {
-		decision.Outcome = workflow.PlanPolicyApprovalRequired
+		decision.Outcome = workflow.ActionPolicyApprovalRequired
 		decision.ReasonCode = "capability_requires_approval"
 		decision.Reason = "remediation capability explicitly requires human approval"
 		return decision
 	}
 	if risk == "low" {
-		decision.Outcome = workflow.PlanPolicyAutoApproved
+		decision.Outcome = workflow.ActionPolicyAutoApproved
 		decision.ReasonCode = "low_risk_auto_approved"
 		decision.Reason = "low-risk remediation is explicitly allowed without approval"
 		return decision
 	}
-	decision.Outcome = workflow.PlanPolicyApprovalRequired
+	decision.Outcome = workflow.ActionPolicyApprovalRequired
 	decision.ReasonCode = "non_low_risk_requires_approval"
 	decision.Reason = "non-low or unknown risk requires human approval by default"
 	return decision
 }
 
-func actionDryRun(values []workflow.PlanDryRun, actionID string) *workflow.PlanDryRun {
+func actionDryRun(values []workflow.ActionDryRun, actionID string) *workflow.ActionDryRun {
 	for index := range values {
 		if values[index].ActionID == actionID {
 			return &values[index]

@@ -26,7 +26,7 @@ const (
 type Request struct {
 	ID                string         `json:"id"`
 	IncidentID        string         `json:"incident_id"`
-	PlanID            string         `json:"plan_id"`
+	IntentID          string         `json:"intent_id"`
 	ActionID          string         `json:"action_id"`
 	ActionDigest      string         `json:"action_digest"`
 	DryRunOperationID string         `json:"dry_run_operation_id"`
@@ -44,7 +44,7 @@ type Request struct {
 // Decision 是人工对一张待审批单提交的不可变决定。
 type Decision struct {
 	ID             string `json:"id"`
-	PlanID         string `json:"plan_id"`
+	IntentID       string `json:"intent_id"`
 	ActionID       string `json:"action_id"`
 	ActionDigest   string `json:"action_digest"`
 	Status         Status `json:"status"`

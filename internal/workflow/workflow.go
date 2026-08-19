@@ -15,11 +15,11 @@ var (
 
 // Config 定义新建或从 checkpoint 恢复的 IncidentWorkflow。
 type Config struct {
-	IncidentID   string
-	PlanIDPrefix string
-	InitialState State
-	Now          func() time.Time
-	Limits       ExecutionLimits
+	IncidentID     string
+	IntentIDPrefix string
+	InitialState   State
+	Now            func() time.Time
+	Limits         ExecutionLimits
 }
 
 // Transition 是一次已经通过校验并提交的状态变化审计记录。
@@ -37,28 +37,28 @@ type Transition struct {
 
 // Snapshot 是可用于审计和后续 checkpoint 的 Workflow 只读副本。
 type Snapshot struct {
-	IncidentID       string               `json:"incident_id"`
-	State            State                `json:"state"`
-	SuspendedState   State                `json:"suspended_state,omitempty"`
-	Version          uint64               `json:"version"`
-	Plan             *Plan                `json:"plan,omitempty"`
-	Plans            []Plan               `json:"plans"`
-	PlanDryRuns      []PlanDryRun         `json:"plan_dry_runs,omitempty"`
-	PlanPolicies     []PlanPolicyDecision `json:"plan_policies,omitempty"`
-	PlanApprovals    []PlanApproval       `json:"plan_approvals,omitempty"`
-	AllPlanDryRuns   []PlanDryRun         `json:"all_plan_dry_runs,omitempty"`
-	AllPlanPolicies  []PlanPolicyDecision `json:"all_plan_policies,omitempty"`
-	AllPlanApprovals []PlanApproval       `json:"all_plan_approvals,omitempty"`
-	ActiveStageIndex int                  `json:"active_stage_index"`
-	ResolvedActions  []ResolvedAction     `json:"resolved_actions,omitempty"`
-	ActionResults    []ActionResult       `json:"action_results,omitempty"`
-	Checkpoints      []DecisionCheckpoint `json:"checkpoints,omitempty"`
-	Limits           ExecutionLimits      `json:"limits"`
-	StagesExecuted   int                  `json:"stages_executed"`
-	AgentResumesUsed int                  `json:"agent_resumes_used"`
-	ActionsAccepted  int                  `json:"actions_accepted"`
-	Failures         []StageFailure       `json:"failures,omitempty"`
-	History          []Transition         `json:"history"`
+	IncidentID         string                 `json:"incident_id"`
+	State              State                  `json:"state"`
+	SuspendedState     State                  `json:"suspended_state,omitempty"`
+	Version            uint64                 `json:"version"`
+	ExecutionIntent    *ExecutionIntent       `json:"execution_intent,omitempty"`
+	ExecutionIntents   []ExecutionIntent      `json:"execution_intents"`
+	ActionDryRuns      []ActionDryRun         `json:"action_dry_runs,omitempty"`
+	ActionPolicies     []ActionPolicyDecision `json:"action_policies,omitempty"`
+	ActionApprovals    []ActionApproval       `json:"action_approvals,omitempty"`
+	AllActionDryRuns   []ActionDryRun         `json:"all_action_dry_runs,omitempty"`
+	AllActionPolicies  []ActionPolicyDecision `json:"all_action_policies,omitempty"`
+	AllActionApprovals []ActionApproval       `json:"all_action_approvals,omitempty"`
+	ActiveStageIndex   int                    `json:"active_stage_index"`
+	ResolvedActions    []ResolvedAction       `json:"resolved_actions,omitempty"`
+	ActionResults      []ActionResult         `json:"action_results,omitempty"`
+	Checkpoints        []DecisionCheckpoint   `json:"checkpoints,omitempty"`
+	Limits             ExecutionLimits        `json:"limits"`
+	StagesExecuted     int                    `json:"stages_executed"`
+	AgentResumesUsed   int                    `json:"agent_resumes_used"`
+	ActionsAccepted    int                    `json:"actions_accepted"`
+	Failures           []StageFailure         `json:"failures,omitempty"`
+	History            []Transition           `json:"history"`
 }
 
 // IncidentWorkflow 保存单个 Incident 的确定性生命周期状态。
@@ -66,30 +66,30 @@ type Snapshot struct {
 type IncidentWorkflow struct {
 	mu sync.RWMutex
 
-	incidentID       string
-	planIDPrefix     string
-	state            State
-	suspendedState   State
-	version          uint64
-	plan             *Plan
-	plans            []Plan
-	planDryRuns      []PlanDryRun
-	planPolicies     []PlanPolicyDecision
-	planApprovals    []PlanApproval
-	allPlanDryRuns   []PlanDryRun
-	allPlanPolicies  []PlanPolicyDecision
-	allPlanApprovals []PlanApproval
-	activeStageIndex int
-	resolvedActions  []ResolvedAction
-	actionResults    []ActionResult
-	checkpoints      []DecisionCheckpoint
-	limits           ExecutionLimits
-	stagesExecuted   int
-	agentResumesUsed int
-	actionsAccepted  int
-	failures         []StageFailure
-	history          []Transition
-	now              func() time.Time
+	incidentID         string
+	intentIDPrefix     string
+	state              State
+	suspendedState     State
+	version            uint64
+	intent             *ExecutionIntent
+	executionIntents   []ExecutionIntent
+	actionDryRuns      []ActionDryRun
+	actionPolicies     []ActionPolicyDecision
+	actionApprovals    []ActionApproval
+	allActionDryRuns   []ActionDryRun
+	allActionPolicies  []ActionPolicyDecision
+	allActionApprovals []ActionApproval
+	activeStageIndex   int
+	resolvedActions    []ResolvedAction
+	actionResults      []ActionResult
+	checkpoints        []DecisionCheckpoint
+	limits             ExecutionLimits
+	stagesExecuted     int
+	agentResumesUsed   int
+	actionsAccepted    int
+	failures           []StageFailure
+	history            []Transition
+	now                func() time.Time
 }
 
 // transitionRule 定义一条状态转换的目标和事件来源权限。
@@ -109,24 +109,24 @@ var transitionRules = map[State]map[EventType]transitionRule{
 		EventStartInvestigation: {to: StateInvestigating, actors: actors(ActorController)},
 	},
 	StateInvestigating: {
-		EventPlanSubmitted: {to: StatePlanned, actors: actors(ActorAgent)},
-		EventSkillLoaded:   {to: StateInvestigating, actors: actors(ActorAgent)},
-		EventSkillUnloaded: {to: StateInvestigating, actors: actors(ActorAgent)},
+		EventExecutionIntentSubmitted: {to: StateValidating, actors: actors(ActorAgent)},
+		EventSkillLoaded:              {to: StateInvestigating, actors: actors(ActorAgent)},
+		EventSkillUnloaded:            {to: StateInvestigating, actors: actors(ActorAgent)},
 	},
-	StatePlanned: {
-		EventPlanApproved:         {to: StateRemediating, actors: actors(ActorWorkflow)},
-		EventApprovalRequired:     {to: StateAwaitingApproval, actors: actors(ActorWorkflow)},
-		EventPlanRejected:         {to: StateInvestigating, actors: actors(ActorWorkflow, ActorHuman)},
-		EventCheckpointFailed:     {to: StateFailed, actors: actors(ActorWorkflow)},
-		EventCheckpointBlocked:    {to: StateBlocked, actors: actors(ActorWorkflow)},
-		EventCheckpointEscalated:  {to: StateEscalated, actors: actors(ActorWorkflow)},
-		EventCheckpointNeedsAgent: {to: StateInvestigating, actors: actors(ActorWorkflow)},
+	StateValidating: {
+		EventExecutionAuthorized:     {to: StateExecuting, actors: actors(ActorWorkflow)},
+		EventApprovalRequired:        {to: StateAwaitingApproval, actors: actors(ActorWorkflow)},
+		EventExecutionIntentRejected: {to: StateInvestigating, actors: actors(ActorWorkflow, ActorHuman)},
+		EventCheckpointFailed:        {to: StateFailed, actors: actors(ActorWorkflow)},
+		EventCheckpointBlocked:       {to: StateBlocked, actors: actors(ActorWorkflow)},
+		EventCheckpointEscalated:     {to: StateEscalated, actors: actors(ActorWorkflow)},
+		EventCheckpointNeedsAgent:    {to: StateInvestigating, actors: actors(ActorWorkflow)},
 	},
 	StateAwaitingApproval: {
-		EventPlanApproved: {to: StateRemediating, actors: actors(ActorHuman)},
-		EventPlanRejected: {to: StateInvestigating, actors: actors(ActorHuman)},
+		EventExecutionAuthorized:     {to: StateExecuting, actors: actors(ActorHuman)},
+		EventExecutionIntentRejected: {to: StateInvestigating, actors: actors(ActorHuman)},
 	},
-	StateRemediating: {
+	StateExecuting: {
 		EventStageCheckpoint:      {to: StateCheckpoint, actors: actors(ActorWorkflow)},
 		EventCheckpointNeedsAgent: {to: StateInvestigating, actors: actors(ActorWorkflow)},
 		EventCheckpointFailed:     {to: StateFailed, actors: actors(ActorWorkflow)},
@@ -134,7 +134,7 @@ var transitionRules = map[State]map[EventType]transitionRule{
 		EventCheckpointBlocked:    {to: StateBlocked, actors: actors(ActorWorkflow)},
 	},
 	StateCheckpoint: {
-		EventCheckpointContinue:   {to: StatePlanned, actors: actors(ActorWorkflow)},
+		EventCheckpointContinue:   {to: StateValidating, actors: actors(ActorWorkflow)},
 		EventCheckpointNeedsAgent: {to: StateInvestigating, actors: actors(ActorWorkflow)},
 		EventCheckpointSucceeded:  {to: StateResolved, actors: actors(ActorWorkflow)},
 		EventCheckpointFailed:     {to: StateFailed, actors: actors(ActorWorkflow)},
@@ -152,9 +152,9 @@ func NewIncidentWorkflow(config Config) (*IncidentWorkflow, error) {
 	if incidentID == "" {
 		return nil, fmt.Errorf("incident ID is required")
 	}
-	planIDPrefix := strings.TrimSpace(config.PlanIDPrefix)
-	if planIDPrefix == "" {
-		planIDPrefix = incidentID
+	intentIDPrefix := strings.TrimSpace(config.IntentIDPrefix)
+	if intentIDPrefix == "" {
+		intentIDPrefix = incidentID
 	}
 	state := config.InitialState
 	if state == "" {
@@ -171,7 +171,7 @@ func NewIncidentWorkflow(config Config) (*IncidentWorkflow, error) {
 	if err := validateLimits(limits); err != nil {
 		return nil, err
 	}
-	return &IncidentWorkflow{incidentID: incidentID, planIDPrefix: planIDPrefix, state: state, now: now, limits: limits}, nil
+	return &IncidentWorkflow{incidentID: incidentID, intentIDPrefix: intentIDPrefix, state: state, now: now, limits: limits}, nil
 }
 
 // Apply 校验 Actor 和当前状态，并原子提交一次状态变化。
@@ -247,10 +247,10 @@ func (w *IncidentWorkflow) Snapshot() Snapshot {
 	}
 	return Snapshot{
 		IncidentID: w.incidentID, State: w.state, SuspendedState: w.suspendedState,
-		Version: w.version, Plan: clonePlanPointer(w.plan), Plans: clonePlans(w.plans), PlanDryRuns: clonePlanDryRuns(w.planDryRuns),
-		PlanPolicies: clonePlanPolicyDecisions(w.planPolicies), PlanApprovals: clonePlanApprovals(w.planApprovals),
-		AllPlanDryRuns: clonePlanDryRuns(w.allPlanDryRuns), AllPlanPolicies: clonePlanPolicyDecisions(w.allPlanPolicies),
-		AllPlanApprovals: clonePlanApprovals(w.allPlanApprovals), ActiveStageIndex: w.activeStageIndex,
+		Version: w.version, ExecutionIntent: cloneExecutionIntentPointer(w.intent), ExecutionIntents: cloneExecutionIntents(w.executionIntents), ActionDryRuns: cloneActionDryRuns(w.actionDryRuns),
+		ActionPolicies: cloneActionPolicyDecisions(w.actionPolicies), ActionApprovals: cloneActionApprovals(w.actionApprovals),
+		AllActionDryRuns: cloneActionDryRuns(w.allActionDryRuns), AllActionPolicies: cloneActionPolicyDecisions(w.allActionPolicies),
+		AllActionApprovals: cloneActionApprovals(w.allActionApprovals), ActiveStageIndex: w.activeStageIndex,
 		ResolvedActions: cloneResolvedActions(w.resolvedActions), ActionResults: cloneActionResults(w.actionResults),
 		Checkpoints: cloneDecisionCheckpoints(w.checkpoints), Limits: w.limits,
 		StagesExecuted: w.stagesExecuted, AgentResumesUsed: w.agentResumesUsed, ActionsAccepted: w.actionsAccepted,
@@ -280,9 +280,9 @@ func (w *IncidentWorkflow) RecordFailure(value StageFailure) (StageFailure, erro
 
 func failureStageForState(state State) (FailureStage, bool) {
 	switch state {
-	case StatePlanned:
+	case StateValidating:
 		return FailureStageDryRun, true
-	case StateRemediating:
+	case StateExecuting:
 		return FailureStageActionExecution, true
 	case StateCheckpoint:
 		return FailureStageCheckpoint, true

@@ -1,5 +1,9 @@
 # Baseline v1 问题记录
 
+> 历史命名说明：本文中的 `Plan`、`planned` 和 `submit_plan` 是旧版本运行轨迹中的原始
+> 名称。当前运行时对应为有界 `ExecutionIntent`、`validating` 和
+> `submit_execution_intent`，不表示 Agent 会预先制定完整计划。
+
 动态执行计划改造后的后续问题见
 [动态执行计划评测问题记录](dynamic-execution-plan-issues.md)。
 

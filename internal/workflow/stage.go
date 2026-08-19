@@ -71,7 +71,7 @@ type ResolvedArgumentSource struct {
 // ResolvedAction 保存模板参数和最终可执行参数。Digest 只覆盖解析后的具体动作，
 // Dry Run、Policy 和审批都必须绑定这个 Digest。
 type ResolvedAction struct {
-	PlanID            string                   `json:"plan_id"`
+	IntentID          string                   `json:"intent_id"`
 	StageID           string                   `json:"stage_id"`
 	ActionID          string                   `json:"action_id"`
 	TemplateDigest    string                   `json:"template_digest"`
@@ -87,7 +87,7 @@ type ResolvedAction struct {
 // ActionResult 是 Harness 保存的结构化执行观察，也是后续引用的唯一数据源。
 type ActionResult struct {
 	ResultID        string         `json:"result_id"`
-	PlanID          string         `json:"plan_id"`
+	IntentID        string         `json:"intent_id"`
 	StageID         string         `json:"stage_id"`
 	ActionID        string         `json:"action_id"`
 	ActionDigest    string         `json:"action_digest"`
@@ -111,7 +111,7 @@ const (
 
 // CheckpointRule 只允许对一个已知输出字段做精确相等判断。
 type CheckpointRule struct {
-	SourceActionID string             `json:"source_action_id" jsonschema:"required,description=本 Plan 中已执行 Action 的稳定 ID"`
+	SourceActionID string             `json:"source_action_id" jsonschema:"required,description=本 ExecutionIntent 中已执行 Action 的稳定 ID"`
 	OutputPath     string             `json:"output_path" jsonschema:"required,description=只允许 operation_status 或 output.<field>；operation_status 和 output.outcome 都是字符串"`
 	Equals         any                `json:"equals" jsonschema:"required,description=与字段 JSON 类型一致的精确字面值；operation_status 使用 succeeded/failed/rejected/cancelled 等字符串，output.outcome 使用 healthy/hard_stop/running 等字符串，不能写布尔 true"`
 	Decision       CheckpointDecision `json:"decision"`
@@ -125,12 +125,12 @@ type CheckpointPolicy struct {
 	DefaultReason   string             `json:"default_reason,omitempty"`
 }
 
-type PlanStage struct {
+type ExecutionStage struct {
 	StageID          string           `json:"stage_id"`
 	Goal             string           `json:"goal"`
 	Sequence         int              `json:"sequence"`
 	Version          int              `json:"version"`
-	Actions          []PlannedAction  `json:"actions"`
+	Actions          []IntendedAction `json:"actions"`
 	SuccessCriteria  []string         `json:"success_criteria,omitempty"`
 	CheckpointPolicy CheckpointPolicy `json:"checkpoint_policy"`
 	CreatedBy        string           `json:"created_by"`
@@ -219,9 +219,9 @@ func validateCheckpointEquals(path string, value any) error {
 	}
 }
 
-func validateDynamicPlanDraft(stages []PlanStageDraft, limits ExecutionLimits) error {
+func validateDynamicExecutionIntentDraft(stages []ExecutionStageDraft, limits ExecutionLimits) error {
 	if len(stages) > limits.MaxStages {
-		return fmt.Errorf("plan has %d stages, exceeding max_stages %d", len(stages), limits.MaxStages)
+		return fmt.Errorf("intent has %d stages, exceeding max_stages %d", len(stages), limits.MaxStages)
 	}
 	stageIDs := make(map[string]struct{}, len(stages))
 	actionKeys := make(map[string]struct{})
@@ -230,7 +230,7 @@ func validateDynamicPlanDraft(stages []PlanStageDraft, limits ExecutionLimits) e
 	for stageIndex, stage := range stages {
 		stageID := strings.TrimSpace(stage.StageID)
 		if !stageIdentifier.MatchString(stageID) {
-			return fmt.Errorf("plan stages[%d].stage_id uses an invalid identifier", stageIndex)
+			return fmt.Errorf("intent stages[%d].stage_id uses an invalid identifier", stageIndex)
 		}
 		if _, exists := stageIDs[stageID]; exists {
 			return fmt.Errorf("duplicate stage_id %q", stageID)
@@ -239,7 +239,7 @@ func validateDynamicPlanDraft(stages []PlanStageDraft, limits ExecutionLimits) e
 		for actionIndex, action := range stage.Actions {
 			actionCount++
 			if action.Kind != "" && !action.Kind.Valid() {
-				return fmt.Errorf("plan stages[%d].actions[%d] has unknown kind %q", stageIndex, actionIndex, action.Kind)
+				return fmt.Errorf("intent stages[%d].actions[%d] has unknown kind %q", stageIndex, actionIndex, action.Kind)
 			}
 			key := strings.TrimSpace(action.Key)
 			if key == "" {
@@ -247,7 +247,7 @@ func validateDynamicPlanDraft(stages []PlanStageDraft, limits ExecutionLimits) e
 			}
 			if key != "" {
 				if !stageIdentifier.MatchString(key) {
-					return fmt.Errorf("plan stages[%d].actions[%d] key uses an invalid identifier", stageIndex, actionIndex)
+					return fmt.Errorf("intent stages[%d].actions[%d] key uses an invalid identifier", stageIndex, actionIndex)
 				}
 				if _, exists := actionKeys[key]; exists {
 					return fmt.Errorf("duplicate action key %q", key)
@@ -257,20 +257,20 @@ func validateDynamicPlanDraft(stages []PlanStageDraft, limits ExecutionLimits) e
 			}
 			for argument, reference := range action.ArgumentReferences {
 				if !outputField.MatchString(argument) {
-					return fmt.Errorf("plan stages[%d].actions[%d] argument reference target %q is invalid", stageIndex, actionIndex, argument)
+					return fmt.Errorf("intent stages[%d].actions[%d] argument reference target %q is invalid", stageIndex, actionIndex, argument)
 				}
 				if err := validateActionOutputReference(reference); err != nil {
-					return fmt.Errorf("plan stages[%d].actions[%d] argument %q: %w", stageIndex, actionIndex, argument, err)
+					return fmt.Errorf("intent stages[%d].actions[%d] argument %q: %w", stageIndex, actionIndex, argument, err)
 				}
 				if _, literal := action.Arguments[argument]; literal {
-					return fmt.Errorf("plan stages[%d].actions[%d] argument %q cannot have both a literal and an output reference",
+					return fmt.Errorf("intent stages[%d].actions[%d] argument %q cannot have both a literal and an output reference",
 						stageIndex, actionIndex, argument)
 				}
 			}
 		}
 	}
 	if actionCount > limits.MaxActions {
-		return fmt.Errorf("plan has %d actions, exceeding max_actions %d", actionCount, limits.MaxActions)
+		return fmt.Errorf("intent has %d actions, exceeding max_actions %d", actionCount, limits.MaxActions)
 	}
 	for stageIndex, stage := range stages {
 		if err := validateProbeStageCheckpoint(stageIndex, stage, stages); err != nil {
@@ -280,11 +280,11 @@ func validateDynamicPlanDraft(stages []PlanStageDraft, limits ExecutionLimits) e
 			for argument, reference := range action.ArgumentReferences {
 				sourceStage, exists := actionStages[strings.TrimSpace(reference.SourceActionID)]
 				if !exists {
-					return fmt.Errorf("plan stages[%d].actions[%d] argument %q references unknown action %q",
+					return fmt.Errorf("intent stages[%d].actions[%d] argument %q references unknown action %q",
 						stageIndex, actionIndex, argument, reference.SourceActionID)
 				}
 				if sourceStage >= stageIndex {
-					return fmt.Errorf("plan stages[%d].actions[%d] argument %q must reference an earlier stage action",
+					return fmt.Errorf("intent stages[%d].actions[%d] argument %q must reference an earlier stage action",
 						stageIndex, actionIndex, argument)
 				}
 			}
@@ -292,32 +292,32 @@ func validateDynamicPlanDraft(stages []PlanStageDraft, limits ExecutionLimits) e
 		for ruleIndex, rule := range stage.CheckpointPolicy.Rules {
 			sourceStage, exists := actionStages[strings.TrimSpace(rule.SourceActionID)]
 			if !exists || sourceStage > stageIndex {
-				return fmt.Errorf("plan stages[%d].checkpoint_policy.rules[%d] references unavailable action %q",
+				return fmt.Errorf("intent stages[%d].checkpoint_policy.rules[%d] references unavailable action %q",
 					stageIndex, ruleIndex, rule.SourceActionID)
 			}
 			nextStageID := strings.TrimSpace(rule.NextStageID)
 			if rule.Decision == CheckpointContinue {
 				if stageIndex+1 >= len(stages) {
-					return fmt.Errorf("plan stages[%d].checkpoint_policy.rules[%d] cannot continue from the final stage; use succeeded or another terminal decision",
+					return fmt.Errorf("intent stages[%d].checkpoint_policy.rules[%d] cannot continue from the final stage; use succeeded or another terminal decision",
 						stageIndex, ruleIndex)
 				}
 				if nextStageID != "" && nextStageID != strings.TrimSpace(stages[stageIndex+1].StageID) {
-					return fmt.Errorf("plan stages[%d].checkpoint_policy.rules[%d] next_stage_id must name the next linear stage",
+					return fmt.Errorf("intent stages[%d].checkpoint_policy.rules[%d] next_stage_id must name the next linear stage",
 						stageIndex, ruleIndex)
 				}
 			} else if nextStageID != "" {
-				return fmt.Errorf("plan stages[%d].checkpoint_policy.rules[%d] next_stage_id is only allowed for continue",
+				return fmt.Errorf("intent stages[%d].checkpoint_policy.rules[%d] next_stage_id is only allowed for continue",
 					stageIndex, ruleIndex)
 			}
 		}
 		if stage.CheckpointPolicy.DefaultDecision == CheckpointContinue && stageIndex+1 >= len(stages) {
-			return fmt.Errorf("plan stages[%d].checkpoint_policy cannot default to continue on the final stage; use succeeded or another terminal decision", stageIndex)
+			return fmt.Errorf("intent stages[%d].checkpoint_policy cannot default to continue on the final stage; use succeeded or another terminal decision", stageIndex)
 		}
 	}
 	return nil
 }
 
-func validateProbeStageCheckpoint(stageIndex int, stage PlanStageDraft, stages []PlanStageDraft) error {
+func validateProbeStageCheckpoint(stageIndex int, stage ExecutionStageDraft, stages []ExecutionStageDraft) error {
 	probeActions := make(map[string]struct{})
 	for actionIndex, action := range stage.Actions {
 		if action.Kind != ActionKindProbe && strings.TrimSpace(action.ToolName) != "request_probe" {
@@ -328,7 +328,7 @@ func validateProbeStageCheckpoint(stageIndex int, stage PlanStageDraft, stages [
 			key = strings.TrimSpace(action.ID)
 		}
 		if key == "" {
-			return fmt.Errorf("plan stages[%d].actions[%d] request_probe requires a stable action id for checkpoint rules", stageIndex, actionIndex)
+			return fmt.Errorf("intent stages[%d].actions[%d] request_probe requires a stable action id for checkpoint rules", stageIndex, actionIndex)
 		}
 		probeActions[key] = struct{}{}
 	}
@@ -336,15 +336,15 @@ func validateProbeStageCheckpoint(stageIndex int, stage PlanStageDraft, stages [
 		return nil
 	}
 	if !failClosedCheckpointDecision(stage.CheckpointPolicy.DefaultDecision) {
-		return fmt.Errorf("plan stages[%d].checkpoint_policy for request_probe requires an explicit fail-closed default_decision (needs_agent, failed, escalate, or blocked)", stageIndex)
+		return fmt.Errorf("intent stages[%d].checkpoint_policy for request_probe requires an explicit fail-closed default_decision (needs_agent, failed, escalate, or blocked)", stageIndex)
 	}
 	if stageIndex+1 >= len(stages) || !stageContainsManagedRecovery(stages[stageIndex+1]) {
-		return fmt.Errorf("plan stages[%d] containing request_probe requires the next linear stage to contain an explicit request_recovery action", stageIndex)
+		return fmt.Errorf("intent stages[%d] containing request_probe requires the next linear stage to contain an explicit request_recovery action", stageIndex)
 	}
 	healthyProgress := make(map[string]bool, len(probeActions))
 	for ruleIndex, rule := range stage.CheckpointPolicy.Rules {
 		if rule.Decision == CheckpointSucceeded {
-			return fmt.Errorf("plan stages[%d].checkpoint_policy.rules[%d] cannot select succeeded for a probe stage; a healthy probe must continue to an explicit recovery stage", stageIndex, ruleIndex)
+			return fmt.Errorf("intent stages[%d].checkpoint_policy.rules[%d] cannot select succeeded for a probe stage; a healthy probe must continue to an explicit recovery stage", stageIndex, ruleIndex)
 		}
 		if rule.Decision != CheckpointContinue {
 			continue
@@ -352,19 +352,19 @@ func validateProbeStageCheckpoint(stageIndex int, stage PlanStageDraft, stages [
 		_, isProbe := probeActions[strings.TrimSpace(rule.SourceActionID)]
 		outcome, isString := rule.Equals.(string)
 		if !isProbe || strings.TrimSpace(rule.OutputPath) != "output.outcome" || !isString || outcome != "healthy" {
-			return fmt.Errorf("plan stages[%d].checkpoint_policy.rules[%d] cannot select %q for a probe stage unless the current probe output.outcome equals healthy", stageIndex, ruleIndex, rule.Decision)
+			return fmt.Errorf("intent stages[%d].checkpoint_policy.rules[%d] cannot select %q for a probe stage unless the current probe output.outcome equals healthy", stageIndex, ruleIndex, rule.Decision)
 		}
 		healthyProgress[strings.TrimSpace(rule.SourceActionID)] = true
 	}
 	for actionID := range probeActions {
 		if !healthyProgress[actionID] {
-			return fmt.Errorf("plan stages[%d].checkpoint_policy must define a healthy output.outcome continue rule to an explicit recovery stage for probe action %q", stageIndex, actionID)
+			return fmt.Errorf("intent stages[%d].checkpoint_policy must define a healthy output.outcome continue rule to an explicit recovery stage for probe action %q", stageIndex, actionID)
 		}
 	}
 	return nil
 }
 
-func stageContainsManagedRecovery(stage PlanStageDraft) bool {
+func stageContainsManagedRecovery(stage ExecutionStageDraft) bool {
 	for _, action := range stage.Actions {
 		if action.Kind == ActionKindRecovery || strings.TrimSpace(action.ToolName) == "request_recovery" {
 			return true
@@ -433,12 +433,12 @@ func (d CheckpointDecision) valid() bool {
 	}
 }
 
-func freezePlanStages(planID string, drafts []PlanStageDraft, createdAt time.Time) []PlanStage {
+func freezeExecutionStages(intentID string, drafts []ExecutionStageDraft, createdAt time.Time) []ExecutionStage {
 	actionIDs := make(map[string]string)
 	sequence := 0
-	result := make([]PlanStage, len(drafts))
+	result := make([]ExecutionStage, len(drafts))
 	for stageIndex, draft := range drafts {
-		stage := PlanStage{
+		stage := ExecutionStage{
 			StageID: strings.TrimSpace(draft.StageID), Goal: strings.TrimSpace(draft.Goal), Sequence: stageIndex + 1,
 			Version: 1, SuccessCriteria: cloneStrings(draft.SuccessCriteria),
 			CheckpointPolicy: cloneCheckpointPolicy(draft.CheckpointPolicy), CreatedBy: strings.TrimSpace(draft.CreatedBy), CreatedAt: createdAt,
@@ -446,10 +446,10 @@ func freezePlanStages(planID string, drafts []PlanStageDraft, createdAt time.Tim
 		if stage.CreatedBy == "" {
 			stage.CreatedBy = string(ActorAgent)
 		}
-		stage.Actions = make([]PlannedAction, len(draft.Actions))
+		stage.Actions = make([]IntendedAction, len(draft.Actions))
 		for actionIndex, draftAction := range draft.Actions {
 			sequence++
-			action := clonePlannedAction(draftAction)
+			action := cloneIntendedAction(draftAction)
 			if action.Kind == "" {
 				action.Kind = ActionKindRemediation
 			}
@@ -458,7 +458,7 @@ func freezePlanStages(planID string, drafts []PlanStageDraft, createdAt time.Tim
 				key = strings.TrimSpace(action.ID)
 			}
 			action.Key = key
-			action.ID = fmt.Sprintf("%s-action-%d", planID, sequence)
+			action.ID = fmt.Sprintf("%s-action-%d", intentID, sequence)
 			if key != "" {
 				actionIDs[key] = action.ID
 			}
@@ -477,7 +477,7 @@ func freezePlanStages(planID string, drafts []PlanStageDraft, createdAt time.Tim
 				reference.OutputPath = strings.TrimSpace(reference.OutputPath)
 				action.ArgumentReferences[argument] = reference
 			}
-			action.Digest = plannedActionDigest(*action)
+			action.Digest = intendedActionDigest(*action)
 		}
 		for ruleIndex := range result[stageIndex].CheckpointPolicy.Rules {
 			rule := &result[stageIndex].CheckpointPolicy.Rules[ruleIndex]
@@ -489,11 +489,11 @@ func freezePlanStages(planID string, drafts []PlanStageDraft, createdAt time.Tim
 	return result
 }
 
-func clonePlanStages(values []PlanStage) []PlanStage {
-	result := make([]PlanStage, len(values))
+func cloneExecutionStages(values []ExecutionStage) []ExecutionStage {
+	result := make([]ExecutionStage, len(values))
 	for index, value := range values {
 		result[index] = value
-		result[index].Actions = clonePlannedActions(value.Actions)
+		result[index].Actions = cloneIntendedActions(value.Actions)
 		result[index].SuccessCriteria = cloneStrings(value.SuccessCriteria)
 		result[index].CheckpointPolicy = cloneCheckpointPolicy(value.CheckpointPolicy)
 	}
@@ -521,87 +521,87 @@ func cloneActionOutputReferences(values map[string]ActionOutputReference) map[st
 	return result
 }
 
-func (w *IncidentWorkflow) currentStageLocked() *PlanStage {
-	if w.plan == nil || len(w.plan.Stages) == 0 || w.activeStageIndex < 0 || w.activeStageIndex >= len(w.plan.Stages) {
+func (w *IncidentWorkflow) currentStageLocked() *ExecutionStage {
+	if w.intent == nil || len(w.intent.Stages) == 0 || w.activeStageIndex < 0 || w.activeStageIndex >= len(w.intent.Stages) {
 		return nil
 	}
-	return &w.plan.Stages[w.activeStageIndex]
+	return &w.intent.Stages[w.activeStageIndex]
 }
 
-func currentStage(snapshot Snapshot) *PlanStage {
-	if snapshot.Plan == nil || len(snapshot.Plan.Stages) == 0 || snapshot.ActiveStageIndex < 0 || snapshot.ActiveStageIndex >= len(snapshot.Plan.Stages) {
+func currentStage(snapshot Snapshot) *ExecutionStage {
+	if snapshot.ExecutionIntent == nil || len(snapshot.ExecutionIntent.Stages) == 0 || snapshot.ActiveStageIndex < 0 || snapshot.ActiveStageIndex >= len(snapshot.ExecutionIntent.Stages) {
 		return nil
 	}
-	return &snapshot.Plan.Stages[snapshot.ActiveStageIndex]
+	return &snapshot.ExecutionIntent.Stages[snapshot.ActiveStageIndex]
 }
 
-// CurrentStage 返回当前 Plan 的活动 Stage。
-func CurrentStage(snapshot Snapshot) *PlanStage {
+// CurrentStage 返回当前 ExecutionIntent 的活动 Stage。
+func CurrentStage(snapshot Snapshot) *ExecutionStage {
 	stage := currentStage(snapshot)
 	if stage == nil {
 		return nil
 	}
-	cloned := clonePlanStages([]PlanStage{*stage})
+	cloned := cloneExecutionStages([]ExecutionStage{*stage})
 	return &cloned[0]
 }
 
 // ExecutableActions 返回当前 Stage 已解析的具体 Action。
-func ExecutableActions(snapshot Snapshot) []PlannedAction {
-	if snapshot.Plan == nil {
+func ExecutableActions(snapshot Snapshot) []IntendedAction {
+	if snapshot.ExecutionIntent == nil {
 		return nil
 	}
 	stage := currentStage(snapshot)
 	if stage == nil {
 		return nil
 	}
-	result := make([]PlannedAction, 0, len(stage.Actions))
+	result := make([]IntendedAction, 0, len(stage.Actions))
 	for _, template := range stage.Actions {
-		resolved := findResolvedAction(snapshot.ResolvedActions, snapshot.Plan.ID, stage.StageID, template.ID)
+		resolved := findResolvedAction(snapshot.ResolvedActions, snapshot.ExecutionIntent.ID, stage.StageID, template.ID)
 		if resolved == nil {
 			continue
 		}
-		result = append(result, PlannedAction{ID: resolved.ActionID, Key: template.Key, Digest: resolved.Digest,
+		result = append(result, IntendedAction{ID: resolved.ActionID, Key: template.Key, Digest: resolved.Digest,
 			Kind: resolved.Kind, ToolName: resolved.ToolName, Arguments: cloneAnyMap(resolved.Arguments)})
 	}
 	return result
 }
 
-func (w *IncidentWorkflow) executableActionsLocked() []PlannedAction {
-	if w.plan == nil {
+func (w *IncidentWorkflow) executableActionsLocked() []IntendedAction {
+	if w.intent == nil {
 		return nil
 	}
 	stage := w.currentStageLocked()
 	if stage == nil {
 		return nil
 	}
-	result := make([]PlannedAction, 0, len(stage.Actions))
+	result := make([]IntendedAction, 0, len(stage.Actions))
 	for _, template := range stage.Actions {
-		resolved := findResolvedAction(w.resolvedActions, w.plan.ID, stage.StageID, template.ID)
+		resolved := findResolvedAction(w.resolvedActions, w.intent.ID, stage.StageID, template.ID)
 		if resolved == nil {
 			continue
 		}
-		result = append(result, PlannedAction{ID: resolved.ActionID, Key: template.Key, Digest: resolved.Digest,
+		result = append(result, IntendedAction{ID: resolved.ActionID, Key: template.Key, Digest: resolved.Digest,
 			Kind: resolved.Kind, ToolName: resolved.ToolName, Arguments: cloneAnyMap(resolved.Arguments)})
 	}
 	return result
 }
 
 // ResolveCurrentStage 把当前 Stage 的引用解析为具体参数。解析失败会产生规范化
-// StageFailure 和 needs_agent Checkpoint，并在任何 Dry Run/Policy/审批发生前停止当前 Plan。
+// StageFailure 和 needs_agent Checkpoint，并在任何 Dry Run/Policy/审批发生前停止当前 ExecutionIntent。
 func (w *IncidentWorkflow) ResolveCurrentStage() ([]ResolvedAction, error) {
 	if w == nil {
 		return nil, fmt.Errorf("workflow is not initialized")
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.state != StatePlanned || w.plan == nil {
+	if w.state != StateValidating || w.intent == nil {
 		return nil, fmt.Errorf("%w: action resolution is not allowed in state %q", ErrInvalidTransition, w.state)
 	}
 	stage := w.currentStageLocked()
 	if stage == nil {
-		return nil, fmt.Errorf("planned workflow has no active stage")
+		return nil, fmt.Errorf("validating workflow has no active stage")
 	}
-	existing := resolvedActionsForStage(w.resolvedActions, w.plan.ID, stage.StageID)
+	existing := resolvedActionsForStage(w.resolvedActions, w.intent.ID, stage.StageID)
 	if len(existing) == len(stage.Actions) {
 		return cloneResolvedActions(existing), nil
 	}
@@ -636,10 +636,10 @@ func (w *IncidentWorkflow) ResolveCurrentStage() ([]ResolvedAction, error) {
 			arguments[argument] = cloneAny(value)
 			sources = append(sources, ResolvedArgumentSource{Argument: argument, Reference: reference, SourceResultID: result.ResultID})
 		}
-		concrete := PlannedAction{ID: template.ID, Key: template.Key, Kind: template.Kind, ToolName: template.ToolName, Arguments: arguments}
+		concrete := IntendedAction{ID: template.ID, Key: template.Key, Kind: template.Kind, ToolName: template.ToolName, Arguments: arguments}
 		resolved = append(resolved, ResolvedAction{
-			PlanID: w.plan.ID, StageID: stage.StageID, ActionID: template.ID, TemplateDigest: template.Digest,
-			Digest: plannedActionDigest(concrete), Kind: template.Kind, ToolName: template.ToolName,
+			IntentID: w.intent.ID, StageID: stage.StageID, ActionID: template.ID, TemplateDigest: template.Digest,
+			Digest: intendedActionDigest(concrete), Kind: template.Kind, ToolName: template.ToolName,
 			OriginalArguments: cloneAnyMap(template.Arguments), Arguments: arguments, Sources: sources, ResolvedAt: w.now(),
 		})
 	}
@@ -649,15 +649,15 @@ func (w *IncidentWorkflow) ResolveCurrentStage() ([]ResolvedAction, error) {
 
 func (w *IncidentWorkflow) failResolutionLocked(stageID, actionID, code, summary, message string) error {
 	failure := StageFailure{
-		Stage: FailureStageArgumentResolution, Category: FailureCategoryPlanInvalid, Code: code,
+		Stage: FailureStageArgumentResolution, Category: FailureCategoryIntentInvalid, Code: code,
 		SafeSummary: summary, Message: message, NextAction: FailureNextNeedsAgent,
-		PlanID: w.plan.ID, ActionID: actionID,
+		IntentID: w.intent.ID, ActionID: actionID,
 	}
 	decision, eventType, checkpointReason := w.needsAgentDecisionLocked(summary)
 	checkpoint := w.newCheckpointLocked(stageID, "argument_resolution", decision, checkpointReason, "")
 	w.checkpoints = append(w.checkpoints, checkpoint)
 	_, err := w.applyLocked(Event{Type: eventType, Actor: ActorWorkflow, Reason: summary,
-		Metadata: map[string]string{"plan_id": w.plan.ID, "stage_id": stageID, "checkpoint_id": checkpoint.CheckpointID}, Failure: &failure})
+		Metadata: map[string]string{"intent_id": w.intent.ID, "stage_id": stageID, "checkpoint_id": checkpoint.CheckpointID}, Failure: &failure})
 	if err != nil {
 		return err
 	}
@@ -671,11 +671,11 @@ func (w *IncidentWorkflow) RecordActionResult(value ActionResult) (ActionResult,
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.state != StateRemediating {
+	if w.state != StateExecuting {
 		return ActionResult{}, fmt.Errorf("%w: action result is not allowed in state %q", ErrInvalidTransition, w.state)
 	}
-	if w.plan == nil || value.PlanID != w.plan.ID {
-		return ActionResult{}, fmt.Errorf("action result does not match current plan")
+	if w.intent == nil || value.IntentID != w.intent.ID {
+		return ActionResult{}, fmt.Errorf("action result does not match current intent")
 	}
 	if existing := findActionResult(w.actionResults, value.ActionID); existing != nil {
 		if existing.ActionDigest != value.ActionDigest || existing.OperationID != value.OperationID {
@@ -683,7 +683,7 @@ func (w *IncidentWorkflow) RecordActionResult(value ActionResult) (ActionResult,
 		}
 		return cloneActionResult(*existing), nil
 	}
-	resolved := findResolvedAction(w.resolvedActions, value.PlanID, value.StageID, value.ActionID)
+	resolved := findResolvedAction(w.resolvedActions, value.IntentID, value.StageID, value.ActionID)
 	if resolved == nil || resolved.Digest != value.ActionDigest {
 		return ActionResult{}, fmt.Errorf("action result does not match a resolved action")
 	}
@@ -706,15 +706,15 @@ func (w *IncidentWorkflow) CompleteCurrentStage(reason string) (Transition, erro
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.plan == nil {
-		return Transition{}, fmt.Errorf("remediating workflow has no plan")
+	if w.intent == nil {
+		return Transition{}, fmt.Errorf("executing workflow has no intent")
 	}
 	stage := w.currentStageLocked()
 	if stage == nil {
-		return Transition{}, fmt.Errorf("remediating workflow has no active stage")
+		return Transition{}, fmt.Errorf("executing workflow has no active stage")
 	}
 	transition, err := w.applyLocked(Event{Type: EventStageCheckpoint, Actor: ActorWorkflow, Reason: reason,
-		Metadata: map[string]string{"plan_id": w.plan.ID, "stage_id": stage.StageID}})
+		Metadata: map[string]string{"intent_id": w.intent.ID, "stage_id": stage.StageID}})
 	if err == nil {
 		w.stagesExecuted++
 	}
@@ -728,8 +728,8 @@ func (w *IncidentWorkflow) FailCurrentStage(reason string, metadata map[string]s
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.plan == nil || w.currentStageLocked() == nil {
-		return Transition{}, fmt.Errorf("remediating workflow has no active stage")
+	if w.intent == nil || w.currentStageLocked() == nil {
+		return Transition{}, fmt.Errorf("executing workflow has no active stage")
 	}
 	stage := w.currentStageLocked()
 	decision, eventType, checkpointReason := w.needsAgentDecisionLocked(failure.SafeSummary)
@@ -759,7 +759,7 @@ func (w *IncidentWorkflow) EvaluateCheckpoint() (DecisionCheckpoint, error) {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.state != StateCheckpoint || w.plan == nil || w.currentStageLocked() == nil {
+	if w.state != StateCheckpoint || w.intent == nil || w.currentStageLocked() == nil {
 		return DecisionCheckpoint{}, fmt.Errorf("%w: checkpoint evaluation is not allowed in state %q", ErrInvalidTransition, w.state)
 	}
 	stage := w.currentStageLocked()
@@ -778,9 +778,9 @@ func (w *IncidentWorkflow) EvaluateCheckpoint() (DecisionCheckpoint, error) {
 		}
 	}
 	if decision == "" {
-		if w.activeStageIndex+1 < len(w.plan.Stages) {
+		if w.activeStageIndex+1 < len(w.intent.Stages) {
 			decision = CheckpointContinue
-			nextStageID = w.plan.Stages[w.activeStageIndex+1].StageID
+			nextStageID = w.intent.Stages[w.activeStageIndex+1].StageID
 			reason = "current stage completed and the next linear stage is available"
 		} else {
 			decision = CheckpointSucceeded
@@ -791,10 +791,10 @@ func (w *IncidentWorkflow) EvaluateCheckpoint() (DecisionCheckpoint, error) {
 		reason = "checkpoint policy selected " + string(decision)
 	}
 	if decision == CheckpointContinue {
-		if w.activeStageIndex+1 >= len(w.plan.Stages) {
+		if w.activeStageIndex+1 >= len(w.intent.Stages) {
 			decision, reason = CheckpointNeedsAgent, "checkpoint requested continue but no next stage exists"
 		} else {
-			expected := w.plan.Stages[w.activeStageIndex+1].StageID
+			expected := w.intent.Stages[w.activeStageIndex+1].StageID
 			if nextStageID == "" {
 				nextStageID = expected
 			}
@@ -812,14 +812,14 @@ func (w *IncidentWorkflow) EvaluateCheckpoint() (DecisionCheckpoint, error) {
 	checkpoint := w.newCheckpointLocked(stage.StageID, "stage_completed", decision, reason, nextStageID)
 	w.checkpoints = append(w.checkpoints, checkpoint)
 	event := Event{Type: eventType, Actor: ActorWorkflow, Reason: reason, Metadata: map[string]string{
-		"plan_id": w.plan.ID, "stage_id": stage.StageID, "checkpoint_id": checkpoint.CheckpointID,
+		"intent_id": w.intent.ID, "stage_id": stage.StageID, "checkpoint_id": checkpoint.CheckpointID,
 		"checkpoint_decision": string(decision), "next_stage_id": nextStageID,
 	}}
 	switch decision {
 	case CheckpointContinue:
 		event.Type = EventCheckpointContinue
 		w.activeStageIndex++
-		w.planDryRuns, w.planPolicies, w.planApprovals = nil, nil, nil
+		w.actionDryRuns, w.actionPolicies, w.actionApprovals = nil, nil, nil
 	case CheckpointNeedsAgent:
 		if event.Type == "" {
 			event.Type = EventCheckpointNeedsAgent
@@ -829,7 +829,7 @@ func (w *IncidentWorkflow) EvaluateCheckpoint() (DecisionCheckpoint, error) {
 	case CheckpointFailed:
 		event.Type = EventCheckpointFailed
 		event.Failure = &StageFailure{Stage: FailureStageCheckpoint, Category: FailureCategoryExecutionFailed,
-			Code: "checkpoint_failed", SafeSummary: reason, NextAction: FailureNextEscalate, PlanID: w.plan.ID}
+			Code: "checkpoint_failed", SafeSummary: reason, NextAction: FailureNextEscalate, IntentID: w.intent.ID}
 	case CheckpointEscalate:
 		event.Type = EventCheckpointEscalated
 	case CheckpointBlocked:
@@ -849,7 +849,7 @@ func (w *IncidentWorkflow) needsAgentDecisionLocked(reason string) (CheckpointDe
 }
 
 func (w *IncidentWorkflow) newCheckpointLocked(stageID, trigger string, decision CheckpointDecision, reason, nextStageID string) DecisionCheckpoint {
-	results := actionResultsForStage(w.actionResults, w.plan.ID, stageID)
+	results := actionResultsForStage(w.actionResults, w.intent.ID, stageID)
 	evidence := make([]string, 0, len(results))
 	for _, result := range results {
 		if result.EvidenceRef != "" {
@@ -857,7 +857,7 @@ func (w *IncidentWorkflow) newCheckpointLocked(stageID, trigger string, decision
 		}
 	}
 	return DecisionCheckpoint{
-		CheckpointID: fmt.Sprintf("%s-checkpoint-%d", w.plan.ID, len(w.checkpoints)+1), StageID: stageID,
+		CheckpointID: fmt.Sprintf("%s-checkpoint-%d", w.intent.ID, len(w.checkpoints)+1), StageID: stageID,
 		Trigger: trigger, LatestResults: results, NewEvidenceRefs: evidence,
 		Decision: decision, DecisionReason: reason, NextStageID: nextStageID, CreatedAt: w.now(),
 	}
@@ -953,19 +953,19 @@ func normalizeComparable(value any) any {
 	}
 }
 
-func findResolvedAction(values []ResolvedAction, planID, stageID, actionID string) *ResolvedAction {
+func findResolvedAction(values []ResolvedAction, intentID, stageID, actionID string) *ResolvedAction {
 	for index := range values {
-		if values[index].PlanID == planID && values[index].StageID == stageID && values[index].ActionID == actionID {
+		if values[index].IntentID == intentID && values[index].StageID == stageID && values[index].ActionID == actionID {
 			return &values[index]
 		}
 	}
 	return nil
 }
 
-func resolvedActionsForStage(values []ResolvedAction, planID, stageID string) []ResolvedAction {
+func resolvedActionsForStage(values []ResolvedAction, intentID, stageID string) []ResolvedAction {
 	result := make([]ResolvedAction, 0)
 	for _, value := range values {
-		if value.PlanID == planID && value.StageID == stageID {
+		if value.IntentID == intentID && value.StageID == stageID {
 			result = append(result, value)
 		}
 	}
@@ -981,10 +981,10 @@ func findActionResult(values []ActionResult, actionID string) *ActionResult {
 	return nil
 }
 
-func actionResultsForStage(values []ActionResult, planID, stageID string) []ActionResult {
+func actionResultsForStage(values []ActionResult, intentID, stageID string) []ActionResult {
 	result := make([]ActionResult, 0)
 	for _, value := range values {
-		if value.PlanID == planID && value.StageID == stageID {
+		if value.IntentID == intentID && value.StageID == stageID {
 			result = append(result, cloneActionResult(value))
 		}
 	}

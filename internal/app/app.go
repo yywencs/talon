@@ -158,7 +158,7 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 	printer.printf("[simulator] advanced_to=%s incident_after=%s\n", service.Snapshot().Now.Format(time.RFC3339), incidentAt)
 
 	flow, err = workflow.NewIncidentWorkflow(workflow.Config{
-		IncidentID: item.Scenario.Metadata.ID, PlanIDPrefix: initialArtifact.RunID,
+		IncidentID: item.Scenario.Metadata.ID, IntentIDPrefix: initialArtifact.RunID,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("create incident workflow: %w", err)
@@ -213,7 +213,7 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 	}
 	investigator = &recordingInvestigator{next: investigator, workflow: flow, recorder: recorder, store: artifactStore}
 
-	processor, err := controller.NewPlanProcessor(service, flow,
+	processor, err := controller.NewExecutionCoordinator(service, flow,
 		controller.WithApprovalStore(cfg.Storage.Approvals()),
 		controller.WithExecutionStore(cfg.Storage.Executions(), initialArtifact.RunID+"-scenario-worker", 5*time.Second),
 		controller.WithAsyncExecution(controller.AsyncExecutionConfig{
@@ -226,10 +226,10 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 		}),
 	)
 	if err != nil {
-		return Result{}, fmt.Errorf("create plan processor: %w", err)
+		return Result{}, fmt.Errorf("create execution coordinator: %w", err)
 	}
 	orchestrator, err := controller.NewIncidentController(controller.IncidentControllerConfig{
-		Workflow: flow, Investigator: investigator, PlanProcessor: processor,
+		Workflow: flow, Investigator: investigator, ExecutionCoordinator: processor,
 		WorkerRetryInterval: cfg.WorkerRetryInterval,
 	})
 	if err != nil {
@@ -262,7 +262,7 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 			printSummary(printer, result)
 			return result, nil
 		}
-		_, approvalErr := observability.RunCallback(runCtx, "toolops.plan.approval", runResult.Snapshot,
+		_, approvalErr := observability.RunCallback(runCtx, "toolops.intent.approval", runResult.Snapshot,
 			func(callbackCtx context.Context) (workflow.Snapshot, error) {
 				err := approvePendingActions(callbackCtx, processor, runResult.Snapshot.IncidentID, printer)
 				return flow.Snapshot(), err
@@ -338,7 +338,7 @@ func activeOperations(values map[string]platform.Operation) []string {
 	return result
 }
 
-func approvePendingActions(ctx context.Context, processor *controller.PlanProcessor, incidentID string, printer *safePrinter) error {
+func approvePendingActions(ctx context.Context, processor *controller.ExecutionCoordinator, incidentID string, printer *safePrinter) error {
 	requests, err := processor.ListPendingApprovals(ctx)
 	if err != nil {
 		return fmt.Errorf("list scenario approvals: %w", err)
@@ -351,7 +351,7 @@ func approvePendingActions(ctx context.Context, processor *controller.PlanProces
 		printer.printf("[approval] SIMULATOR AUTO-APPROVE action=%s tool=%s risk=%s digest=%s\n",
 			request.ActionID, request.ToolName, request.Risk, request.ActionDigest)
 		_, err := processor.Approve(ctx, controller.ApprovalRequest{
-			PlanID: request.PlanID, ActionID: request.ActionID, ActionDigest: request.ActionDigest,
+			IntentID: request.IntentID, ActionID: request.ActionID, ActionDigest: request.ActionDigest,
 			Approver: "talon-scenario-runner", Reason: "explicit automatic approval for isolated Simulator execution",
 		})
 		if err != nil {
@@ -380,13 +380,13 @@ func printSummary(printer *safePrinter, result Result) {
 	snapshot := result.Controller.Snapshot
 	printer.printf("[result] reason=%s state=%s advances=%d transitions=%d\n",
 		result.Controller.Reason, snapshot.State, result.Controller.Advances, len(snapshot.History))
-	if snapshot.Plan != nil {
+	if snapshot.ExecutionIntent != nil {
 		actionCount := 0
-		for _, stage := range snapshot.Plan.Stages {
+		for _, stage := range snapshot.ExecutionIntent.Stages {
 			actionCount += len(stage.Actions)
 		}
-		printer.printf("[plan] id=%s root_cause=%s stages=%d actions=%d\n",
-			snapshot.Plan.ID, snapshot.Plan.RootCause, len(snapshot.Plan.Stages), actionCount)
+		printer.printf("[intent] id=%s root_cause=%s stages=%d actions=%d\n",
+			snapshot.ExecutionIntent.ID, snapshot.ExecutionIntent.RootCause, len(snapshot.ExecutionIntent.Stages), actionCount)
 	}
 	routeIDs := make([]string, 0, len(result.World.Routes))
 	for id := range result.World.Routes {

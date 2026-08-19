@@ -9,7 +9,7 @@ import (
 )
 
 func TestDynamicStageResolvesTypedOutputBeforeNextActionValidation(t *testing.T) {
-	instance, submission := submitDynamicRoutePlan(t, ActionOutputString)
+	instance, submission := submitDynamicRouteIntent(t, ActionOutputString)
 	first := resolveAndCompleteFirstDynamicStage(t, instance, submission, map[string]any{
 		"route": map[string]any{"id": "route-new"},
 	})
@@ -19,7 +19,7 @@ func TestDynamicStageResolvesTypedOutputBeforeNextActionValidation(t *testing.T)
 	require.NoError(t, err)
 	assert.Equal(t, CheckpointContinue, checkpoint.Decision)
 	assert.Equal(t, "probe", checkpoint.NextStageID)
-	assert.Equal(t, StatePlanned, instance.Snapshot().State)
+	assert.Equal(t, StateValidating, instance.Snapshot().State)
 
 	resolved, err := instance.ResolveCurrentStage()
 	require.NoError(t, err)
@@ -32,7 +32,7 @@ func TestDynamicStageResolvesTypedOutputBeforeNextActionValidation(t *testing.T)
 }
 
 func TestDynamicStageMissingRequiredOutputFailsBeforeDryRun(t *testing.T) {
-	instance, submission := submitDynamicRoutePlan(t, ActionOutputString)
+	instance, submission := submitDynamicRouteIntent(t, ActionOutputString)
 	resolveAndCompleteFirstDynamicStage(t, instance, submission, map[string]any{"route": map[string]any{}})
 	_, err := instance.EvaluateCheckpoint()
 	require.NoError(t, err)
@@ -41,7 +41,7 @@ func TestDynamicStageMissingRequiredOutputFailsBeforeDryRun(t *testing.T) {
 	require.ErrorContains(t, err, "required_output_field_missing")
 	snapshot := instance.Snapshot()
 	assert.Equal(t, StateInvestigating, snapshot.State)
-	require.Empty(t, snapshot.PlanDryRuns)
+	require.Empty(t, snapshot.ActionDryRuns)
 	require.NotEmpty(t, snapshot.Failures)
 	assert.Equal(t, FailureStageArgumentResolution, snapshot.Failures[len(snapshot.Failures)-1].Stage)
 	assert.Equal(t, "required_output_field_missing", snapshot.Failures[len(snapshot.Failures)-1].Code)
@@ -50,7 +50,7 @@ func TestDynamicStageMissingRequiredOutputFailsBeforeDryRun(t *testing.T) {
 }
 
 func TestDynamicStageOutputTypeMismatchFailsClosed(t *testing.T) {
-	instance, submission := submitDynamicRoutePlan(t, ActionOutputString)
+	instance, submission := submitDynamicRouteIntent(t, ActionOutputString)
 	resolveAndCompleteFirstDynamicStage(t, instance, submission, map[string]any{
 		"route": map[string]any{"id": float64(42)},
 	})
@@ -61,7 +61,7 @@ func TestDynamicStageOutputTypeMismatchFailsClosed(t *testing.T) {
 	require.ErrorContains(t, err, "action_output_type_mismatch")
 	snapshot := instance.Snapshot()
 	assert.Equal(t, StateInvestigating, snapshot.State)
-	require.Empty(t, snapshot.PlanDryRuns)
+	require.Empty(t, snapshot.ActionDryRuns)
 	assert.Equal(t, "action_output_type_mismatch", snapshot.Failures[len(snapshot.Failures)-1].Code)
 }
 
@@ -70,10 +70,10 @@ func TestCheckpointOperationStatusUsesActionResultEnvelope(t *testing.T) {
 	require.NoError(t, err)
 	_, err = instance.Apply(Event{Type: EventStartInvestigation, Actor: ActorController})
 	require.NoError(t, err)
-	submission, err := instance.SubmitPlan(PlanDraft{
+	submission, err := instance.SubmitExecutionIntent(ExecutionIntentDraft{
 		Summary: "verify operation status", RootCause: "confirmed", EvidenceRefs: []string{"evidence:status"},
-		Stages: []PlanStageDraft{{
-			StageID: "verify", Goal: "verify", Actions: []PlannedAction{{Key: "verify-action", ToolName: "verify"}},
+		Stages: []ExecutionStageDraft{{
+			StageID: "verify", Goal: "verify", Actions: []IntendedAction{{Key: "verify-action", ToolName: "verify"}},
 			CheckpointPolicy: CheckpointPolicy{Rules: []CheckpointRule{{
 				SourceActionID: "verify-action", OutputPath: "operation_status", Equals: "succeeded", Decision: CheckpointSucceeded,
 			}}, DefaultDecision: CheckpointNeedsAgent},
@@ -82,10 +82,10 @@ func TestCheckpointOperationStatusUsesActionResultEnvelope(t *testing.T) {
 	require.NoError(t, err)
 	resolved, err := instance.ResolveCurrentStage()
 	require.NoError(t, err)
-	_, err = instance.Apply(Event{Type: EventPlanApproved, Actor: ActorWorkflow})
+	_, err = instance.Apply(Event{Type: EventExecutionAuthorized, Actor: ActorWorkflow})
 	require.NoError(t, err)
 	_, err = instance.RecordActionResult(ActionResult{
-		PlanID: submission.Plan.ID, StageID: "verify", ActionID: resolved[0].ActionID,
+		IntentID: submission.ExecutionIntent.ID, StageID: "verify", ActionID: resolved[0].ActionID,
 		ActionDigest: resolved[0].Digest, OperationID: "operation", OperationStatus: "succeeded",
 		Output: map[string]any{"status": "failed"},
 	})
@@ -103,10 +103,10 @@ func TestCheckpointRejectsAmbiguousLegacyStatusPath(t *testing.T) {
 	require.NoError(t, err)
 	_, err = instance.Apply(Event{Type: EventStartInvestigation, Actor: ActorController})
 	require.NoError(t, err)
-	_, err = instance.SubmitPlan(PlanDraft{
+	_, err = instance.SubmitExecutionIntent(ExecutionIntentDraft{
 		Summary: "legacy status", RootCause: "confirmed", EvidenceRefs: []string{"evidence:status"},
-		Stages: []PlanStageDraft{{
-			StageID: "verify", Goal: "verify", Actions: []PlannedAction{{Key: "verify-action", ToolName: "verify"}},
+		Stages: []ExecutionStageDraft{{
+			StageID: "verify", Goal: "verify", Actions: []IntendedAction{{Key: "verify-action", ToolName: "verify"}},
 			CheckpointPolicy: CheckpointPolicy{Rules: []CheckpointRule{{
 				SourceActionID: "verify-action", OutputPath: "status", Equals: "succeeded", Decision: CheckpointSucceeded,
 			}}},
@@ -123,10 +123,10 @@ func TestCheckpointRejectsComparisonTypeMismatch(t *testing.T) {
 			require.NoError(t, err)
 			_, err = instance.Apply(Event{Type: EventStartInvestigation, Actor: ActorController})
 			require.NoError(t, err)
-			_, err = instance.SubmitPlan(PlanDraft{
+			_, err = instance.SubmitExecutionIntent(ExecutionIntentDraft{
 				Summary: "typed checkpoint", RootCause: "confirmed", EvidenceRefs: []string{"evidence:type"},
-				Stages: []PlanStageDraft{{
-					StageID: "verify", Goal: "verify", Actions: []PlannedAction{{Key: "verify-action", ToolName: "verify"}},
+				Stages: []ExecutionStageDraft{{
+					StageID: "verify", Goal: "verify", Actions: []IntendedAction{{Key: "verify-action", ToolName: "verify"}},
 					CheckpointPolicy: CheckpointPolicy{Rules: []CheckpointRule{{
 						SourceActionID: "verify-action", OutputPath: path, Equals: true, Decision: CheckpointSucceeded,
 					}}},
@@ -138,7 +138,7 @@ func TestCheckpointRejectsComparisonTypeMismatch(t *testing.T) {
 	}
 }
 
-func TestDynamicPlanRejectsContinueFromFinalStage(t *testing.T) {
+func TestDynamicIntentRejectsContinueFromFinalStage(t *testing.T) {
 	tests := []struct {
 		name   string
 		policy CheckpointPolicy
@@ -154,10 +154,10 @@ func TestDynamicPlanRejectsContinueFromFinalStage(t *testing.T) {
 			require.NoError(t, err)
 			_, err = instance.Apply(Event{Type: EventStartInvestigation, Actor: ActorController})
 			require.NoError(t, err)
-			_, err = instance.SubmitPlan(PlanDraft{
+			_, err = instance.SubmitExecutionIntent(ExecutionIntentDraft{
 				Summary: "recover", RootCause: "confirmed", EvidenceRefs: []string{"evidence:recover"},
-				Stages: []PlanStageDraft{{
-					StageID: "recover", Goal: "recover", Actions: []PlannedAction{{Key: "recover-action", ToolName: "request_recovery"}},
+				Stages: []ExecutionStageDraft{{
+					StageID: "recover", Goal: "recover", Actions: []IntendedAction{{Key: "recover-action", ToolName: "request_recovery"}},
 					CheckpointPolicy: test.policy,
 				}},
 			})
@@ -167,7 +167,7 @@ func TestDynamicPlanRejectsContinueFromFinalStage(t *testing.T) {
 	}
 }
 
-func TestDynamicPlanRequiresFailClosedProbeCheckpoint(t *testing.T) {
+func TestDynamicIntentRequiresFailClosedProbeCheckpoint(t *testing.T) {
 	healthyRule := CheckpointRule{
 		SourceActionID: "probe-action", OutputPath: "output.outcome", Equals: "healthy",
 		Decision: CheckpointContinue, NextStageID: "recover",
@@ -199,13 +199,13 @@ func TestDynamicPlanRequiresFailClosedProbeCheckpoint(t *testing.T) {
 			require.NoError(t, err)
 			_, err = instance.Apply(Event{Type: EventStartInvestigation, Actor: ActorController})
 			require.NoError(t, err)
-			_, err = instance.SubmitPlan(PlanDraft{
+			_, err = instance.SubmitExecutionIntent(ExecutionIntentDraft{
 				Summary: "probe then recover", RootCause: "confirmed", EvidenceRefs: []string{"evidence:probe"},
-				Stages: []PlanStageDraft{
-					{StageID: "probe", Goal: "verify", Actions: []PlannedAction{{
+				Stages: []ExecutionStageDraft{
+					{StageID: "probe", Goal: "verify", Actions: []IntendedAction{{
 						Key: "probe-action", Kind: ActionKindProbe, ToolName: "request_probe",
 					}}, CheckpointPolicy: test.policy},
-					{StageID: "recover", Goal: "recover", Actions: []PlannedAction{{Key: "recover-action", ToolName: "request_recovery"}},
+					{StageID: "recover", Goal: "recover", Actions: []IntendedAction{{Key: "recover-action", ToolName: "request_recovery"}},
 						CheckpointPolicy: CheckpointPolicy{DefaultDecision: CheckpointSucceeded}},
 				},
 			})
@@ -219,21 +219,21 @@ func TestDynamicPlanRequiresFailClosedProbeCheckpoint(t *testing.T) {
 	}
 }
 
-func TestDynamicPlanRequiresRecoveryImmediatelyAfterProbe(t *testing.T) {
+func TestDynamicIntentRequiresRecoveryImmediatelyAfterProbe(t *testing.T) {
 	instance, err := NewIncidentWorkflow(Config{IncidentID: "probe-without-recovery"})
 	require.NoError(t, err)
 	_, err = instance.Apply(Event{Type: EventStartInvestigation, Actor: ActorController})
 	require.NoError(t, err)
-	_, err = instance.SubmitPlan(PlanDraft{
+	_, err = instance.SubmitExecutionIntent(ExecutionIntentDraft{
 		Summary: "probe without recovery", RootCause: "confirmed", EvidenceRefs: []string{"evidence:probe"},
-		Stages: []PlanStageDraft{
-			{StageID: "probe", Goal: "verify", Actions: []PlannedAction{{
+		Stages: []ExecutionStageDraft{
+			{StageID: "probe", Goal: "verify", Actions: []IntendedAction{{
 				Key: "probe-action", Kind: ActionKindProbe, ToolName: "request_probe",
 			}}, CheckpointPolicy: CheckpointPolicy{Rules: []CheckpointRule{{
 				SourceActionID: "probe-action", OutputPath: "output.outcome", Equals: "healthy",
 				Decision: CheckpointContinue, NextStageID: "observe",
 			}}, DefaultDecision: CheckpointNeedsAgent}},
-			{StageID: "observe", Goal: "observe", Actions: []PlannedAction{{Key: "observe-action", ToolName: "observe"}},
+			{StageID: "observe", Goal: "observe", Actions: []IntendedAction{{Key: "observe-action", ToolName: "observe"}},
 				CheckpointPolicy: CheckpointPolicy{DefaultDecision: CheckpointSucceeded}},
 		},
 	})
@@ -250,17 +250,17 @@ func TestDecisionCheckpointSupportsTerminalDecisions(t *testing.T) {
 			require.NoError(t, err)
 			_, err = instance.Apply(Event{Type: EventStartInvestigation, Actor: ActorController})
 			require.NoError(t, err)
-			submission, err := instance.SubmitPlan(PlanDraft{
+			submission, err := instance.SubmitExecutionIntent(ExecutionIntentDraft{
 				Summary: "checkpoint", RootCause: "confirmed", EvidenceRefs: []string{"evidence:1"},
-				Stages: []PlanStageDraft{{StageID: "only", Goal: "run", Actions: []PlannedAction{{Key: "run", ToolName: "run"}},
+				Stages: []ExecutionStageDraft{{StageID: "only", Goal: "run", Actions: []IntendedAction{{Key: "run", ToolName: "run"}},
 					CheckpointPolicy: CheckpointPolicy{DefaultDecision: decision, DefaultReason: "test decision"}}},
 			})
 			require.NoError(t, err)
 			resolved, err := instance.ResolveCurrentStage()
 			require.NoError(t, err)
-			_, err = instance.Apply(Event{Type: EventPlanApproved, Actor: ActorWorkflow})
+			_, err = instance.Apply(Event{Type: EventExecutionAuthorized, Actor: ActorWorkflow})
 			require.NoError(t, err)
-			_, err = instance.RecordActionResult(ActionResult{PlanID: submission.Plan.ID, StageID: "only",
+			_, err = instance.RecordActionResult(ActionResult{IntentID: submission.ExecutionIntent.ID, StageID: "only",
 				ActionID: resolved[0].ActionID, ActionDigest: resolved[0].Digest, OperationID: "operation",
 				OperationStatus: "succeeded", Output: map[string]any{"outcome": "done"}})
 			require.NoError(t, err)
@@ -280,15 +280,15 @@ func TestDecisionCheckpointSupportsTerminalDecisions(t *testing.T) {
 }
 
 func TestDynamicExecutionLimitsStopStageAndAgentResumeLoops(t *testing.T) {
-	t.Run("max stages rejects oversized plan", func(t *testing.T) {
+	t.Run("max stages rejects oversized intent", func(t *testing.T) {
 		instance, err := NewIncidentWorkflow(Config{IncidentID: "stage-limit", Limits: ExecutionLimits{MaxStages: 1, MaxAgentResumes: 1, MaxActions: 4}})
 		require.NoError(t, err)
 		_, err = instance.Apply(Event{Type: EventStartInvestigation, Actor: ActorController})
 		require.NoError(t, err)
-		_, err = instance.SubmitPlan(PlanDraft{Summary: "too many", RootCause: "confirmed", EvidenceRefs: []string{"evidence"},
-			Stages: []PlanStageDraft{
-				{StageID: "one", Goal: "one", Actions: []PlannedAction{{Key: "one", ToolName: "one"}}},
-				{StageID: "two", Goal: "two", Actions: []PlannedAction{{Key: "two", ToolName: "two"}}},
+		_, err = instance.SubmitExecutionIntent(ExecutionIntentDraft{Summary: "too many", RootCause: "confirmed", EvidenceRefs: []string{"evidence"},
+			Stages: []ExecutionStageDraft{
+				{StageID: "one", Goal: "one", Actions: []IntendedAction{{Key: "one", ToolName: "one"}}},
+				{StageID: "two", Goal: "two", Actions: []IntendedAction{{Key: "two", ToolName: "two"}}},
 			}})
 		require.ErrorContains(t, err, "exceeding max_stages 1")
 		assert.Equal(t, StateInvestigating, instance.Snapshot().State)
@@ -300,30 +300,30 @@ func TestDynamicExecutionLimitsStopStageAndAgentResumeLoops(t *testing.T) {
 		_, err = instance.Apply(Event{Type: EventStartInvestigation, Actor: ActorController})
 		require.NoError(t, err)
 		first := submitOneStageNeedsAgent(t, instance, "first")
-		firstCheckpoint := completeOneStagePlan(t, instance, first)
+		firstCheckpoint := completeOneStageIntent(t, instance, first)
 		assert.Equal(t, CheckpointNeedsAgent, firstCheckpoint.Decision)
 		assert.Equal(t, StateInvestigating, instance.Snapshot().State)
 
 		second := submitOneStageNeedsAgent(t, instance, "second")
-		secondCheckpoint := completeOneStagePlan(t, instance, second)
+		secondCheckpoint := completeOneStageIntent(t, instance, second)
 		assert.Equal(t, CheckpointFailed, secondCheckpoint.Decision)
 		assert.Contains(t, secondCheckpoint.DecisionReason, "maximum agent resume count")
 		assert.Equal(t, StateFailed, instance.Snapshot().State)
 	})
 }
 
-func submitDynamicRoutePlan(t *testing.T, expectedType ActionOutputType) (*IncidentWorkflow, PlanSubmission) {
+func submitDynamicRouteIntent(t *testing.T, expectedType ActionOutputType) (*IncidentWorkflow, ExecutionIntentSubmission) {
 	t.Helper()
 	instance, err := NewIncidentWorkflow(Config{IncidentID: "dynamic-route"})
 	require.NoError(t, err)
 	_, err = instance.Apply(Event{Type: EventStartInvestigation, Actor: ActorController})
 	require.NoError(t, err)
-	submission, err := instance.SubmitPlan(PlanDraft{
+	submission, err := instance.SubmitExecutionIntent(ExecutionIntentDraft{
 		Summary: "refresh and probe route", RootCause: "stale route", EvidenceRefs: []string{"trace:route"},
-		Stages: []PlanStageDraft{
-			{StageID: "refresh", Goal: "refresh route", Actions: []PlannedAction{{Key: "refresh-route", ToolName: "refresh_route"}},
+		Stages: []ExecutionStageDraft{
+			{StageID: "refresh", Goal: "refresh route", Actions: []IntendedAction{{Key: "refresh-route", ToolName: "refresh_route"}},
 				CheckpointPolicy: CheckpointPolicy{DefaultDecision: CheckpointContinue, DefaultReason: "route refreshed"}},
-			{StageID: "probe", Goal: "probe route", Actions: []PlannedAction{{Key: "probe-route", ToolName: "probe_route",
+			{StageID: "probe", Goal: "probe route", Actions: []IntendedAction{{Key: "probe-route", ToolName: "probe_route",
 				ArgumentReferences: map[string]ActionOutputReference{"route_id": {
 					SourceActionID: "refresh-route", OutputPath: "output.route.id", ExpectedType: expectedType, Required: true,
 				}}}}, CheckpointPolicy: CheckpointPolicy{DefaultDecision: CheckpointSucceeded}},
@@ -333,15 +333,15 @@ func submitDynamicRoutePlan(t *testing.T, expectedType ActionOutputType) (*Incid
 	return instance, submission
 }
 
-func resolveAndCompleteFirstDynamicStage(t *testing.T, instance *IncidentWorkflow, submission PlanSubmission, output map[string]any) ActionResult {
+func resolveAndCompleteFirstDynamicStage(t *testing.T, instance *IncidentWorkflow, submission ExecutionIntentSubmission, output map[string]any) ActionResult {
 	t.Helper()
 	resolved, err := instance.ResolveCurrentStage()
 	require.NoError(t, err)
 	require.Len(t, resolved, 1)
-	_, err = instance.Apply(Event{Type: EventPlanApproved, Actor: ActorWorkflow})
+	_, err = instance.Apply(Event{Type: EventExecutionAuthorized, Actor: ActorWorkflow})
 	require.NoError(t, err)
 	result, err := instance.RecordActionResult(ActionResult{
-		PlanID: submission.Plan.ID, StageID: "refresh", ActionID: resolved[0].ActionID,
+		IntentID: submission.ExecutionIntent.ID, StageID: "refresh", ActionID: resolved[0].ActionID,
 		ActionDigest: resolved[0].Digest, OperationID: "refresh-operation", OperationStatus: "succeeded", Output: output,
 	})
 	require.NoError(t, err)
@@ -350,23 +350,23 @@ func resolveAndCompleteFirstDynamicStage(t *testing.T, instance *IncidentWorkflo
 	return result
 }
 
-func submitOneStageNeedsAgent(t *testing.T, instance *IncidentWorkflow, id string) PlanSubmission {
+func submitOneStageNeedsAgent(t *testing.T, instance *IncidentWorkflow, id string) ExecutionIntentSubmission {
 	t.Helper()
-	submission, err := instance.SubmitPlan(PlanDraft{Summary: id, RootCause: "confirmed", EvidenceRefs: []string{"evidence:" + id},
-		Stages: []PlanStageDraft{{StageID: id, Goal: id, Actions: []PlannedAction{{Key: id, ToolName: id}},
+	submission, err := instance.SubmitExecutionIntent(ExecutionIntentDraft{Summary: id, RootCause: "confirmed", EvidenceRefs: []string{"evidence:" + id},
+		Stages: []ExecutionStageDraft{{StageID: id, Goal: id, Actions: []IntendedAction{{Key: id, ToolName: id}},
 			CheckpointPolicy: CheckpointPolicy{DefaultDecision: CheckpointNeedsAgent, DefaultReason: "need semantic judgment"}}}})
 	require.NoError(t, err)
 	return submission
 }
 
-func completeOneStagePlan(t *testing.T, instance *IncidentWorkflow, submission PlanSubmission) DecisionCheckpoint {
+func completeOneStageIntent(t *testing.T, instance *IncidentWorkflow, submission ExecutionIntentSubmission) DecisionCheckpoint {
 	t.Helper()
 	resolved, err := instance.ResolveCurrentStage()
 	require.NoError(t, err)
-	_, err = instance.Apply(Event{Type: EventPlanApproved, Actor: ActorWorkflow})
+	_, err = instance.Apply(Event{Type: EventExecutionAuthorized, Actor: ActorWorkflow})
 	require.NoError(t, err)
-	_, err = instance.RecordActionResult(ActionResult{PlanID: submission.Plan.ID, StageID: submission.Plan.Stages[0].StageID,
-		ActionID: resolved[0].ActionID, ActionDigest: resolved[0].Digest, OperationID: "operation-" + submission.Plan.ID,
+	_, err = instance.RecordActionResult(ActionResult{IntentID: submission.ExecutionIntent.ID, StageID: submission.ExecutionIntent.Stages[0].StageID,
+		ActionID: resolved[0].ActionID, ActionDigest: resolved[0].Digest, OperationID: "operation-" + submission.ExecutionIntent.ID,
 		OperationStatus: "succeeded", Output: map[string]any{"outcome": "unknown"}})
 	require.NoError(t, err)
 	_, err = instance.CompleteCurrentStage("done")

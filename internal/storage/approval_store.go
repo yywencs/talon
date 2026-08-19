@@ -38,19 +38,19 @@ func (s *sqlApprovalStore) Create(ctx context.Context, request approval.Request)
 		request.RequestedAt = s.now().UTC()
 	}
 	query := `INSERT INTO approval_requests (
-    id, incident_id, plan_id, action_id, action_digest, dry_run_operation_id,
+    id, incident_id, intent_id, action_id, action_digest, dry_run_operation_id,
     tool_name, arguments_json, risk, policy_reason, status, requested_at_unix_ns
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
 ON CONFLICT DO NOTHING`
 	if s.driver == DriverPostgres {
 		query = `INSERT INTO approval_requests (
-    id, incident_id, plan_id, action_id, action_digest, dry_run_operation_id,
+    id, incident_id, intent_id, action_id, action_digest, dry_run_operation_id,
     tool_name, arguments_json, risk, policy_reason, status, requested_at_unix_ns
 ) VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS JSONB), ?, ?, 'pending', ?)
 ON CONFLICT DO NOTHING`
 	}
 	_, err = s.db.ExecContext(ctx, s.bind(query),
-		request.ID, request.IncidentID, request.PlanID, request.ActionID, request.ActionDigest,
+		request.ID, request.IncidentID, request.IntentID, request.ActionID, request.ActionDigest,
 		request.DryRunOperationID, request.ToolName, string(arguments), request.Risk,
 		request.PolicyReason, request.RequestedAt.UnixNano(),
 	)
@@ -99,9 +99,9 @@ func (s *sqlApprovalStore) Decide(ctx context.Context, decision approval.Decisio
 	decidedAt := s.now().UTC()
 	result, err := s.db.ExecContext(ctx, s.bind(`UPDATE approval_requests
 SET status = ?, decided_at_unix_ns = ?, decided_by = ?, decision_reason = ?
-WHERE id = ? AND plan_id = ? AND action_id = ? AND action_digest = ? AND status = 'pending'`),
+WHERE id = ? AND intent_id = ? AND action_id = ? AND action_digest = ? AND status = 'pending'`),
 		decision.Status, decidedAt.UnixNano(), decision.DecidedBy, decision.DecisionReason,
-		decision.ID, decision.PlanID, decision.ActionID, decision.ActionDigest,
+		decision.ID, decision.IntentID, decision.ActionID, decision.ActionDigest,
 	)
 	if err != nil {
 		return approval.Request{}, fmt.Errorf("decide approval request: %w", err)
@@ -117,7 +117,7 @@ WHERE id = ? AND plan_id = ? AND action_id = ? AND action_digest = ? AND status 
 	if affected == 1 {
 		return persisted, nil
 	}
-	if persisted.PlanID != decision.PlanID || persisted.ActionID != decision.ActionID || persisted.ActionDigest != decision.ActionDigest {
+	if persisted.IntentID != decision.IntentID || persisted.ActionID != decision.ActionID || persisted.ActionDigest != decision.ActionDigest {
 		return approval.Request{}, fmt.Errorf("%w: approval decision does not match persisted action", approval.ErrConflict)
 	}
 	if persisted.Status == decision.Status && persisted.DecidedBy == decision.DecidedBy && persisted.DecisionReason == decision.DecisionReason {
@@ -146,7 +146,7 @@ func bindPostgres(query string) string {
 }
 
 const selectApproval = `SELECT
-    id, incident_id, plan_id, action_id, action_digest, dry_run_operation_id,
+    id, incident_id, intent_id, action_id, action_digest, dry_run_operation_id,
     tool_name, arguments_json, risk, policy_reason, status, requested_at_unix_ns,
     decided_at_unix_ns, decided_by, decision_reason
 FROM approval_requests`
@@ -161,7 +161,7 @@ func scanApproval(row scanner) (approval.Request, error) {
 	var requestedAt int64
 	var decidedAt sql.NullInt64
 	if err := row.Scan(
-		&item.ID, &item.IncidentID, &item.PlanID, &item.ActionID, &item.ActionDigest,
+		&item.ID, &item.IncidentID, &item.IntentID, &item.ActionID, &item.ActionDigest,
 		&item.DryRunOperationID, &item.ToolName, &arguments, &item.Risk, &item.PolicyReason,
 		&item.Status, &requestedAt, &decidedAt, &item.DecidedBy, &item.DecisionReason,
 	); err != nil {
@@ -183,7 +183,7 @@ func scanApproval(row scanner) (approval.Request, error) {
 
 func validateApprovalCreate(value approval.Request) error {
 	for field, content := range map[string]string{
-		"id": value.ID, "incident_id": value.IncidentID, "plan_id": value.PlanID,
+		"id": value.ID, "incident_id": value.IncidentID, "intent_id": value.IntentID,
 		"action_id": value.ActionID, "action_digest": value.ActionDigest,
 		"dry_run_operation_id": value.DryRunOperationID, "tool_name": value.ToolName, "risk": value.Risk,
 	} {
@@ -196,7 +196,7 @@ func validateApprovalCreate(value approval.Request) error {
 
 func validateApprovalDecision(value approval.Decision) error {
 	for field, content := range map[string]string{
-		"id": value.ID, "plan_id": value.PlanID, "action_id": value.ActionID,
+		"id": value.ID, "intent_id": value.IntentID, "action_id": value.ActionID,
 		"action_digest": value.ActionDigest, "decided_by": value.DecidedBy,
 	} {
 		if strings.TrimSpace(content) == "" {
@@ -214,7 +214,7 @@ func validateApprovalDecision(value approval.Decision) error {
 
 func sameImmutableApproval(persisted, submitted approval.Request, submittedArguments string) bool {
 	persistedArguments, err := json.Marshal(persisted.Arguments)
-	return err == nil && persisted.IncidentID == submitted.IncidentID && persisted.PlanID == submitted.PlanID &&
+	return err == nil && persisted.IncidentID == submitted.IncidentID && persisted.IntentID == submitted.IntentID &&
 		persisted.ActionID == submitted.ActionID && persisted.ActionDigest == submitted.ActionDigest &&
 		persisted.DryRunOperationID == submitted.DryRunOperationID && persisted.ToolName == submitted.ToolName &&
 		string(persistedArguments) == submittedArguments && persisted.Risk == submitted.Risk &&

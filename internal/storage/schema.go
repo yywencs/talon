@@ -11,7 +11,7 @@ var sqliteSchema = []string{
 	`CREATE TABLE IF NOT EXISTS approval_requests (
     id                    TEXT PRIMARY KEY,
     incident_id           TEXT NOT NULL,
-    plan_id               TEXT NOT NULL,
+    intent_id             TEXT NOT NULL,
     action_id             TEXT NOT NULL,
     action_digest         TEXT NOT NULL,
     dry_run_operation_id  TEXT NOT NULL,
@@ -24,14 +24,15 @@ var sqliteSchema = []string{
     decided_at_unix_ns    INTEGER,
     decided_by            TEXT NOT NULL DEFAULT '',
     decision_reason       TEXT NOT NULL DEFAULT '',
-    UNIQUE (plan_id, action_id)
+    UNIQUE (intent_id, action_id)
 )`,
+	`ALTER TABLE approval_requests RENAME COLUMN plan_id TO intent_id`,
 	`CREATE INDEX IF NOT EXISTS idx_approval_requests_pending
     ON approval_requests(status, requested_at_unix_ns, id)`,
 	`CREATE TABLE IF NOT EXISTS action_executions (
     action_id             TEXT PRIMARY KEY,
     incident_id           TEXT NOT NULL,
-    plan_id               TEXT NOT NULL,
+    intent_id             TEXT NOT NULL,
     action_digest         TEXT NOT NULL,
     sequence_no           INTEGER NOT NULL CHECK (sequence_no > 0),
     tool_name             TEXT NOT NULL,
@@ -48,15 +49,17 @@ var sqliteSchema = []string{
     created_at_unix_ns    INTEGER NOT NULL,
     updated_at_unix_ns    INTEGER NOT NULL,
     finished_at_unix_ns   INTEGER,
-    UNIQUE (plan_id, sequence_no)
+    UNIQUE (intent_id, sequence_no)
 )`,
+	`ALTER TABLE action_executions RENAME COLUMN plan_id TO intent_id`,
 	`ALTER TABLE action_executions ADD COLUMN next_poll_at_unix_ns INTEGER`,
 	`ALTER TABLE action_executions ADD COLUMN operation_deadline_unix_ns INTEGER`,
 	`DROP INDEX IF EXISTS idx_action_executions_next`,
+	`DROP INDEX IF EXISTS idx_action_executions_one_active_plan`,
 	`CREATE INDEX idx_action_executions_next
-    ON action_executions(plan_id, next_poll_at_unix_ns, sequence_no, status)`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS idx_action_executions_one_active_plan
-    ON action_executions(plan_id)
+    ON action_executions(intent_id, next_poll_at_unix_ns, sequence_no, status)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_action_executions_one_active_intent
+    ON action_executions(intent_id)
     WHERE status IN ('running', 'unknown')`,
 	`CREATE TABLE IF NOT EXISTS run_artifacts (
     run_id          TEXT PRIMARY KEY,
@@ -81,7 +84,7 @@ var postgresSchema = []string{
 	`CREATE TABLE IF NOT EXISTS approval_requests (
     id                    TEXT PRIMARY KEY,
     incident_id           TEXT NOT NULL,
-    plan_id               TEXT NOT NULL,
+    intent_id             TEXT NOT NULL,
     action_id             TEXT NOT NULL,
     action_digest         TEXT NOT NULL,
     dry_run_operation_id  TEXT NOT NULL,
@@ -94,15 +97,27 @@ var postgresSchema = []string{
     decided_at_unix_ns    BIGINT,
     decided_by            TEXT NOT NULL DEFAULT '',
     decision_reason       TEXT NOT NULL DEFAULT '',
-    UNIQUE (plan_id, action_id)
+    UNIQUE (intent_id, action_id)
 )`,
+	`DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'approval_requests' AND column_name = 'plan_id'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'approval_requests' AND column_name = 'intent_id'
+    ) THEN
+        ALTER TABLE approval_requests RENAME COLUMN plan_id TO intent_id;
+    END IF;
+END $$`,
 	`CREATE INDEX IF NOT EXISTS idx_approval_requests_pending
     ON approval_requests(requested_at_unix_ns, id)
     WHERE status = 'pending'`,
 	`CREATE TABLE IF NOT EXISTS action_executions (
     action_id             TEXT PRIMARY KEY,
     incident_id           TEXT NOT NULL,
-    plan_id               TEXT NOT NULL,
+    intent_id             TEXT NOT NULL,
     action_digest         TEXT NOT NULL,
     sequence_no           INTEGER NOT NULL CHECK (sequence_no > 0),
     tool_name             TEXT NOT NULL,
@@ -119,15 +134,28 @@ var postgresSchema = []string{
     created_at_unix_ns    BIGINT NOT NULL,
     updated_at_unix_ns    BIGINT NOT NULL,
     finished_at_unix_ns   BIGINT,
-    UNIQUE (plan_id, sequence_no)
+    UNIQUE (intent_id, sequence_no)
 )`,
+	`DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'action_executions' AND column_name = 'plan_id'
+    ) AND NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'action_executions' AND column_name = 'intent_id'
+    ) THEN
+        ALTER TABLE action_executions RENAME COLUMN plan_id TO intent_id;
+    END IF;
+END $$`,
 	`ALTER TABLE action_executions ADD COLUMN IF NOT EXISTS next_poll_at_unix_ns BIGINT`,
 	`ALTER TABLE action_executions ADD COLUMN IF NOT EXISTS operation_deadline_unix_ns BIGINT`,
 	`DROP INDEX IF EXISTS idx_action_executions_next`,
+	`DROP INDEX IF EXISTS idx_action_executions_one_active_plan`,
 	`CREATE INDEX idx_action_executions_next
-    ON action_executions(plan_id, next_poll_at_unix_ns, sequence_no, status)`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS idx_action_executions_one_active_plan
-    ON action_executions(plan_id)
+    ON action_executions(intent_id, next_poll_at_unix_ns, sequence_no, status)`,
+	`CREATE UNIQUE INDEX IF NOT EXISTS idx_action_executions_one_active_intent
+    ON action_executions(intent_id)
     WHERE status IN ('running', 'unknown')`,
 	`CREATE TABLE IF NOT EXISTS run_artifacts (
     run_id          UUID PRIMARY KEY,
@@ -162,9 +190,16 @@ func migrate(ctx context.Context, db *sql.DB, driver Driver) error {
 	defer func() { _ = tx.Rollback() }()
 	for _, statement := range statements {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			if driver == DriverSQLite && strings.HasPrefix(statement, "ALTER TABLE action_executions ADD COLUMN") &&
-				strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
-				continue
+			if driver == DriverSQLite {
+				message := strings.ToLower(err.Error())
+				if strings.HasPrefix(statement, "ALTER TABLE action_executions ADD COLUMN") &&
+					strings.Contains(message, "duplicate column name") {
+					continue
+				}
+				if strings.Contains(statement, "RENAME COLUMN plan_id TO intent_id") &&
+					strings.Contains(message, "no such column") {
+					continue
+				}
 			}
 			return fmt.Errorf("migrate %s storage: %w", driver, err)
 		}

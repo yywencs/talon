@@ -9,9 +9,9 @@ type State string
 const (
 	StateProtected        State = "protected"
 	StateInvestigating    State = "investigating"
-	StatePlanned          State = "planned"
+	StateValidating       State = "validating"
 	StateAwaitingApproval State = "awaiting_approval"
-	StateRemediating      State = "remediating"
+	StateExecuting        State = "executing"
 	StateResolved         State = "resolved"
 	StateEscalated        State = "escalated"
 	StateCheckpoint       State = "checkpoint"
@@ -22,9 +22,9 @@ const (
 var validStates = map[State]struct{}{
 	StateProtected:        {},
 	StateInvestigating:    {},
-	StatePlanned:          {},
+	StateValidating:       {},
 	StateAwaitingApproval: {},
-	StateRemediating:      {},
+	StateExecuting:        {},
 	StateResolved:         {},
 	StateEscalated:        {},
 	StateCheckpoint:       {},
