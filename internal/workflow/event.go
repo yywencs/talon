@@ -19,13 +19,24 @@ const (
 	// EventExecutionIntentRejected 表示 ExecutionIntent 被 Policy 或人工拒绝，需要 Agent 基于当前证据重新决策。
 	EventExecutionIntentRejected EventType = "execution_intent_rejected"
 	// EventStageCheckpoint 表示动态 Stage 已执行完成，必须先做确定性决策。
-	EventStageCheckpoint      EventType = "stage_checkpoint"
-	EventCheckpointContinue   EventType = "checkpoint_continue"
+	EventStageCheckpoint EventType = "stage_checkpoint"
+	// EventCheckpointContinue 表示检查点判定“继续”：当前 Stage 成功且存在下一个
+	// 线性 Stage，回到 validating 重新走 Dry Run 与策略评估。
+	EventCheckpointContinue EventType = "checkpoint_continue"
+	// EventCheckpointNeedsAgent 表示检查点要求把控制权交回 Agent：携带结构化失败
+	// 上下文回到 investigating 重新决策，每次消耗一次 agent_resumes 限额。
 	EventCheckpointNeedsAgent EventType = "checkpoint_needs_agent"
-	EventCheckpointSucceeded  EventType = "checkpoint_succeeded"
-	EventCheckpointFailed     EventType = "checkpoint_failed"
-	EventCheckpointEscalated  EventType = "checkpoint_escalated"
-	EventCheckpointBlocked    EventType = "checkpoint_blocked"
+	// EventCheckpointSucceeded 表示检查点判定整个 Intent 成功完成，进入最终终态 resolved。
+	EventCheckpointSucceeded EventType = "checkpoint_succeeded"
+	// EventCheckpointFailed 表示检查点确定性判定失败（如重试失败收敛、Stage 数或
+	// Agent 唤回限额耗尽），进入终态 failed。
+	EventCheckpointFailed EventType = "checkpoint_failed"
+	// EventCheckpointEscalated 表示检查点判定应停止自治、携带证据交人工接管，
+	// 进入暂停终态 escalated。
+	EventCheckpointEscalated EventType = "checkpoint_escalated"
+	// EventCheckpointBlocked 表示检查点判定当前路径被授权/审批/策略拒绝，无法
+	// 继续自主执行，进入终态 blocked。
+	EventCheckpointBlocked EventType = "checkpoint_blocked"
 	// EventEscalated 表示事件停止自治并交由人工处理。
 	EventEscalated EventType = "escalated"
 	// EventHumanResumed 表示人工明确授权 Workflow 恢复调查。

@@ -98,15 +98,26 @@ type ActionResult struct {
 	RecordedAt      time.Time      `json:"recorded_at"`
 }
 
+// CheckpointDecision 是检查点对“当前 Stage 执行结果”的确定性判定，
+// 每个 Decision 与一个 checkpoint_* 事件一一对应，驱动 Workflow 状态转移。
 type CheckpointDecision string
 
 const (
-	CheckpointContinue   CheckpointDecision = "continue"
+	// CheckpointContinue（继续）：当前 Stage 成功，进入下一个线性 Stage
+	//（回到 validating 重新校验）。
+	CheckpointContinue CheckpointDecision = "continue"
+	// CheckpointNeedsAgent（唤回 Agent）：结果不满足预期，带着结构化失败
+	// 上下文交回 Agent 重新决策，消耗 agent_resumes 限额。
 	CheckpointNeedsAgent CheckpointDecision = "needs_agent"
-	CheckpointSucceeded  CheckpointDecision = "succeeded"
-	CheckpointFailed     CheckpointDecision = "failed"
-	CheckpointEscalate   CheckpointDecision = "escalate"
-	CheckpointBlocked    CheckpointDecision = "blocked"
+	// CheckpointSucceeded（判定成功）：所有 Stage 完成，Intent 整体成功（→ resolved）。
+	CheckpointSucceeded CheckpointDecision = "succeeded"
+	// CheckpointFailed（判定失败）：确定性失败，如重试失败收敛或 Stage/唤回
+	// 限额耗尽（→ failed）。
+	CheckpointFailed CheckpointDecision = "failed"
+	// CheckpointEscalate（升级）：停止自治，携带证据交人工接管（→ escalated）。
+	CheckpointEscalate CheckpointDecision = "escalate"
+	// CheckpointBlocked（阻塞）：被授权/审批/策略拒绝，无法自主继续（→ blocked）。
+	CheckpointBlocked CheckpointDecision = "blocked"
 )
 
 // CheckpointRule 只允许对一个已知输出字段做精确相等判断。

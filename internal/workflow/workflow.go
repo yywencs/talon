@@ -105,14 +105,20 @@ type transitionRule struct {
 // 该事件可以由哪些 Actor 发出，以及校验通过后应流转到哪个状态。
 // 同一当前状态可以通过不同事件到达不同状态，但一条规则只对应一个目标状态。
 var transitionRules = map[State]map[EventType]transitionRule{
+	// protected（保护完成）：只有控制器能开案，进入调查。
 	StateProtected: {
 		EventStartInvestigation: {to: StateInvestigating, actors: actors(ActorController)},
 	},
+	// investigating（调查中）：Agent 提交 ExecutionIntent 后转校验；
+	// 加载/卸载 Skill 是自环事件，只留审计记录，不改变状态。
 	StateInvestigating: {
 		EventExecutionIntentSubmitted: {to: StateValidating, actors: actors(ActorAgent)},
 		EventSkillLoaded:              {to: StateInvestigating, actors: actors(ActorAgent)},
 		EventSkillUnloaded:            {to: StateInvestigating, actors: actors(ActorAgent)},
 	},
+	// validating（校验中）：Dry Run 与策略评估的出口——全部自动放行→executing；
+	// 存在需审批动作→awaiting_approval；被拒→回 investigating 重新决策；
+	// 确定性失败按 needs_agent/failed/escalated/blocked 四路分流。
 	StateValidating: {
 		EventExecutionAuthorized:     {to: StateExecuting, actors: actors(ActorWorkflow)},
 		EventApprovalRequired:        {to: StateAwaitingApproval, actors: actors(ActorWorkflow)},
@@ -122,10 +128,13 @@ var transitionRules = map[State]map[EventType]transitionRule{
 		EventCheckpointEscalated:     {to: StateEscalated, actors: actors(ActorWorkflow)},
 		EventCheckpointNeedsAgent:    {to: StateInvestigating, actors: actors(ActorWorkflow)},
 	},
+	// awaiting_approval（等待审批）：只有人工能解锁——批准→executing，拒绝→investigating。
 	StateAwaitingApproval: {
 		EventExecutionAuthorized:     {to: StateExecuting, actors: actors(ActorHuman)},
 		EventExecutionIntentRejected: {to: StateInvestigating, actors: actors(ActorHuman)},
 	},
+	// executing（受控执行中）：当前 Stage 执行完成必须先进 checkpoint 判定，
+	// 不允许直接跳到下一 Stage；执行期失败同样按四路分流。
 	StateExecuting: {
 		EventStageCheckpoint:      {to: StateCheckpoint, actors: actors(ActorWorkflow)},
 		EventCheckpointNeedsAgent: {to: StateInvestigating, actors: actors(ActorWorkflow)},
@@ -133,6 +142,9 @@ var transitionRules = map[State]map[EventType]transitionRule{
 		EventCheckpointEscalated:  {to: StateEscalated, actors: actors(ActorWorkflow)},
 		EventCheckpointBlocked:    {to: StateBlocked, actors: actors(ActorWorkflow)},
 	},
+	// checkpoint（检查点判定）：六个出口——continue→回 validating 走下一 Stage
+	//（下一 Stage 的 Action 要重新 Dry Run + 策略评估）；needs_agent→回 investigating；
+	// succeeded→resolved；failed/escalated/blocked→对应终态。
 	StateCheckpoint: {
 		EventCheckpointContinue:   {to: StateValidating, actors: actors(ActorWorkflow)},
 		EventCheckpointNeedsAgent: {to: StateInvestigating, actors: actors(ActorWorkflow)},
@@ -141,6 +153,8 @@ var transitionRules = map[State]map[EventType]transitionRule{
 		EventCheckpointEscalated:  {to: StateEscalated, actors: actors(ActorWorkflow)},
 		EventCheckpointBlocked:    {to: StateBlocked, actors: actors(ActorWorkflow)},
 	},
+	// escalated（已升级，暂停终态）：只有人工处理后才能恢复调查。
+	// resolved/failed/blocked 是无出边的最终终态，不在表中出现。
 	StateEscalated: {
 		EventHumanResumed: {to: StateInvestigating, actors: actors(ActorHuman)},
 	},
