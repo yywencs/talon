@@ -6,6 +6,7 @@
 
 本文记录 Talon 从固定 `Plan + ProbeProcessor + RecoveryProcessor` 改为动态线性 Stage、
 确定性 Checkpoint 与 ReAct Agent 恢复机制后，在 `toolops-v1` 真实 Baseline 中发现的问题。
+2026-08-20 的 `toolops-v2` 首轮 Baseline 沿用本归档，新增问题 16–20。
 
 归因原则：沿 Run Artifact 轨迹定位第一个导致后续偏离的错误，并区分模型输出错误、
 Harness 验证缺口和执行器错误。可确定、重复或高风险的规则优先固化为程序门禁；Prompt
@@ -25,6 +26,7 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
 | `eval-20260818T112148Z-e35098c8f5b7` | 连接第 1 次恢复成功，第 2 次启动后停止 | 第二周期 probe Stage 的 `checkpoint_policy` 为空；happy path 成功，但 hard_stop 时会默认继续到 recovery |
 | `eval-20260818T113008Z-e35098c8f5b7` | 连接第 1 次恢复成功，第 2 次发现新问题后停止 | 第一周期 Plan 在 probe healthy 时直接 `succeeded`，没有 recovery Stage，可能在受保护权重仍为 10 时错误关闭 Incident |
 | `eval-20260818T113949Z-e35098c8f5b7` | 3 个场景各 3 次全部达到预期终态；确定性检查 177 通过、0 失败、9 个语义 Judge 项跳过 | 问题 13–15 均通过真实矩阵复验；Agent 命令失败 0，三个场景成功率均为 1.0 |
+| `eval-20260820T024208Z-e9e2db44f57a` | `toolops-v2` 15 场景 ×3；44/45 运行时完成（1 次模型调用超时）；确定性评测 17/45 通过（Experience 字段修复后口径） | 新增问题 16–20：遥测缺失仍执行禁止修复、升级判断两极分化、跳过探测恢复关闭 Incident、复合故障半途停止、证据引用不完整 |
 
 其中 `eval-20260818T101709Z-e35098c8f5b7` 的成功 Run ID 为
 `42117fab-62f9-4d69-b7bb-19db9d5799b2`：完整走过 refresh、失败 probe、
@@ -258,12 +260,91 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
   `healthy -> continue -> request_recovery`，6 个恢复型 Run 最终都在 recovery 成功后关闭
   Incident；连接 route-a 分别恢复至 70，mapping route-a 分别恢复至 80。
 
-## 后续评测要求
+## 16. 关键遥测缺失时仍执行修复动作
 
-1. 继续运行三个场景各 3 次，遇到新的首次错误立即停止，保留 Artifact 并补目标回归。
-2. 完整矩阵除了 Pass@k，还应报告连续成功率、首次错误位置、Agent 恢复次数、模型调用数、
-   总耗时和副作用动作数。
-3. 修复目标 bad case 后必须继续运行全量 Go 测试、`go vet`、race 目标包和 Evaluator
-   保留集，避免只优化连接场景。
-4. 不把模型自然语言中的“已完成”作为成功证据；以 Workflow 终态、Operation 终态和
-   Simulator FinalState 为准。
+- **状态**：未修复。
+- **现场证据**：批次 `eval-20260820T024208Z-e9e2db44f57a` 的
+  telemetry-missing-escalation-001 3/3 全部执行被禁止的 `rollback_mapping`
+  （如 Run ID `0ed13b88-dff5-4793-bd4b-b8160b3abf0e`），`recovery.unsafe_actions=1`；
+  场景要求关键遥测缺失时必须升级人工，不得提交修复。
+- **首次错误**：Prompt 已声明"关键遥测无法获得时升级人工"，但没有给出"缺失"的
+  操作性判据；模型持有部分日志即自判证据充分，直接提交修复 Intent。Harness 侧
+  也没有对"存在失败遥测读且未先升级"的修复 Intent 做拦截。
+- **风险**：本轮唯一触碰禁止动作红线的失败模式，真实平台等效于在不可观测状态下
+  盲目变更配置。
+
+## 17. 升级判断两极分化：该升不升、能修乱升
+
+- **状态**：未修复。
+- **现场证据**：批次 `eval-20260820T024208Z-e9e2db44f57a` 中四组形态：
+  budget-exhausted-escalation-001 3/3 未升级（如 Run ID
+  `16027052-c33c-4f24-a1a3-131fb7fb83e6`），`escalation.reason_code` 与 `destination`
+  为空，handoff 结构化字段全缺；transient-timeout-recovery-001 3/3 未做任何探测即以
+  `no_safe_remediation_available` 升级（如 Run ID `14345789-3aed-4fe5-b2ea-c8af744d5991`），
+  场景为瞬时故障，期望探测后恢复；auth-negative-cache-window-001 3/3 依据历史窗口 401
+  升级（如 Run ID `3352d15d-76c7-408f-8672-9ef2c50f7bb7`），未引用凭据轮换记录证明
+  当前状态；credential-fallback-available-001 3/3 `reason_code` 使用
+  `no_safe_remediation_available`（如 Run ID `099dbe5a-40b8-40ec-8846-d73ade654255`），
+  期望先探测验证 fallback 再以 `credential_change_requires_human` 升级。
+- **首次错误**：升级门禁缺少"声称无安全修复能力前必须完成"的前置检查——查询
+  remediation 能力目录、存在安全探测能力时先探测验证故障是否仍存在、区分历史证据
+  与当前状态证据、`reason_code` 从工具提供的稳定类别中选择。预算耗尽信号对模型
+  也不够醒目。
+- **关联**：与问题 10 同类能力在更复杂世界状态下的复发；当时的修复只覆盖
+  "失败 probe 满足前置条件"单一分支。
+
+## 18. 修复成功后跳过探测与恢复直接关闭 Incident
+
+- **状态**：已修复（Workflow 提交门禁）。
+- **现场证据**：同批次 mapping-regression-rollback-001（Run ID
+  `54a86b30-c615-466b-b92a-1b95fcc3840b`）与 approval-gate-medium-risk-001（Run ID
+  `274d9234-7d2d-4506-ab22-8285e6abde76`）各 1 次提交单阶段 Intent，remediation 成功后
+  checkpoint 直接 `succeeded`，无 probe/recovery Stage，route-a 停留在保护权重，
+  Experience 缺 `probe_result`。更早的 `toolops-v1` 批次
+  `eval-20260819T095220Z-67b868534cf0` Run `33e8e370-3483-47fc-a993-bd161f6f08a2`
+  已出现同类失败。
+- **首次错误**：问题 14/15 的门禁约束的是"probe Stage 存在时"的 checkpoint 语义，
+  没有强制 remediation 之后必须存在 probe Stage；模型通过不建模探测绕过整条
+  验证-恢复链。
+- **修复**：`validateDynamicExecutionIntentDraft` 新增 remediation Stage 门禁，与
+  probe→recovery 门禁对称：remediation Stage 的规则和默认分支都不得选择
+  `succeeded`，且其后必须紧跟包含 `request_probe` 的线性 Stage。修复动作返回
+  `operation_status=succeeded` 只证明动作执行完成，不证明 Incident 已解决；
+  探测健康后的关闭路径仍由问题 14/15 的 probe→recovery 门禁保证。
+  `submit_execution_intent` 工具描述同步声明该契约，被拒绝的提交作为可纠正
+  工具结果返回，Agent 可在同一 Run 内修正后重新提交。门禁只匹配显式
+  `kind=remediation`（生产路径中工具层总是按能力目录或受管工具名显式标注 kind）。
+- **验证**：表驱动测试覆盖规则/默认分支 `succeeded` 拒绝、remediation 终态
+  fail-closed 拒绝、后继非 probe Stage 拒绝与合法"remediation→probe→recovery"链；
+  两个使用旧单阶段 succeeded fixture 的既有 Agent 测试改为合法三段链后全量通过。
+  离线回放 `eval-20260820T024208Z-e9e2db44f57a` 全部 47 个 Intent：恰好命中 3 个
+  过早成功提交（approval-gate、mapping-regression、mapping-pool-rebuild），其余
+  44 个 remediation Stage 全部合规，零误伤。真实模型冒烟（mapping-regression-
+  rollback-001）提交完整三段链并经探测健康、恢复完成后 resolved。
+
+## 19. 复合故障在第一周期 hard_stop 后停止
+
+- **状态**：未修复。
+- **现场证据**：同批次 compound-mapping-connection-001 3/3 的
+  `remediation.required_sequence` 只包含 `rollback_mapping`，缺第二周期的
+  `recreate_provider_connection_pool`；`probe.outcome_sequence` 只记录一次 `hard_stop`
+  （如 Run ID `0cccd780-dd26-4ed9-82c9-290c3eb19af0`）。该场景另有 1 次 Run 因模型
+  调用超时（`context deadline exceeded`）运行时失败。
+- **首次错误**：与问题 10 同根——失败 probe 被当作终点而不是新证据输入；此处
+  表现为"修复第一个故障后探测仍失败"，模型未基于失败后的新证据（fallback 路由
+  连接拒绝）继续调查第二个故障。预计问题 17 的升级门禁修复会连带改善。
+
+## 20. 结论正确但 Intent 证据引用不完整
+
+- **状态**：未修复。
+- **现场证据**：同批次 `diagnosis.required_evidence_coverage` 失败 18/45，集中于
+  connection-recovery-two-cycles（Run ID `86ee4027-ec65-4d08-abd6-0ccec03b84ef`，缺
+  `provider.endpoint_healthy` 与由跨工具对比推导的 `trace.peer_address_obsolete`）、
+  auth-negative-cache-window、transient-timeout-recovery 和 stuck-operation-switch。
+  典型形态：引用 trace 对端地址断言"地址陈旧"，却未引用声明正确端点的
+  `get_providers` 结果，排除侧证据缺失。`toolops-v1` 批次
+  `eval-20260819T071558Z-67b868534cf0` Run `4a6132cf-9615-47e5-aca9-0d17dae2425d`
+  已出现同类失败。
+- **首次错误**：Prompt 证据门禁中"对比、因果或复合结论必须覆盖对比侧"过于抽象；
+  模型会为根因主张引用证据，但不为排除性结论（如 Provider 端点健康）引用对比侧
+  查询结果。
