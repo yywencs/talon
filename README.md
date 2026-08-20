@@ -148,6 +148,18 @@ make eval-baseline \
   EVAL_REPEAT=3
 ```
 
+Agent 运行与 Judge 评测均支持并发：`EVAL_PARALLEL` 控制同时运行的场景数（默认 1
+等价旧串行行为），`EVAL_JUDGE_CONCURRENCY` 控制 Judge 并行调用数（默认 1）。并发时
+每个 Run 的输出写入 `<输出目录>-run-logs/` 独立日志，失败以标记文件计数，导出与
+校验仍在全部运行结束后串行执行：
+
+```bash
+make eval-baseline EVAL_DATASET=toolops-v2 EVAL_PARALLEL=4 EVAL_JUDGE=1 EVAL_JUDGE_CONCURRENCY=4
+```
+
+并发度建议从 3-5 起步：上限受 PostgreSQL 连接数和 LLM API 限流约束，触发限流会
+把模型失败误混入场景失败。
+
 正式 Baseline 可同时运行独立 LLM Judge：
 
 ```bash

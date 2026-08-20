@@ -75,6 +75,10 @@ make eval-full \
   EVAL_OUTPUT=evaluation-data/batch-full-result.json
 ```
 
+目录模式下可用 `--judge-concurrency N` 并行执行多个 Run 的 Judge 调用（默认 1 保持
+串行）。manifest 校验与文件读取始终顺序执行，评测结果顺序与 manifest 一致，不依赖
+线程调度；任一 Judge 调用失败仍按基础设施错误整体退出。
+
 不带 `--judge` 的原命令仍然只运行确定性规则。Judge 返回值会替换原先的语义
 `skipped` 检查，并在结果的 `judge` 字段记录模型、Judge/Prompt 版本、Prompt digest、
 阈值、Token 和耗时。模型请求失败或输出不符合 JSON 契约时命令以基础设施错误退出，

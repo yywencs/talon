@@ -26,6 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--judge-api-key", help="override JUDGE_API_KEY")
     parser.add_argument("--judge-pass-threshold", type=float, help="override JUDGE_PASS_THRESHOLD")
     parser.add_argument("--judge-timeout-seconds", type=float, help="override JUDGE_TIMEOUT_SECONDS")
+    parser.add_argument(
+        "--judge-concurrency",
+        type=int,
+        default=1,
+        help="parallel Judge evaluations for directory input (default: 1)",
+    )
     return parser
 
 
@@ -51,7 +57,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             evaluate_one = lambda payload: evaluate_with_judge(payload, judge)
         # 目录输入需要看所有 Run 是否成功；单文件则直接看该次 verdict。
         if args.input.is_dir():
-            result = evaluate_directory(args.input, evaluate_one)
+            result = evaluate_directory(args.input, evaluate_one, concurrency=args.judge_concurrency)
             failed = result["summary"]["successful_runs"] != result["summary"]["runs"]
         else:
             with args.input.open("r", encoding="utf-8") as source:

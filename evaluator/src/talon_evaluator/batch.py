@@ -2,6 +2,7 @@
 
 import json
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping
 
@@ -14,10 +15,18 @@ BATCH_RESULT_SCHEMA_VERSION = "talon.evaluation-batch-result/v1"
 def evaluate_directory(
     directory: Path,
     evaluate_one: Callable[[Mapping[str, Any]], Dict[str, Any]] = evaluate,
+    concurrency: int = 1,
 ) -> Dict[str, Any]:
-    """校验 manifest 与每个 Artifact 的对应关系，再逐 Run 执行指定评测函数。"""
+    """校验 manifest 与每个 Artifact 的对应关系，再逐 Run 执行指定评测函数。
+
+    并发只作用于 evaluate_one（Judge 的网络调用受益）；manifest 校验与文件
+    读取始终顺序执行，保证输入错误的确定性。executor.map 保持结果顺序与
+    manifest 一致，报告不依赖线程调度。
+    """
 
     directory = directory.resolve()
+    if concurrency < 1:
+        raise EvaluationInputError("concurrency must be a positive integer")
     manifest = _read_json(directory / "manifest.json")
     if not isinstance(manifest, Mapping):
         raise EvaluationInputError("export manifest must be a JSON object")
@@ -29,7 +38,8 @@ def evaluate_directory(
     if not isinstance(entries, list) or not entries:
         raise EvaluationInputError("export manifest runs must be a non-empty array")
 
-    evaluated: List[Dict[str, Any]] = []
+    payloads: List[Mapping[str, Any]] = []
+    artifacts: List[Mapping[str, Any]] = []
     for entry in entries:
         if not isinstance(entry, Mapping):
             raise EvaluationInputError("export manifest run must be a JSON object")
@@ -48,8 +58,17 @@ def evaluate_directory(
                 raise EvaluationInputError(
                     "manifest {} mismatch for {}".format(field, file_name)
                 )
-        result = evaluate_one(payload)
-        evaluated.append(_run_result(artifact, result))
+        payloads.append(payload)
+        artifacts.append(artifact)
+
+    if concurrency > 1:
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            results = list(pool.map(evaluate_one, payloads))
+    else:
+        results = [evaluate_one(payload) for payload in payloads]
+    evaluated = [
+        _run_result(artifact, result) for artifact, result in zip(artifacts, results)
+    ]
 
     scenario_groups: Dict[str, List[Dict[str, Any]]] = {}
     for run in evaluated:

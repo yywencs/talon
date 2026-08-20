@@ -4,6 +4,7 @@ import copy
 import io
 import json
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -526,6 +527,53 @@ class EvaluatorTests(unittest.TestCase):
         self.assertEqual(0.5, scenario["success_rate"])
         self.assertGreater(scenario["score"], 0)
         self.assertGreater(scenario["coverage"], 0)
+
+    def test_directory_evaluation_concurrency_preserves_order_and_runs_parallel(self):
+        with tempfile.TemporaryDirectory() as directory_text:
+            directory = Path(directory_text)
+            completed = mapping_input()
+            second = copy.deepcopy(completed)
+            second["artifact"]["run_id"] = "run-002"
+            (directory / "run-001.json").write_text(json.dumps(completed), encoding="utf-8")
+            (directory / "run-002.json").write_text(json.dumps(second), encoding="utf-8")
+            manifest = {
+                "schema_version": "talon.evaluation-export/v3",
+                "artifact_schema_version": "talon.run-artifact/v3",
+                "code_version": "abc123",
+                "dataset_version": "toolops-v1",
+                "runs": [
+                    {"run_id": "run-001", "scenario_id": "mapping-regression-rollback-001",
+                     "outcome": "completed", "file": "run-001.json"},
+                    {"run_id": "run-002", "scenario_id": "mapping-regression-rollback-001",
+                     "outcome": "completed", "file": "run-002.json"},
+                ],
+            }
+            (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+            # Barrier 要求两个评测同时在执行才会放行；串行实现会因超时破裂。
+            barrier = threading.Barrier(2, timeout=5)
+
+            def parallel_evaluate_one(payload):
+                try:
+                    barrier.wait()
+                except threading.BrokenBarrierError:
+                    raise AssertionError("evaluate_one was not executed concurrently")
+                return evaluate(payload)
+
+            result = evaluate_directory(directory, parallel_evaluate_one, concurrency=2)
+
+        self.assertEqual(
+            ["run-001", "run-002"], [run["run_id"] for run in result["runs"]]
+        )
+        self.assertEqual(2, result["summary"]["runs"])
+
+    def test_directory_evaluation_rejects_invalid_concurrency(self):
+        with tempfile.TemporaryDirectory() as directory_text:
+            directory = Path(directory_text)
+            self.assertRaises(
+                EvaluationInputError,
+                lambda: evaluate_directory(Path(directory), concurrency=0),
+            )
 
 
 if __name__ == "__main__":
