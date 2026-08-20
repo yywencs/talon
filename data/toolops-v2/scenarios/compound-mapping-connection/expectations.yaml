@@ -60,7 +60,7 @@ escalation:
 experience:
   must_record:
     - symptoms
-    - compound_fault_hypothesis
+    - initial_hypothesis
     - ineffective_remediation
     - evidence_after_failed_probe
     - final_root_cause

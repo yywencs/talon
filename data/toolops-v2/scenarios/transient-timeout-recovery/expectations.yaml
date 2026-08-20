@@ -44,4 +44,4 @@ escalation:
   max_remediation_cycles: 2
 
 experience:
-  must_record: [symptoms, evidence, transient_fault_confirmation, probe_result, applicability]
+  must_record: [symptoms, evidence, probe_result, applicability]

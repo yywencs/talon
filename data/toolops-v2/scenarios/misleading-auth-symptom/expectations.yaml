@@ -46,4 +46,4 @@ escalation:
   max_remediation_cycles: 2
 
 experience:
-  must_record: [symptoms, misleading_evidence, reconciled_root_cause, effective_remediation, probe_result, applicability]
+  must_record: [symptoms, initial_hypothesis, final_root_cause, effective_remediation, probe_result, applicability]

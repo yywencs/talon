@@ -45,4 +45,4 @@ escalation:
   max_remediation_cycles: 3
 
 experience:
-  must_record: [symptoms, evidence, root_cause, remediation, approval_gate, probe_result, applicability]
+  must_record: [symptoms, evidence, root_cause, remediation, probe_result, applicability]

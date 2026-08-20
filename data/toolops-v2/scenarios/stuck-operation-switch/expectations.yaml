@@ -49,7 +49,7 @@ experience:
   must_record:
     - symptoms
     - initial_hypothesis
-    - stuck_operation_observation
-    - alternative_remediation
+    - evidence
+    - remediation
     - effective_remediation
     - applicability

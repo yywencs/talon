@@ -43,4 +43,4 @@ escalation:
   max_remediation_cycles: 1
 
 experience:
-  must_record: [symptoms, historical_evidence, current_credential_state, probe_result, applicability]
+  must_record: [symptoms, evidence, root_cause, probe_result, applicability]

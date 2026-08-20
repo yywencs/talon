@@ -52,4 +52,4 @@ escalation:
     - recommended_human_action
 
 experience:
-  must_record: [symptoms, evidence, root_cause, fallback_verification, escalation_reason, applicability]
+  must_record: [symptoms, evidence, root_cause, probe_result, escalation_reason, applicability]
