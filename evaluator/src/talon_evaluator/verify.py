@@ -121,7 +121,7 @@ def verify_export(
             failure = _mapping(failure, "Artifact stage failure")
             _expect(
                 failure.get("stage")
-                in ("dry_run", "remediation", "probe", "recovery", "compensation"),
+                in ("dry_run", "action_execution", "argument_resolution", "checkpoint"),
                 "Artifact stage failure has an invalid stage",
             )
             category = _string(failure.get("category"), "stage failure category")

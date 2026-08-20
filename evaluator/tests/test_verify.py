@@ -48,7 +48,7 @@ class VerifyExportTests(unittest.TestCase):
             payload = json.loads(path.read_text(encoding="utf-8"))
             payload["artifact"]["stage_failures"] = [
                 {
-                    "stage": "probe",
+                    "stage": "action_execution",
                     "category": "platform_unavailable",
                     "code": "probe_query_failed",
                     "safe_summary": "暂时无法查询探测 Operation",
