@@ -287,6 +287,9 @@ func validateDynamicExecutionIntentDraft(stages []ExecutionStageDraft, limits Ex
 		if err := validateProbeStageCheckpoint(stageIndex, stage, stages); err != nil {
 			return err
 		}
+		if err := validateRemediationStageCheckpoint(stageIndex, stage, stages); err != nil {
+			return err
+		}
 		for actionIndex, action := range stage.Actions {
 			for argument, reference := range action.ArgumentReferences {
 				sourceStage, exists := actionStages[strings.TrimSpace(reference.SourceActionID)]
@@ -378,6 +381,44 @@ func validateProbeStageCheckpoint(stageIndex int, stage ExecutionStageDraft, sta
 func stageContainsManagedRecovery(stage ExecutionStageDraft) bool {
 	for _, action := range stage.Actions {
 		if action.Kind == ActionKindRecovery || strings.TrimSpace(action.ToolName) == "request_recovery" {
+			return true
+		}
+	}
+	return false
+}
+
+// validateRemediationStageCheckpoint 保证修复动作成功后必须经过业务探测验证：
+// 修复操作返回 succeeded 只证明动作执行完成，不证明 Incident 已解决，
+// 因此 remediation Stage 不得直接判定 succeeded，成功分支只能 continue 到
+// 紧随其后的显式 probe Stage；探测健康后的关闭路径由 probe→recovery 门禁保证。
+func validateRemediationStageCheckpoint(stageIndex int, stage ExecutionStageDraft, stages []ExecutionStageDraft) error {
+	managed := false
+	for _, action := range stage.Actions {
+		if action.Kind == ActionKindRemediation {
+			managed = true
+			break
+		}
+	}
+	if !managed {
+		return nil
+	}
+	for ruleIndex, rule := range stage.CheckpointPolicy.Rules {
+		if rule.Decision == CheckpointSucceeded {
+			return fmt.Errorf("intent stages[%d].checkpoint_policy.rules[%d] cannot select succeeded for a remediation stage; remediation success must continue to an explicit probe stage", stageIndex, ruleIndex)
+		}
+	}
+	if stage.CheckpointPolicy.DefaultDecision == CheckpointSucceeded {
+		return fmt.Errorf("intent stages[%d].checkpoint_policy cannot default to succeeded for a remediation stage; remediation success must continue to an explicit probe stage", stageIndex)
+	}
+	if stageIndex+1 >= len(stages) || !stageContainsManagedProbe(stages[stageIndex+1]) {
+		return fmt.Errorf("intent stages[%d] containing a remediation action requires the next linear stage to contain an explicit request_probe action", stageIndex)
+	}
+	return nil
+}
+
+func stageContainsManagedProbe(stage ExecutionStageDraft) bool {
+	for _, action := range stage.Actions {
+		if action.Kind == ActionKindProbe || strings.TrimSpace(action.ToolName) == "request_probe" {
 			return true
 		}
 	}

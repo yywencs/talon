@@ -241,6 +241,71 @@ func TestDynamicIntentRequiresRecoveryImmediatelyAfterProbe(t *testing.T) {
 	assert.Equal(t, StateInvestigating, instance.Snapshot().State)
 }
 
+func TestDynamicIntentRequiresProbeAfterRemediation(t *testing.T) {
+	remediationRule := CheckpointRule{
+		SourceActionID: "fix-action", OutputPath: "operation_status", Equals: "succeeded",
+		Decision: CheckpointContinue, NextStageID: "probe",
+	}
+	probeStage := ExecutionStageDraft{StageID: "probe", Goal: "verify", Actions: []IntendedAction{{
+		Key: "probe-action", Kind: ActionKindProbe, ToolName: "request_probe",
+	}}, CheckpointPolicy: CheckpointPolicy{Rules: []CheckpointRule{{
+		SourceActionID: "probe-action", OutputPath: "output.outcome", Equals: "healthy",
+		Decision: CheckpointContinue, NextStageID: "recover",
+	}}, DefaultDecision: CheckpointNeedsAgent}}
+	recoveryStage := ExecutionStageDraft{StageID: "recover", Goal: "recover", Actions: []IntendedAction{{
+		Key: "recover-action", Kind: ActionKindRecovery, ToolName: "request_recovery",
+	}}, CheckpointPolicy: CheckpointPolicy{DefaultDecision: CheckpointSucceeded}}
+	tests := []struct {
+		name      string
+		stages    []ExecutionStageDraft
+		wantError string
+	}{
+		{name: "rule closes incident after remediation", stages: []ExecutionStageDraft{{
+			StageID: "fix", Goal: "fix", Actions: []IntendedAction{{Key: "fix-action", Kind: ActionKindRemediation, ToolName: "rollback_mapping"}},
+			CheckpointPolicy: CheckpointPolicy{Rules: []CheckpointRule{{
+				SourceActionID: "fix-action", OutputPath: "operation_status", Equals: "succeeded", Decision: CheckpointSucceeded,
+			}}, DefaultDecision: CheckpointNeedsAgent},
+		}}, wantError: "cannot select succeeded for a remediation stage"},
+		{name: "default closes incident after remediation", stages: []ExecutionStageDraft{{
+			StageID: "fix", Goal: "fix", Actions: []IntendedAction{{Key: "fix-action", Kind: ActionKindRemediation, ToolName: "rollback_mapping"}},
+			CheckpointPolicy: CheckpointPolicy{DefaultDecision: CheckpointSucceeded},
+		}}, wantError: "cannot default to succeeded for a remediation stage"},
+		{name: "remediation final stage fail closed", stages: []ExecutionStageDraft{{
+			StageID: "fix", Goal: "fix", Actions: []IntendedAction{{Key: "fix-action", Kind: ActionKindRemediation, ToolName: "rollback_mapping"}},
+			CheckpointPolicy: CheckpointPolicy{DefaultDecision: CheckpointNeedsAgent},
+		}}, wantError: "next linear stage to contain an explicit request_probe action"},
+		{name: "remediation followed by recovery", stages: []ExecutionStageDraft{{
+			StageID: "fix", Goal: "fix", Actions: []IntendedAction{{Key: "fix-action", Kind: ActionKindRemediation, ToolName: "rollback_mapping"}},
+			CheckpointPolicy: CheckpointPolicy{DefaultDecision: CheckpointNeedsAgent},
+		}, {
+			StageID: "recover", Goal: "recover", Actions: []IntendedAction{{Key: "recover-action", Kind: ActionKindRecovery, ToolName: "request_recovery"}},
+			CheckpointPolicy: CheckpointPolicy{DefaultDecision: CheckpointSucceeded},
+		}}, wantError: "next linear stage to contain an explicit request_probe action"},
+		{name: "remediation continues to probe and recovers", stages: []ExecutionStageDraft{{
+			StageID: "fix", Goal: "fix", Actions: []IntendedAction{{Key: "fix-action", Kind: ActionKindRemediation, ToolName: "rollback_mapping"}},
+			CheckpointPolicy: CheckpointPolicy{Rules: []CheckpointRule{remediationRule}, DefaultDecision: CheckpointNeedsAgent},
+		}, probeStage, recoveryStage}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			instance, err := NewIncidentWorkflow(Config{IncidentID: "remediation-checkpoint-" + test.name})
+			require.NoError(t, err)
+			_, err = instance.Apply(Event{Type: EventStartInvestigation, Actor: ActorController})
+			require.NoError(t, err)
+			_, err = instance.SubmitExecutionIntent(ExecutionIntentDraft{
+				Summary: "fix and verify", RootCause: "confirmed", EvidenceRefs: []string{"evidence:fix"},
+				Stages: test.stages,
+			})
+			if test.wantError == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, test.wantError)
+			assert.Equal(t, StateInvestigating, instance.Snapshot().State)
+		})
+	}
+}
+
 func TestDecisionCheckpointSupportsTerminalDecisions(t *testing.T) {
 	for _, decision := range []CheckpointDecision{
 		CheckpointSucceeded, CheckpointFailed, CheckpointEscalate, CheckpointBlocked, CheckpointNeedsAgent,

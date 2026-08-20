@@ -41,7 +41,7 @@ type submitExecutionIntentInput struct {
 func newSubmitExecutionIntentTool(instance *workflow.IncidentWorkflow, remediations map[string]platform.RemediationCapability) (einotool.InvokableTool, error) {
 	tool, err := toolutils.InferTool(
 		"submit_execution_intent",
-		"证据足够后提交当前有界执行意图。优先只提交当前可确定的短 Stage；仅当后续动作已经确定且只依赖前序结构化输出时，才可附带紧邻 Stage。Stage action 可使用已注册 remediation、request_probe 或 request_recovery。request_probe 健康只能 continue 到显式 request_recovery Stage，不能直接 succeeded。request_probe 和 request_recovery 的 arguments 必须是 route_id、policy_id、idempotency_key（策略字段名是 policy_id，不是 recovery_policy_id）。该工具只冻结意图并推进到 validating，不会直接执行动作；无安全方案时应升级人工。",
+		"证据足够后提交当前有界执行意图。优先只提交当前可确定的短 Stage；仅当后续动作已经确定且只依赖前序结构化输出时，才可附带紧邻 Stage。Stage action 可使用已注册 remediation、request_probe 或 request_recovery。remediation 动作成功只能 continue 到紧随其后的显式 request_probe Stage，不能直接 succeeded——修复执行成功不等于 Incident 已解决。request_probe 健康只能 continue 到显式 request_recovery Stage，不能直接 succeeded。request_probe 和 request_recovery 的 arguments 必须是 route_id、policy_id、idempotency_key（策略字段名是 policy_id，不是 recovery_policy_id）。该工具只冻结意图并推进到 validating，不会直接执行动作；无安全方案时应升级人工。",
 		func(_ context.Context, input submitExecutionIntentInput) (response[workflow.ExecutionIntentSubmission], error) {
 			if len(input.Stages) == 0 {
 				return platformResponse(workflow.ExecutionIntentSubmission{}, fmt.Errorf("intent stages is required")), nil

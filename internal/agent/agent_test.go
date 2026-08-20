@@ -287,15 +287,27 @@ func TestToolOpsAgentReturnsImmediatelyAfterSubmittingExecutionIntent(t *testing
 			return schema.AssistantMessage("", []schema.ToolCall{{
 				ID: "submit-intent-1",
 				Function: schema.FunctionCall{Name: "submit_execution_intent", Arguments: `{
-					"summary":"回滚 Mapping 配置",
+					"summary":"回滚 Mapping 配置并探测恢复",
 					"root_cause":"mapping schema regression",
 					"evidence_refs":["log:invalid_parameter_type","change:mapping-v2"],
-					"stages":[{"stage_id":"rollback","goal":"rollback mapping","actions":[{"id":"rollback-mapping","tool_name":"rollback_mapping","arguments":{
-						"tool_id":"generate_image",
-						"target_version":"mapping-v1",
-						"expected_version":"mapping-v2",
-						"idempotency_key":"intent-rollback-001"
-					}}],"checkpoint_policy":{"default_decision":"succeeded"}}]
+					"stages":[
+						{"stage_id":"rollback","goal":"rollback mapping","actions":[{"id":"rollback-mapping","tool_name":"rollback_mapping","arguments":{
+							"tool_id":"generate_image",
+							"target_version":"mapping-v1",
+							"expected_version":"mapping-v2",
+							"idempotency_key":"intent-rollback-001"
+						}}],"checkpoint_policy":{"default_decision":"needs_agent"}},
+						{"stage_id":"probe","goal":"probe route","actions":[{"id":"probe-route","tool_name":"request_probe","arguments":{
+							"route_id":"route-a",
+							"policy_id":"default-safe-recovery",
+							"idempotency_key":"intent-probe-001"
+						}}],"checkpoint_policy":{"rules":[{"source_action_id":"probe-route","output_path":"output.outcome","equals":"healthy","decision":"continue","next_stage_id":"recover"}],"default_decision":"needs_agent"}},
+						{"stage_id":"recover","goal":"recover traffic","actions":[{"id":"recover-route","tool_name":"request_recovery","arguments":{
+							"route_id":"route-a",
+							"policy_id":"default-safe-recovery",
+							"idempotency_key":"intent-recovery-001"
+						}}],"checkpoint_policy":{"default_decision":"succeeded"}}
+					]
 				}`},
 			}})
 		}
@@ -316,7 +328,7 @@ func TestToolOpsAgentReturnsImmediatelyAfterSubmittingExecutionIntent(t *testing
 	snapshot := flow.Snapshot()
 	assert.Equal(t, workflow.StateValidating, snapshot.State)
 	require.NotNil(t, snapshot.ExecutionIntent)
-	require.Len(t, snapshot.ExecutionIntent.Stages, 1)
+	require.Len(t, snapshot.ExecutionIntent.Stages, 3)
 	assert.Equal(t, "rollback_mapping", snapshot.ExecutionIntent.Stages[0].Actions[0].ToolName)
 	toolNames, inputs := chatModel.snapshot()
 	assert.Contains(t, toolNames, "submit_execution_intent")
@@ -375,7 +387,7 @@ func TestToolOpsAgentContinuesAfterRejectedExecutionIntent(t *testing.T) {
 	chatModel := &scriptedModel{response: func(call int) *schema.Message {
 		stages := `[{"stage_id":"rollback","goal":"rollback mapping","actions":[{"id":"rollback-mapping","tool_name":"rollback_mapping","arguments":{"tool_id":"generate_image","target_version":"mapping-v1","expected_version":"mapping-v2","idempotency_key":"intent-rollback-invalid","unknown_argument":"invalid"}}]}]`
 		if call == 2 {
-			stages = `[{"stage_id":"rollback","goal":"rollback mapping","actions":[{"id":"rollback-mapping","tool_name":"rollback_mapping","arguments":{"tool_id":"generate_image","target_version":"mapping-v1","expected_version":"mapping-v2","idempotency_key":"intent-rollback-001"}}],"checkpoint_policy":{"default_decision":"succeeded"}}]`
+			stages = `[{"stage_id":"rollback","goal":"rollback mapping","actions":[{"id":"rollback-mapping","tool_name":"rollback_mapping","arguments":{"tool_id":"generate_image","target_version":"mapping-v1","expected_version":"mapping-v2","idempotency_key":"intent-rollback-001"}}],"checkpoint_policy":{"default_decision":"needs_agent"}},{"stage_id":"probe","goal":"probe route","actions":[{"id":"probe-route","tool_name":"request_probe","arguments":{"route_id":"route-a","policy_id":"default-safe-recovery","idempotency_key":"intent-probe-001"}}],"checkpoint_policy":{"rules":[{"source_action_id":"probe-route","output_path":"output.outcome","equals":"healthy","decision":"continue","next_stage_id":"recover"}],"default_decision":"needs_agent"}},{"stage_id":"recover","goal":"recover traffic","actions":[{"id":"recover-route","tool_name":"request_recovery","arguments":{"route_id":"route-a","policy_id":"default-safe-recovery","idempotency_key":"intent-recovery-001"}}],"checkpoint_policy":{"default_decision":"succeeded"}}]`
 		}
 		return schema.AssistantMessage("", []schema.ToolCall{{
 			ID: "submit-intent-" + string(rune('0'+call)),
