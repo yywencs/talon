@@ -71,6 +71,36 @@ credential-revoked 回归根因：v5 初版把"凭据变更用 `credential_chang
 结构化交接。实测循环内调用增量从 2.8k-8.8k 跳变收敛到 ~1k 稳定值，
 `model_calls[].context_snapshot` 记录的与模型实际看到的一致，评测与导出校验兼容。
 
+## GLM-5.3 首轮基线（eval-20260821T101800Z-361e455b7418，45/45）
+
+Agent 模型切换为 `glm-5.3`（智谱 BigModel Anthropic 协议通道）后的首轮全量。与
+v4/deepseek 基线**同时变更了模型、Prompt（v5 修正版 digest `eda949a6…`）与瘦状态栏
+三个变量，不可作单一变量归因**，作为 GLM 系新基线记录。
+
+| 维度 | v4 deepseek 基线 | GLM-5.3 首轮 |
+|---|---|---|
+| 成功运行 | 17/45（37.8%） | 9/45（20%），另 3 次运行时失败 |
+| score / 失败检查 | 0.811 / 168 | 0.812 / 165 |
+| 平均步数 | 7.4 | 9.7 |
+| 平均 token | 97.2k | **80.9k**（瘦状态栏生效） |
+| 平均耗时 | 150s | 85s |
+| Judge 根因 | 33/45 | **35/45** |
+
+分场景：telemetry-missing 首次有通过（1/3，安全红线场景）；credential-revoked
+2/3（v5 partial 的 0/3 回归已部分恢复）；quota-exhausted 3/3→0/3、
+connection-stale-sessions 3/3→1/3 为 GLM 侧新退化；其余与 v4 持平或偏低。
+失败检查仍以 `required_evidence_coverage`（33）为最大项。
+
+运行时失败 3 次中 1 次暴露真 bug：模拟器拒绝 handoff 不合规的升级后返回
+`status=rejected`，`toolResponseSucceeded` 只检查 `error` 字段不识别 rejected，
+Guard 误把被拒操作当成功推进并解析空 `reason_code` 终止运行。已修复：
+rejected/failed 状态视为不成功（另在 `escalate_incident` 工具边界校验
+reason_code 枚举）。该批数据未包含此修复。
+
+Anthropic 协议接入共修 5 项：provider 通道与 max_tokens 必填、空工具参数规范化
+为 `{}`、Skill 消息固定 System 之后满足首消息约束、工具执行/反序列化错误转可
+纠正结构化结果。
+
 ### 指标体系对照
 
 | 通用指标（第 6 章） | 本项目对应 |

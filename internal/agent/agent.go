@@ -546,9 +546,27 @@ func deniedToolOutput(err error) (*compose.ToolOutput, error) {
 
 func toolResponseSucceeded(value string) bool {
 	var result struct {
-		Error string `json:"error"`
+		Error string          `json:"error"`
+		Data  json.RawMessage `json:"data"`
 	}
-	return json.Unmarshal([]byte(value), &result) == nil && result.Error == ""
+	if json.Unmarshal([]byte(value), &result) != nil || result.Error != "" {
+		return false
+	}
+	// 平台拒绝的操作（如 handoff 不满足要求被拒的升级）没有执行副作用，
+	// 必须当作失败处理；否则后续状态推进会解析被拒操作的空结果。
+	// data 可能是数组等非对象形状（只读查询结果），解码失败时跳过状态检查。
+	if len(result.Data) > 0 {
+		var operation struct {
+			Status string `json:"status"`
+		}
+		if json.Unmarshal(result.Data, &operation) == nil {
+			switch operation.Status {
+			case "rejected", "failed":
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // attachEvidenceReference 把 Harness 信任的工具调用 ID 显式放入模型可见的只读结果。
