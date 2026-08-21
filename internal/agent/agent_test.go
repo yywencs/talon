@@ -122,7 +122,11 @@ func TestToolOpsAgentRefreshesContextBeforeEveryModelCall(t *testing.T) {
 	assert.Equal(t, 0, firstCallContext.Budget.ToolCallsUsed)
 	assert.Equal(t, 1, secondCallContext.Budget.ModelCallsUsed)
 	assert.Equal(t, 1, secondCallContext.Budget.ToolCallsUsed)
-	assert.NotEmpty(t, secondCallContext.Evidence)
+	// ReAct 循环内的后续调用只刷新瘦状态栏：证据原文已在对话轨迹中，不再重复
+	// 注入累积索引；跨 Agent 调用的完整结构化交接由下一次 Run 的初始快照负责。
+	assert.Empty(t, secondCallContext.Evidence)
+	assert.NotContains(t, secondContext.Content, `"evidence_indexes"`)
+	assert.Contains(t, secondContext.Content, `"model_calls_used":1`)
 }
 
 func TestToolOpsAgentCarriesPriorEvidenceIntoNextRunContext(t *testing.T) {
