@@ -401,11 +401,21 @@ func workflowToolGuard(instance *workflow.IncidentWorkflow, tools *toolset.Set, 
 					recordToolCall(recorder, input, action, denied, started, outputErr, true)
 					return denied, outputErr
 				}
-				output, err := next(ctx, input)
-				if err != nil {
-					recordToolCall(recorder, input, action, output, started, err, false)
+			output, err := next(ctx, input)
+			if err != nil {
+				// 工具执行或参数反序列化错误转换为结构化工具结果返回，模型可以在
+				// 下一轮修正后重试；这延续了 submit_plan 的可纠正错误协议——只有
+				// Agent 调用预算和超时等运行级限制才会终止运行。部分模型（如智谱
+				// GLM 经 Anthropic 协议）偶发产出与 Schema 类型不匹配的参数，直接
+				// 终止会把可自愈的格式错误放大成整次运行失败。
+				corrected, correctableErr := deniedToolOutput(err)
+				if correctableErr != nil {
+					recordToolCall(recorder, input, action, nil, started, err, false)
 					return nil, err
 				}
+				recordToolCall(recorder, input, action, corrected, started, err, false)
+				return corrected, nil
+			}
 				if action == workflow.AgentActionRead && input.CallID != "" && toolResponseSucceeded(output.Result) {
 					if attachErr := attachEvidenceReference(output, input.CallID); attachErr != nil {
 						recordToolCall(recorder, input, action, output, started, attachErr, false)
@@ -587,8 +597,10 @@ func (a *ToolOpsAgent) withSystemMessage(messages []*schema.Message) []*schema.M
 	return append(result, messages...)
 }
 
-// withActiveSkillsMessage 移除历史中已过期的 Active Skill 状态，并在末尾追加当前状态。
-// Skill 正文属于运行时信息，不能拼接到稳定的 System Prompt 中。
+// withActiveSkillsMessage 移除历史中已过期的 Active Skill 状态，并把当前状态
+// 固定插入到 System 消息之后。Skill 正文属于运行时信息，不能拼接到稳定的
+// System Prompt 中；固定在轨迹之前的稳定位置既保持前缀可缓存，也满足
+// Anthropic Messages 协议"首条非 System 消息必须是 user"的要求。
 func (a *ToolOpsAgent) withActiveSkillsMessage(messages []*schema.Message) ([]*schema.Message, error) {
 	content, err := a.renderActiveSkillsContext()
 	if err != nil {
@@ -601,9 +613,17 @@ func (a *ToolOpsAgent) withActiveSkillsMessage(messages []*schema.Message) ([]*s
 		}
 		result = append(result, message)
 	}
-	if content != "" {
-		result = append(result, schema.UserMessage(content))
+	if content == "" {
+		return result, nil
 	}
+	insertAt := 0
+	if len(result) > 0 && result[0] != nil && result[0].Role == schema.System {
+		insertAt = 1
+	}
+	skills := schema.UserMessage(content)
+	result = append(result, nil)
+	copy(result[insertAt+1:], result[insertAt:])
+	result[insertAt] = skills
 	return result, nil
 }
 

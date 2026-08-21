@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -53,10 +54,27 @@ func (m *recordingModel) Generate(ctx context.Context, input []*schema.Message, 
 	}
 	started := time.Now()
 	message, err := m.next.Generate(ctx, prepared, options...)
+	normalizeEmptyToolCallArguments(message)
 	if m.recorder != nil {
 		m.recorder.RecordModelCallWithContext(started, message, err, snapshot)
 	}
 	return message, err
+}
+
+// normalizeEmptyToolCallArguments 把模型返回的空工具参数规范化为 "{}"。
+// 部分模型（如智谱 GLM 经 Anthropic Messages 协议）对无参工具会发送空字符串，
+// Eino 工具节点按 JSON 解析空串会直接失败；统一替换为空对象后由工具自身的
+// 参数校验给出结构化错误。
+func normalizeEmptyToolCallArguments(message *schema.Message) {
+	if message == nil {
+		return
+	}
+	for index := range message.ToolCalls {
+		call := &message.ToolCalls[index]
+		if strings.TrimSpace(call.Function.Arguments) == "" {
+			call.Function.Arguments = "{}"
+		}
+	}
 }
 
 func (m *recordingModel) Stream(ctx context.Context, input []*schema.Message, options ...model.Option) (*schema.StreamReader[*schema.Message], error) {
