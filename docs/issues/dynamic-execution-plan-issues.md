@@ -27,6 +27,7 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
 | `eval-20260818T113008Z-e35098c8f5b7` | 连接第 1 次恢复成功，第 2 次发现新问题后停止 | 第一周期 Plan 在 probe healthy 时直接 `succeeded`，没有 recovery Stage，可能在受保护权重仍为 10 时错误关闭 Incident |
 | `eval-20260818T113949Z-e35098c8f5b7` | 3 个场景各 3 次全部达到预期终态；确定性检查 177 通过、0 失败、9 个语义 Judge 项跳过 | 问题 13–15 均通过真实矩阵复验；Agent 命令失败 0，三个场景成功率均为 1.0 |
 | `eval-20260820T024208Z-e9e2db44f57a` | `toolops-v2` 15 场景 ×3；44/45 运行时完成（1 次模型调用超时）；确定性评测 17/45 通过（Experience 字段修复后口径） | 新增问题 16–20：遥测缺失仍执行禁止修复、升级判断两极分化、跳过探测恢复关闭 Incident、复合故障半途停止、证据引用不完整 |
+| `eval-20260821T020709Z-361e455b7418` | v5 Prompt + 问题 18 门禁后运行至 30/45 因 token 成本中止；确定性评测 11/30 通过，Judge 未运行 | approval-gate 与 connection-recovery 升至 3/3（问题 18/20 生效）；credential-revoked 3/3→0/3 为 v5 凭据 reason_code 示例过度泛化，已在工作区改为条件式并推广先探测再升级，待复验 |
 
 其中 `eval-20260818T101709Z-e35098c8f5b7` 的成功 Run ID 为
 `42117fab-62f9-4d69-b7bb-19db9d5799b2`：完整走过 refresh、失败 probe、

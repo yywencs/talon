@@ -35,6 +35,42 @@
 统计说明：每场景 n=3，样本量小；单场景 ±1 次通过的差异在噪声范围内，不构成
 版本间结论（v3/v4 对比时已观察到同类波动：同 Prompt 两轮 9/9 与 8/9）。
 
+## v5 部分对比（eval-20260821T020709Z-361e455b7418，30/45，因成本中止）
+
+在 v4 基线之上叠加 `toolops-agent/v5`（问题 ①②④⑤ 的 Prompt 修复）、remediation→probe
+提交门禁（问题 18）与数据集修复后运行；进行到 30/45（10/15 场景）时因 token 成本
+中止，结果仅覆盖已完成的 30 次，Judge 未运行。产物：
+`eval-20260821T020709Z-361e455b7418-toolops-v2-r3-partial30-deterministic-result.json`
+（完整 45 次的对照批次留待后续预算允许时补齐）。
+
+| 维度 | v4 基线（45 次） | v5 partial（30 次） |
+|---|---|---|
+| 成功运行 | 17/45（37.8%） | 11/30（36.7%） |
+| score | 0.811 | 0.794 |
+| 平均步数 / token | 7.4 / 97.2k | 8.4 / 115.0k（+18%） |
+
+分场景（仅列两轮都有样本的 10 个）：
+
+- 上升：approval-gate 2/3 → 3/3；connection-recovery 1/3 → 3/3（①⑤ 生效）
+- 持平：connection-stale-sessions 3/3、mapping-pool-rebuild 1/3
+- 下降：**credential-revoked 3/3 → 0/3**；mapping-regression 2/3 → 1/3（噪声范围）
+- 仍为 0：auth-negative-cache、budget、compound、credential-fallback
+
+credential-revoked 回归根因：v5 初版把"凭据变更用 `credential_change_requires_human`"
+写成无条件示例，模型泛化到所有凭据升级；该场景（凭据失效且无 fallback）期望
+`no_safe_remediation_available`。已在 v5 工作区改为条件式区分（无安全修复路径 →
+`no_safe_remediation_available`；fallback 已验证但切换需人工 →
+`credential_change_requires_human`），并把"先探测再升级"从 `no_safe_remediation_available`
+推广到所有升级（credential-fallback 仍 0/3 的原因是未探测即升级）。两处修正待复验。
+
+成本备注（30 次约 3.5M token）：输入缓存命中率约 47%。根因是 `prepareModelInput`
+每次调用删除旧状态栏并在末尾追加新渲染的完整快照——`generated_at`/`budget`/证据
+索引随调用变化导致整块累积 JSON（中位 ~1.5k、最长 ~8k token）每次都按未命中计费。
+**已修复**：ReAct 循环内部现在只注入瘦状态栏（易变 harness 事实），证据索引、
+历史意图与动作结果保留在对话轨迹中；每次 Agent 调用开始仍注入完整快照保证
+结构化交接。实测循环内调用增量从 2.8k-8.8k 跳变收敛到 ~1k 稳定值，
+`model_calls[].context_snapshot` 记录的与模型实际看到的一致，评测与导出校验兼容。
+
 ### 指标体系对照
 
 | 通用指标（第 6 章） | 本项目对应 |
