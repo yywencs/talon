@@ -124,6 +124,28 @@ Anthropic 协议接入共修 5 项：provider 通道与 max_tokens 必填、空�
 - credential-revoked r3 只加载 Skill 即结束回合，`no workflow progress in "investigating"`
   终止（行为问题，待归因）。
 
+### 证据门禁批（eval-20260822T131025Z-b4bed00a90d0，45/45）
+
+问题 20 的门禁 + Skill 修复落地后的全量。45 次全部落库（问题 21 修复经受住
+全量考验），43 completed + 2 次 no-workflow-progress 行为性失败。
+
+| 维度 | 上一批（44） | 门禁批（45） |
+|---|---|---|
+| 成功运行 | 6/44（13.6%） | **23/45（51.1%）** |
+| score / 失败检查 | 0.831 / 154 | **0.862 / 129** |
+| 平均步数 / token | 9.1 / 75.7k | 9.4 / 81.9k（+8%） |
+| Judge 根因 | 30/44（68%） | **36/45（80%）** |
+| `required_evidence_coverage` | 33 | **18** |
+
+- 修复兑现回放预测：18 个"仅差证据引用"run 中 17 个翻绿（transient 例外，
+  其缺口是维度内的特定内容——failover 完成日志与 get_providers——四维度门禁
+  只保证维度存在，不保证查到特定日志，属 A2 形态残留）。
+- 过程成本远低于预估：步数 +0.3（预估 +2）、token +8%——工具描述与 Skill
+  教学使模型大多提前合规，门禁为确定性保底而非主要约束路径。
+- 病根重心转移：剩余 0/3 场景全部指向问题 17（authneg/credfall 未探测即升级、
+  budget 升级了但 reason_code/handoff 不合规）与问题 19（compound 第二周期缺失、
+  stuck 切换序列缺失），证据维度不再是主要卡点。
+
 ### 指标体系对照
 
 | 通用指标（第 6 章） | 本项目对应 |

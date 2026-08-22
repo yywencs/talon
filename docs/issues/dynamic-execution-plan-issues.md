@@ -30,6 +30,7 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
 | `eval-20260821T020709Z-361e455b7418` | v5 Prompt + 问题 18 门禁后运行至 30/45 因 token 成本中止；确定性评测 11/30 通过，Judge 未运行 | approval-gate 与 connection-recovery 升至 3/3（问题 18/20 生效）；credential-revoked 3/3→0/3 为 v5 凭据 reason_code 示例过度泛化，已在工作区改为条件式并推广先探测再升级，待复验 |
 | `eval-20260821T101800Z-361e455b7418` | GLM-5.3 首轮全量 45/45；9/45 通过（score 0.812，Judge 根因 35/45，80.9k token/次），另 3 次运行时失败（1 次即 rejected 误判 bug） | 模型/Prompt v5 修正版/瘦状态栏三变量同变的 GLM 系基线；quota-exhausted 3/3→0/3、connection-stale-sessions 3/3→1/3 为新退化 |
 | `eval-20260822T094845Z-db8179b96c04` | rejected 修复后复验：43 completed + 1 no-progress failed + 1 因问题 21 整 run 丢失（导出 44/45，流水线校验中止，评测对 44 份补跑）；成功 6/44、score 0.831、Judge 根因 30/44、75.7k token/次 | rejected 类 Guard 死亡未再现；quota-exhausted 0/3→2/3；但 `required_evidence_coverage` 失败 33 次成为一票否决项——mapping-regression/connection-recovery/credential-revoked 的失败清单几乎仅剩证据引用一项（问题 20 在 GLM 上未生效） |
+| `eval-20260822T131025Z-b4bed00a90d0` | 问题 20 门禁 + Skill 修复后全量 45/45（43 completed + 2 no-progress failed）；成功 **23/45（51.1%）**、score 0.862、失败检查 129、Judge 根因 36/45、9.4 步 / 81.9k token/次 | `required_evidence_coverage` 33→18；mapping-regression/connection-recovery/misleading/telemetry-missing 升至 3/3，stale-sessions/quota 2/3，credrevoked/approval 修复；步数仅 +0.3、token +8%——模型大多提前合规，门禁为保底。剩余 0/3 场景病根转为问题 17（authneg/credfall 未探测即升级、budget reason_code/handoff 不合规）与问题 19（compound 第二周期） |
 
 其中 `eval-20260818T101709Z-e35098c8f5b7` 的成功 Run ID 为
 `42117fab-62f9-4d69-b7bb-19db9d5799b2`：完整走过 refresh、失败 probe、
