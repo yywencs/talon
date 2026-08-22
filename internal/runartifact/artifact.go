@@ -456,8 +456,14 @@ func (r *Recorder) ValidateEvidenceRefs(refs []string) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return validateEvidenceRefsLocked(refs, r.artifact.AgentRuns)
+}
+
+// validateEvidenceRefsLocked 假定调用方已持有 Recorder 锁；runs 参数允许
+// 复用同一口径对任意调用历史做校验。
+func validateEvidenceRefsLocked(refs []string, runs []AgentRun) error {
 	available := make(map[string]struct{})
-	for _, run := range r.artifact.AgentRuns {
+	for _, run := range runs {
 		for _, call := range run.ToolCalls {
 			if call.Status != "succeeded" || call.Action != workflow.AgentActionRead {
 				continue

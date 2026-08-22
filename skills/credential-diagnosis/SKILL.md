@@ -21,6 +21,7 @@ description: >-
 ## 证据与停止条件
 
 - 至少保留故障指标、结构化鉴权错误、Provider 鉴权 Trace 和凭据元数据四类证据。
+- 升级前必须查询路由与备选 Provider 状态（get_routes/get_providers）证明当前没有可用的兼容回退，并在升级 evidence_refs 中引用；只验证回退 Provider 端点健康时同样要引用 get_providers 结果。
 - 凭据状态及管理边界已经确认后，停止查询无关遥测并决定提交 Execution Intent 或升级人工。
 - 证据否定凭据假设并指向连接或 mapping 故障时，引用新证据调用 `unload_skill`；下一轮再加载对应 Skill。若证据表明是复合故障，则保留本 Skill 并追加对应 Skill。
 - 无法读取凭据元数据、权限边界不明确或安全性无法确认时，调用 `escalate_incident`。

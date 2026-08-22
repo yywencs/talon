@@ -44,7 +44,7 @@ description: >-
 
 ## 证据与停止条件
 
-- 至少保留故障指标、连接错误以及连接元数据三类证据。
+- 至少保留故障指标、连接错误日志、连接元数据、Trace 对端地址以及 Provider 端点声明（get_providers）五类证据，并在提交时全部引用；"对端地址陈旧"这类对比结论必须同时引用 Trace 与 Provider 两侧。
 - 已定位失败阶段且修复动作及其前置版本明确时，停止继续查询并提交 Execution Intent。
 - 证据否定连接假设并指向凭据或 mapping 故障时，引用新证据调用 `unload_skill`；下一轮再加载对应 Skill。若证据表明是复合故障，则保留本 Skill 并追加对应 Skill。
 - 连接状态无法可靠读取、没有安全修复能力或冲突后无法获得新状态时，调用 `escalate_incident`。

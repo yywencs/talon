@@ -351,6 +351,44 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
 - **首次错误**：Prompt 证据门禁中"对比、因果或复合结论必须覆盖对比侧"过于抽象；
   模型会为根因主张引用证据，但不为排除性结论（如 Provider 端点健康）引用对比侧
   查询结果。
+- **深挖结论（eval-20260822T094845Z 批次，33 次失败）**：v5 的修复只作用于
+  "查了不引用"（约 25%），而 GLM 把主要病态变成"根本不查"（约 75%）——规则
+  约束了引用义务，模型的合规策略是降低结论宣称层级以规避义务（root_cause 停在
+  发布记录+错误日志+错误率的相关性层，从不做机理断言，因此"对比结论必须引用
+  两侧"无从触发）。模型敢不查的正当性来自 Skill 教学与期望基线的冲突：
+  mapping skill 明文"仅在需要时调用 query_traces"且"不查询跨域元数据"，
+  connection/credential skill 的证据清单缺 Trace 与 Provider/路由排除侧。
+  另发现 submit_execution_intent 与 escalate_incident 的 evidence_refs 在运行时
+  完全没有校验（ValidateEvidenceRefs 只接在 load_skill 上），编造引用不会被拦。
+- **修复（2026-08-22，门禁 + Skill）**：
+  1. `submit_execution_intent` 工具边界新增证据维度门禁：引用必须全部真实，
+     且覆盖四类观测维度（指标 query_metrics、日志 query_logs、链路 query_traces、
+     配置状态 get_change_records/get_config_versions/get_connection_metadata/
+     get_credential_metadata/get_providers/get_routes 任一），缺维度作为可纠正
+     结构化错误返回，错误消息指明缺失维度、查询工具与 critical_telemetry_missing
+     升级出口；某维度确实无法获得时不得修复、必须升级——与问题 16 的遥测缺失
+     判据在门禁层闭环。
+  2. `escalate_incident` 工具边界新增"已查必引"门禁：调查中已获得的任何维度
+     证据必须全部进入升级 evidence_refs（人工交接不得扣留发现），但不要求维度
+     完备——查不齐正是升级的理由。
+  3. 三个 Skill 证据基线对齐：mapping 把 Trace 从"仅在需要时"改为必查维度；
+     connection 补 Trace 对端地址与 get_providers 端点声明；credential 补升级前
+     路由/备选 Provider 排除侧。工具描述同步声明契约。
+  4. 实现位于 `runartifact.EvidenceDimensionCoverage`（纯函数，支持离线回放）与
+     Recorder 的 `ValidateIntentEvidence`/`ValidateEscalationEvidence`，经
+     `tools.WithEvidenceGate` 由 Agent 装配注入。
+- **验证**：表驱动单测覆盖维度分类（get_services 不计入、失败/写动作不计入）、
+  call_id 与 evidence_ref 双口径、编造引用拒绝、升级"只查两类也可升级"；
+  对 eval-20260822T094845Z 全批次回放（`TALON_REPLAY_DIR`）：56 个 Intent 中
+  49 个会被维度门禁命中（trace 缺 49、metrics 缺 16），18 次升级中 7 个会被
+  已查必引命中；已通过评测的 quota 2 个 run 与 approval 1 个 run 零命中（其引用
+  本就四维齐备，一致性好），其余通过 run 命中 1-2 次属"多查一轮"成本而非死路；
+  telemetry-missing 场景在门禁下的唯一出路是 critical_telemetry_missing 升级，
+  恰为场景期望终态。真实 GLM 冒烟（mapping-regression-rollback-001）：模型在
+  首个 Intent 前主动完成四维调查，root_cause 含"终止于 mapping.validate_request、
+  provider_request_sent=false"的 Trace 机理证据，2 次 query_traces 均产出
+  `trace.provider_request_not_sent`（前一批 3/3 全缺的 evidence id），完整走完
+  回滚→审批→探测→恢复并 resolved，门禁全程未被触发——教学先行生效。
 
 ## 21. 模型输出的非法 Unicode 转义导致 Run Artifact 无法入库
 

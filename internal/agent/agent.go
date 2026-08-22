@@ -118,6 +118,9 @@ func NewToolOpsAgent(ctx context.Context, config Config) (*ToolOpsAgent, error) 
 		toolset.WithWorkflow(config.Workflow),
 		toolset.WithEvidenceReader(config.Artifact),
 	}
+	if config.Artifact != nil {
+		toolOptions = append(toolOptions, toolset.WithEvidenceGate(config.Artifact))
+	}
 	if config.Skills != nil {
 		toolOptions = append(toolOptions, toolset.WithSkillSession(config.Skills))
 	}

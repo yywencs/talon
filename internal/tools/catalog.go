@@ -25,6 +25,19 @@ type options struct {
 	workflow     *workflow.IncidentWorkflow
 	skillSession *skill.Session
 	evidence     EvidenceReader
+	evidenceGate EvidenceGate
+}
+
+// EvidenceGate 在 Agent 提交修复意图或升级人工前，基于当前 Run 的只读调用
+// 历史校验证据引用的完整性。实现由运行时装配提供；为 nil 时跳过校验，
+// 用于不携带 RunArtifact Recorder 的装配（如部分工具层单测）。
+type EvidenceGate interface {
+	// ValidateIntentEvidence 要求引用全部真实，且覆盖指标、日志、链路、
+	// 配置状态四类观测维度。
+	ValidateIntentEvidence(refs []string) error
+	// ValidateEscalationEvidence 要求引用全部真实，且不遗漏调查中已获得的
+	// 任何维度证据。
+	ValidateEscalationEvidence(refs []string) error
 }
 
 var discoveryAgentToolNames = []string{
@@ -65,6 +78,12 @@ func WithEvidenceReader(value EvidenceReader) Option {
 	return func(target *options) { target.evidence = value }
 }
 
+// WithEvidenceGate 为 submit_execution_intent 与 escalate_incident 绑定
+// 提交前的证据完整性门禁。
+func WithEvidenceGate(value EvidenceGate) Option {
+	return func(target *options) { target.evidenceGate = value }
+}
+
 // New 构建只绑定到指定 Incident 和 Platform 实例的安全工具集。
 func New(ctx context.Context, service platform.ToolOpsPlatform, incidentID string, opts ...Option) (*Set, error) {
 	if service == nil {
@@ -84,7 +103,7 @@ func New(ctx context.Context, service platform.ToolOpsPlatform, incidentID strin
 		return nil, fmt.Errorf("workflow incident ID does not match tool incident ID")
 	}
 
-	staticTools, err := buildStaticTools(service, incidentID, config.evidence)
+	staticTools, err := buildStaticTools(service, incidentID, config.evidence, config.evidenceGate)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +145,7 @@ func New(ctx context.Context, service platform.ToolOpsPlatform, incidentID strin
 		for _, capability := range capabilities {
 			remediationCapabilities[capability.Name] = capability
 		}
-		intentTool, intentErr := newSubmitExecutionIntentTool(config.workflow, remediationCapabilities)
+		intentTool, intentErr := newSubmitExecutionIntentTool(config.workflow, remediationCapabilities, config.evidenceGate)
 		if intentErr != nil {
 			return nil, intentErr
 		}

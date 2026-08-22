@@ -38,11 +38,18 @@ type submitExecutionIntentInput struct {
 // newSubmitExecutionIntentTool 创建提交有界执行意图的 Eino 工具。
 // remediations 是当前 Incident 允许使用的修复能力快照；工具只负责校验并冻结当前意图，
 // 不会在提交过程中执行修复。提交成功后，Workflow 会从 investigating 转为 validating。
-func newSubmitExecutionIntentTool(instance *workflow.IncidentWorkflow, remediations map[string]platform.RemediationCapability) (einotool.InvokableTool, error) {
+// gate 非 nil 时在冻结前校验证据引用的真实性与四维度覆盖，被拒的提交作为可纠正
+// 工具结果返回，模型可在下一轮补齐查询后重新提交。
+func newSubmitExecutionIntentTool(instance *workflow.IncidentWorkflow, remediations map[string]platform.RemediationCapability, gate EvidenceGate) (einotool.InvokableTool, error) {
 	tool, err := toolutils.InferTool(
 		"submit_execution_intent",
-		"证据足够后提交当前有界执行意图。优先只提交当前可确定的短 Stage；仅当后续动作已经确定且只依赖前序结构化输出时，才可附带紧邻 Stage。Stage action 可使用已注册 remediation、request_probe 或 request_recovery。remediation 动作成功只能 continue 到紧随其后的显式 request_probe Stage，不能直接 succeeded——修复执行成功不等于 Incident 已解决。request_probe 健康只能 continue 到显式 request_recovery Stage，不能直接 succeeded。request_probe 和 request_recovery 的 arguments 必须是 route_id、policy_id、idempotency_key（策略字段名是 policy_id，不是 recovery_policy_id）。该工具只冻结意图并推进到 validating，不会直接执行动作；无安全方案时应升级人工。",
+		"证据足够后提交当前有界执行意图。优先只提交当前可确定的短 Stage；仅当后续动作已经确定且只依赖前序结构化输出时，才可附带紧邻 Stage。Stage action 可使用已注册 remediation、request_probe 或 request_recovery。remediation 动作成功只能 continue 到紧随其后的显式 request_probe Stage，不能直接 succeeded——修复执行成功不等于 Incident 已解决。request_probe 健康只能 continue 到显式 request_recovery Stage，不能直接 succeeded。request_probe 和 request_recovery 的 arguments 必须是 route_id、policy_id、idempotency_key（策略字段名是 policy_id，不是 recovery_policy_id）。evidence_refs 必须引用四类观测维度（指标 query_metrics、日志 query_logs、链路 query_traces、配置状态 get_change_records/get_config_versions/get_connection_metadata/get_credential_metadata/get_providers/get_routes）中每一类的至少一次成功查询，缺维度会被拒绝；某维度确实无法获得时应升级人工而非降低标准。该工具只冻结意图并推进到 validating，不会直接执行动作；无安全方案时应升级人工。",
 		func(_ context.Context, input submitExecutionIntentInput) (response[workflow.ExecutionIntentSubmission], error) {
+			if gate != nil {
+				if err := gate.ValidateIntentEvidence(input.EvidenceRefs); err != nil {
+					return platformResponse(workflow.ExecutionIntentSubmission{}, err), nil
+				}
+			}
 			if len(input.Stages) == 0 {
 				return platformResponse(workflow.ExecutionIntentSubmission{}, fmt.Errorf("intent stages is required")), nil
 			}

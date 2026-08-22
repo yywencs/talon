@@ -35,7 +35,7 @@ type escalationInput struct {
 	IdempotencyKey        string                        `json:"idempotency_key" jsonschema:"required,description=本次升级请求的唯一幂等键"`
 }
 
-func buildActionTools(service platform.ToolOpsPlatform, incidentID string) ([]einotool.InvokableTool, error) {
+func buildActionTools(service platform.ToolOpsPlatform, incidentID string, gate EvidenceGate) ([]einotool.InvokableTool, error) {
 	probe, err := toolutils.InferTool("request_probe", "修复完成后，请求控制器按策略执行小流量探测。Agent不能自行修改流量权重；探测失败时必须停止恢复并继续调查。", func(ctx context.Context, input probeInput) (response[platform.Operation], error) {
 		result, callErr := service.RequestProbe(ctx, platform.ProbeRequest{
 			IncidentID: incidentID, RouteID: input.RouteID, PolicyID: input.PolicyID, IdempotencyKey: input.IdempotencyKey,
@@ -61,11 +61,16 @@ func buildActionTools(service platform.ToolOpsPlatform, incidentID string) ([]ei
 	if err != nil {
 		return nil, fmt.Errorf("build get_operation tool: %w", err)
 	}
-	escalation, err := toolutils.InferTool("escalate_incident", "当没有安全修复方案、修复超过策略限制、需要更高权限或风险继续扩大时，提交证据和结构化 handoff 并升级人工处理。", func(ctx context.Context, input escalationInput) (response[platform.Operation], error) {
+	escalation, err := toolutils.InferTool("escalate_incident", "当没有安全修复方案、修复超过策略限制、需要更高权限或风险继续扩大时，提交证据和结构化 handoff 并升级人工处理。升级交接必须完整移交调查中已获得的全部维度证据：已查询过指标、日志、Trace 或配置状态的，对应 evidence_ref 都必须加入 evidence_refs，缺一会被拒绝。", func(ctx context.Context, input escalationInput) (response[platform.Operation], error) {
 		if !input.ReasonCode.Valid() {
 			return platformResponse(platform.Operation{}, fmt.Errorf(
 				"reason_code %q 不在稳定类别列表中；只能使用 suspected_security_incident、possible_data_corruption、critical_telemetry_missing、no_safe_remediation_available、insufficient_permissions、credential_change_requires_human、rollback_failed、blast_radius_expanding 或 workflow_budget_exhausted",
 				input.ReasonCode)), nil
+		}
+		if gate != nil {
+			if err := gate.ValidateEscalationEvidence(input.EvidenceRefs); err != nil {
+				return platformResponse(platform.Operation{}, err), nil
+			}
 		}
 		result, callErr := service.EscalateIncident(ctx, platform.EscalationRequest{
 			IncidentID: incidentID, ReasonCode: input.ReasonCode, Reason: input.Reason, EvidenceRefs: input.EvidenceRefs,
