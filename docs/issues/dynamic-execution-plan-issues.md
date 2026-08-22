@@ -28,6 +28,8 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
 | `eval-20260818T113949Z-e35098c8f5b7` | 3 个场景各 3 次全部达到预期终态；确定性检查 177 通过、0 失败、9 个语义 Judge 项跳过 | 问题 13–15 均通过真实矩阵复验；Agent 命令失败 0，三个场景成功率均为 1.0 |
 | `eval-20260820T024208Z-e9e2db44f57a` | `toolops-v2` 15 场景 ×3；44/45 运行时完成（1 次模型调用超时）；确定性评测 17/45 通过（Experience 字段修复后口径） | 新增问题 16–20：遥测缺失仍执行禁止修复、升级判断两极分化、跳过探测恢复关闭 Incident、复合故障半途停止、证据引用不完整 |
 | `eval-20260821T020709Z-361e455b7418` | v5 Prompt + 问题 18 门禁后运行至 30/45 因 token 成本中止；确定性评测 11/30 通过，Judge 未运行 | approval-gate 与 connection-recovery 升至 3/3（问题 18/20 生效）；credential-revoked 3/3→0/3 为 v5 凭据 reason_code 示例过度泛化，已在工作区改为条件式并推广先探测再升级，待复验 |
+| `eval-20260821T101800Z-361e455b7418` | GLM-5.3 首轮全量 45/45；9/45 通过（score 0.812，Judge 根因 35/45，80.9k token/次），另 3 次运行时失败（1 次即 rejected 误判 bug） | 模型/Prompt v5 修正版/瘦状态栏三变量同变的 GLM 系基线；quota-exhausted 3/3→0/3、connection-stale-sessions 3/3→1/3 为新退化 |
+| `eval-20260822T094845Z-db8179b96c04` | rejected 修复后复验：43 completed + 1 no-progress failed + 1 因问题 21 整 run 丢失（导出 44/45，流水线校验中止，评测对 44 份补跑）；成功 6/44、score 0.831、Judge 根因 30/44、75.7k token/次 | rejected 类 Guard 死亡未再现；quota-exhausted 0/3→2/3；但 `required_evidence_coverage` 失败 33 次成为一票否决项——mapping-regression/connection-recovery/credential-revoked 的失败清单几乎仅剩证据引用一项（问题 20 在 GLM 上未生效） |
 
 其中 `eval-20260818T101709Z-e35098c8f5b7` 的成功 Run ID 为
 `42117fab-62f9-4d69-b7bb-19db9d5799b2`：完整走过 refresh、失败 probe、
@@ -349,3 +351,33 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
 - **首次错误**：Prompt 证据门禁中"对比、因果或复合结论必须覆盖对比侧"过于抽象；
   模型会为根因主张引用证据，但不为排除性结论（如 Provider 端点健康）引用对比侧
   查询结果。
+
+## 21. 模型输出的非法 Unicode 转义导致 Run Artifact 无法入库
+
+- **状态**：已修复（存储层边界 sanitize，单测 + SQLite/真实 PostgreSQL 契约回归）。
+- **现场证据**：批次 `eval-20260822T094845Z-db8179b96c04` 的
+  compound-mapping-connection-001 第 2 次运行（Run `4e0c5405-b294-4bf2-bff2-d63df22940bd`）
+  在第二周期 `needs_agent` 唤回后提交新 Intent（workflow v24）时终止，错误为
+  `persist Agent run artifact checkpoint: upsert run artifact: ERROR: unsupported Unicode escape sequence (SQLSTATE 22P05)`。
+  该 Run 没有任何 terminal Artifact，批次导出 44/45，流水线校验中止。值得注意的是
+  该 Run 当时已基于失败 probe 的新证据进入第二周期修复——正是问题 19 期望的路径。
+- **首次错误**：模型输出的原始 JSON 经 `json.RawMessage` 原样进入 Artifact（工具
+  参数、输出等字段），其中可能携带 Go `encoding/json` 认为合法、但 PostgreSQL
+  JSONB 拒绝的转义：NUL（U+0000）与孤立 UTF-16 代理对。`json.Marshal` 对两者均
+  不报错（字符串中的 NUL 字节还会被重新编码为 U+0000 转义），错误只在数据库
+  服务端解析 JSONB 时爆发；且持久化发生在问题 4 修复后的独立 Context 中，报错
+  即终止整个运行，连 failed Artifact 都写不出来，审计轨迹全丢。
+- **修复**：在持久化边界统一修复而非逐字段清洗。`storage.sanitizeJSONForJSONB`
+  对序列化后的 JSON 文本做字节级定点替换：非法转义（NUL、孤立高/低代理）替换为
+  等长的 U+FFFD 转义，其余字节（数字字面量、键序、空白、成对代理转义、其他转义）
+  原样保留；不含 Unicode 转义序列的负载直接跳过完整扫描。`run_artifact_store.Upsert`
+  与 `approval_store.Create`（`arguments_json` 同为 JSONB）接入。语义上这等同于
+  任何 JSON 解码器（包括评测器）对无效码位本就会执行的替换，只是提前到入库前，
+  保证存储的 Artifact 始终可被两端一致解析。
+- **验证**：`jsonb_sanitize_test.go` 覆盖 NUL/孤立高低代理/成对代理保留/大小写
+  十六进制/大整数字面量/非 Unicode 转义原样/快路径；`runArtifactStoreContract`
+  增加带毒 Artifact 入库回归，SQLite 与真实 PostgreSQL（`TALON_TEST_POSTGRES_DSN`
+  契约测试）均通过。直接对 PostgreSQL 执行含 U+0000 转义的 `::jsonb` 转换仍复现
+  22P05 拒绝，确认修复层挡在生产失败模式之前。注意两驱动读回表示不同：JSONB
+  返回原始 U+FFFD 字符，SQLite 原样保留替换转义文本，回归断言按解码后的语义值
+  比较而非字节形式。

@@ -33,6 +33,10 @@ func (s *sqlApprovalStore) Create(ctx context.Context, request approval.Request)
 	if err != nil {
 		return approval.Request{}, fmt.Errorf("marshal approval arguments: %w", err)
 	}
+	arguments, err = sanitizeJSONForJSONB(arguments)
+	if err != nil {
+		return approval.Request{}, fmt.Errorf("sanitize approval arguments for JSONB storage: %w", err)
+	}
 	request.Status = approval.StatusPending
 	if request.RequestedAt.IsZero() {
 		request.RequestedAt = s.now().UTC()

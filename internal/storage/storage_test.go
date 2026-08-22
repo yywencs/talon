@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -152,6 +153,40 @@ func runArtifactStoreContract(t *testing.T, store runartifact.Store) {
 
 	_, err = store.Get(ctx, "00000000-0000-4000-8000-000000000000")
 	assert.ErrorIs(t, err, runartifact.ErrNotFound)
+
+	// 模型输出的非法 Unicode 转义（NUL / 孤立代理对）经 RawMessage 透传进入
+	// Artifact 时，不得让整次运行无法入库：持久化边界应替换为 U+FFFD。
+	escape := func(hex string) string { return string(unicodeEscapeProbe) + hex }
+	poisonRecorder := runartifact.New("scenario-artifact-poison", runartifact.Provenance{CodeVersion: "test", DatasetVersion: "toolops-v1"}, runartifact.RunConfig{})
+	poisonRecorder.BeginAgentRun("investigate", workflow.Snapshot{State: workflow.StateInvestigating})
+	poisonRecorder.RecordToolCall("call-poison", "query_logs", workflow.AgentActionRead,
+		`{"q":"`+escape("0000")+`"}`, `{"data":[{"note":"x`+escape("d83d")+`y"}]}`, time.Now(), nil, false)
+	poisoned := poisonRecorder.Finish("failed", workflow.Snapshot{State: workflow.StateInvestigating}, errors.New("synthetic failure"))
+	require.NoError(t, store.Upsert(ctx, poisoned))
+	persistedPoison, err := store.Get(ctx, poisoned.RunID)
+	require.NoError(t, err)
+	require.Len(t, persistedPoison.AgentRuns, 1)
+	persistedPoisonText, err := json.Marshal(persistedPoison)
+	require.NoError(t, err)
+	assert.NotContains(t, string(persistedPoisonText), escape("0000"))
+	assert.NotContains(t, string(persistedPoisonText), escape("d83d"))
+	// 修复后的 Artifact 仍可正常解码回结构；无效码位已替换为 U+FFFD。
+	// 注意表示形式因驱动而异：JSONB 读回是原始 U+FFFD 字符，SQLite 原样
+	// 保留替换转义文本，因此断言解码后的语义值而非字节形式。
+	assert.Equal(t, poisoned.RunID, persistedPoison.RunID)
+	require.Len(t, persistedPoison.AgentRuns[0].ToolCalls, 1)
+	replacementChar := string(rune(0xFFFD))
+	var arguments map[string]any
+	require.NoError(t, json.Unmarshal(persistedPoison.AgentRuns[0].ToolCalls[0].Arguments, &arguments))
+	assert.Equal(t, replacementChar, arguments["q"])
+	var output struct {
+		Data []struct {
+			Note string `json:"note"`
+		} `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(persistedPoison.AgentRuns[0].ToolCalls[0].Output, &output))
+	require.Len(t, output.Data, 1)
+	assert.Equal(t, "x"+replacementChar+"y", output.Data[0].Note)
 }
 
 func runApprovalStoreContract(t *testing.T, store approval.Store, prefix string) {

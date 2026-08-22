@@ -35,6 +35,10 @@ func (s *sqlRunArtifactStore) Upsert(ctx context.Context, artifact runartifact.R
 	if err != nil {
 		return fmt.Errorf("marshal run artifact %q: %w", artifact.RunID, err)
 	}
+	payload, err = sanitizeJSONForJSONB(payload)
+	if err != nil {
+		return fmt.Errorf("sanitize run artifact %q for JSONB storage: %w", artifact.RunID, err)
+	}
 	var finishedAt any
 	if !artifact.FinishedAt.IsZero() {
 		finishedAt = artifact.FinishedAt.UTC()

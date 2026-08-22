@@ -101,6 +101,29 @@ Anthropic 协议接入共修 5 项：provider 通道与 max_tokens 必填、空�
 为 `{}`、Skill 消息固定 System 之后满足首消息约束、工具执行/反序列化错误转可
 纠正结构化结果。
 
+### rejected 修复复验（eval-20260822T094845Z-db8179b96c04，44/45）
+
+在 GLM 首轮代码之上仅叠加 rejected 修复（Prompt v5 修正版、模型、数据集均不变，
+单代码变量可比）。45 次计划运行中 1 次因问题 21（JSONB 非法转义）整 run 丢失、
+1 次 no-workflow-progress failed，导出 44/45 使流水线校验中止；确定性评测与 Judge
+对 44 份补跑：
+
+| 维度 | GLM 首轮（45） | 本次（44） |
+|---|---|---|
+| 成功运行 | 9/45（20%） | 6/44（13.6%） |
+| score / 失败检查 | 0.812 / 165 | 0.831 / 154 |
+| 平均步数 / token | 9.7 / 80.9k | 9.1 / 75.7k |
+| Judge 根因 | 35/45（78%） | 30/44（68%） |
+| 运行时失败 | 3 | 2（问题 21 丢 1 run + 1 no-progress） |
+
+- rejected 类 Guard 死亡未再现；quota-exhausted 0/3→2/3（首轮"该升不升"退化恢复）。
+- 成功率下降几乎全部集中在 `required_evidence_coverage`（33 次，问题 20）：mapping-regression
+  0/3、connection-recovery 0/3、credential-revoked 其中 2 次的失败清单**仅剩该一项**——
+  升级逻辑、reason_code、修复链、审批全对，只差引用证据不完整。失败形态跨场景稳定，
+  指向 v5 的证据引用规则在 GLM 上未生效，而非随机波动。
+- credential-revoked r3 只加载 Skill 即结束回合，`no workflow progress in "investigating"`
+  终止（行为问题，待归因）。
+
 ### 指标体系对照
 
 | 通用指标（第 6 章） | 本项目对应 |
