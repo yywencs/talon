@@ -401,21 +401,21 @@ func workflowToolGuard(instance *workflow.IncidentWorkflow, tools *toolset.Set, 
 					recordToolCall(recorder, input, action, denied, started, outputErr, true)
 					return denied, outputErr
 				}
-			output, err := next(ctx, input)
-			if err != nil {
-				// 工具执行或参数反序列化错误转换为结构化工具结果返回，模型可以在
-				// 下一轮修正后重试；这延续了 submit_plan 的可纠正错误协议——只有
-				// Agent 调用预算和超时等运行级限制才会终止运行。部分模型（如智谱
-				// GLM 经 Anthropic 协议）偶发产出与 Schema 类型不匹配的参数，直接
-				// 终止会把可自愈的格式错误放大成整次运行失败。
-				corrected, correctableErr := deniedToolOutput(err)
-				if correctableErr != nil {
-					recordToolCall(recorder, input, action, nil, started, err, false)
-					return nil, err
+				output, err := next(ctx, input)
+				if err != nil {
+					// 工具执行或参数反序列化错误转换为结构化工具结果返回，模型可以在
+					// 下一轮修正后重试；这延续了 submit_plan 的可纠正错误协议——只有
+					// Agent 调用预算和超时等运行级限制才会终止运行。部分模型（如智谱
+					// GLM 经 Anthropic 协议）偶发产出与 Schema 类型不匹配的参数，直接
+					// 终止会把可自愈的格式错误放大成整次运行失败。
+					corrected, correctableErr := deniedToolOutput(err)
+					if correctableErr != nil {
+						recordToolCall(recorder, input, action, nil, started, err, false)
+						return nil, err
+					}
+					recordToolCall(recorder, input, action, corrected, started, err, false)
+					return corrected, nil
 				}
-				recordToolCall(recorder, input, action, corrected, started, err, false)
-				return corrected, nil
-			}
 				if action == workflow.AgentActionRead && input.CallID != "" && toolResponseSucceeded(output.Result) {
 					if attachErr := attachEvidenceReference(output, input.CallID); attachErr != nil {
 						recordToolCall(recorder, input, action, output, started, attachErr, false)
