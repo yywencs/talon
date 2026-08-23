@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wen/opentalon/internal/platform"
 	"github.com/wen/opentalon/internal/workflow"
 )
 
@@ -78,11 +79,12 @@ func TestValidateIntentEvidenceRejectsWhenNoEvidenceAtAll(t *testing.T) {
 func TestValidateEscalationEvidenceRequiresEveryConsultedDimension(t *testing.T) {
 	recorder := newEvidenceGateRecorder(t)
 	// 只交接部分维度：调查已获得的其余维度必须点名补齐。
-	err := recorder.ValidateEscalationEvidence([]string{"call-logs"})
+	err := recorder.ValidateEscalationEvidence(platform.EscalationReasonCriticalTelemetryMissing, []string{"call-logs"}, nil)
 	require.ErrorContains(t, err, "指标")
 	require.ErrorContains(t, err, "链路")
 	require.ErrorContains(t, err, "配置状态")
-	require.NoError(t, recorder.ValidateEscalationEvidence([]string{"call-metrics", "call-logs", "call-traces", "call-config"}))
+	require.NoError(t, recorder.ValidateEscalationEvidence(platform.EscalationReasonCriticalTelemetryMissing,
+		[]string{"call-metrics", "call-logs", "call-traces", "call-config"}, nil))
 }
 
 func TestValidateEscalationEvidenceAllowsIncompleteDimensions(t *testing.T) {
@@ -90,5 +92,55 @@ func TestValidateEscalationEvidenceAllowsIncompleteDimensions(t *testing.T) {
 	recorder := New("gate-scenario", Provenance{CodeVersion: "test", DatasetVersion: "toolops-v1"}, RunConfig{})
 	recorder.BeginAgentRun("investigate", workflow.Snapshot{State: workflow.StateInvestigating})
 	recorder.RecordToolCall("call-logs", "query_logs", workflow.AgentActionRead, "{}", "{}", time.Now(), nil, false)
-	require.NoError(t, recorder.ValidateEscalationEvidence([]string{"call-logs"}))
+	require.NoError(t, recorder.ValidateEscalationEvidence(platform.EscalationReasonCriticalTelemetryMissing, []string{"call-logs"}, nil))
+}
+
+func recordEscalationGateOperations(t *testing.T, recorder *Recorder, operations ...platform.Operation) {
+	t.Helper()
+	recorder.RecordFinalState(operations, FinalState{})
+}
+
+func TestValidateEscalationEvidenceRequiresProbeBeforeNoSafeClaim(t *testing.T) {
+	recorder := newEvidenceGateRecorder(t)
+	err := recorder.ValidateEscalationEvidence(platform.EscalationReasonNoSafeRemediationAvailable,
+		[]string{"call-metrics", "call-logs", "call-traces", "call-config"}, []string{"rollback_mapping"})
+	// Gate A：从未探测就断言无路可走会被拒绝，错误指明 request_probe 出口。
+	require.ErrorContains(t, err, "request_probe")
+	require.ErrorContains(t, err, "从未探测")
+
+	recordEscalationGateOperations(t, recorder,
+		platform.Operation{Kind: platform.OperationProbe, Name: "request_probe", Status: platform.OperationSucceeded})
+	require.NoError(t, recorder.ValidateEscalationEvidence(platform.EscalationReasonNoSafeRemediationAvailable,
+		[]string{"call-metrics", "call-logs", "call-traces", "call-config"}, []string{"rollback_mapping"}))
+}
+
+func TestValidateEscalationEvidenceRequiresHonestBudgetExhaustion(t *testing.T) {
+	recorder := newEvidenceGateRecorder(t)
+	recordEscalationGateOperations(t, recorder,
+		platform.Operation{Kind: platform.OperationProbe, Name: "request_probe", Status: platform.OperationSucceeded},
+		platform.Operation{Kind: platform.OperationRemediation, Name: "refresh_provider_connection", Status: platform.OperationSucceeded},
+		platform.Operation{Kind: platform.OperationRemediation, Name: "recreate_provider_connection_pool", Status: platform.OperationSucceeded},
+	)
+	authorized := []string{"refresh_provider_connection", "recreate_provider_connection_pool"}
+	// Gate B：授权动作全部尝试过还谎报"无安全修复手段"会被拒绝。
+	err := recorder.ValidateEscalationEvidence(platform.EscalationReasonNoSafeRemediationAvailable,
+		[]string{"call-metrics", "call-logs", "call-traces", "call-config"}, authorized)
+	require.ErrorContains(t, err, "workflow_budget_exhausted")
+	require.ErrorContains(t, err, "自治修复轮次已耗尽")
+	// 如实申报预算耗尽即可通过。
+	require.NoError(t, recorder.ValidateEscalationEvidence(platform.EscalationReasonWorkflowBudgetExhausted,
+		[]string{"call-metrics", "call-logs", "call-traces", "call-config"}, authorized))
+}
+
+func TestValidateEscalationEvidenceBudgetGateAllowsUnattemptedTools(t *testing.T) {
+	recorder := newEvidenceGateRecorder(t)
+	recordEscalationGateOperations(t, recorder,
+		platform.Operation{Kind: platform.OperationProbe, Name: "request_probe", Status: platform.OperationSucceeded},
+		platform.Operation{Kind: platform.OperationRemediation, Name: "refresh_provider_connection", Status: platform.OperationSucceeded},
+	)
+	// 还有一个授权动作没试过：不是预算耗尽，no_safe_remediation_available 可用。
+	err := recorder.ValidateEscalationEvidence(platform.EscalationReasonNoSafeRemediationAvailable,
+		[]string{"call-metrics", "call-logs", "call-traces", "call-config"},
+		[]string{"refresh_provider_connection", "recreate_provider_connection_pool"})
+	require.NoError(t, err)
 }

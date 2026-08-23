@@ -359,7 +359,7 @@ func TestDynamicExecutionLimitsStopStageAndAgentResumeLoops(t *testing.T) {
 		assert.Equal(t, StateInvestigating, instance.Snapshot().State)
 	})
 
-	t.Run("max agent resumes fails closed", func(t *testing.T) {
+	t.Run("max agent resumes escalates conservatively", func(t *testing.T) {
 		instance, err := NewIncidentWorkflow(Config{IncidentID: "resume-limit", Limits: ExecutionLimits{MaxStages: 4, MaxAgentResumes: 1, MaxActions: 4}})
 		require.NoError(t, err)
 		_, err = instance.Apply(Event{Type: EventStartInvestigation, Actor: ActorController})
@@ -371,9 +371,10 @@ func TestDynamicExecutionLimitsStopStageAndAgentResumeLoops(t *testing.T) {
 
 		second := submitOneStageNeedsAgent(t, instance, "second")
 		secondCheckpoint := completeOneStageIntent(t, instance, second)
-		assert.Equal(t, CheckpointFailed, secondCheckpoint.Decision)
+		// 唤回预算耗尽必须保守升级而非失败：人工接管是正确终点。
+		assert.Equal(t, CheckpointEscalate, secondCheckpoint.Decision)
 		assert.Contains(t, secondCheckpoint.DecisionReason, "maximum agent resume count")
-		assert.Equal(t, StateFailed, instance.Snapshot().State)
+		assert.Equal(t, StateEscalated, instance.Snapshot().State)
 	})
 }
 

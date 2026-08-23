@@ -279,7 +279,7 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
 
 ## 17. 升级判断两极分化：该升不升、能修乱升
 
-- **状态**：未修复。
+- **状态**：已修复（升级门禁化 + 能力目录可见性 + 硬墙保守升级，2026-08-23）。
 - **现场证据**：批次 `eval-20260820T024208Z-e9e2db44f57a` 中四组形态：
   budget-exhausted-escalation-001 3/3 未升级（如 Run ID
   `16027052-c33c-4f24-a1a3-131fb7fb83e6`），`escalation.reason_code` 与 `destination`
@@ -296,6 +296,34 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
   也不够醒目。
 - **关联**：与问题 10 同类能力在更复杂世界状态下的复发；当时的修复只覆盖
   "失败 probe 满足前置条件"单一分支。
+- **修复（2026-08-23，问题 17 门禁化 + 能力目录可见性）**：
+  1. **先探测门禁（Gate A）**：`escalate_incident` 选 `no_safe_remediation_available`
+     或 `credential_change_requires_human` 时，本次运行必须存在探测操作（任意状态，
+     含被前置条件拒绝的）——历史窗口的错误只证明过去发生过故障，未探测不得断言
+     无路可走。拒绝消息教学正确出口：提交包含 request_probe Stage 的有界执行意图
+     （request_probe 对模型不可直接调用，只能作为 Stage 动作）。
+  2. **如实申报预算（Gate B）**：能力目录中全部授权修复动作都已尝试且未恢复时，
+     reason_code 必须 `workflow_budget_exhausted`，谎报为无安全修复手段直接拒绝。
+     修复手段存在且已试过与"没有修复手段"对人工是两种完全不同的决策输入。
+  3. **handoff 结构完整性（Gate C）**：受影响服务、当前保护状态、建议人工动作
+     必填；`credential_change_requires_human` 还必须携带鉴权证据。
+  4. **能力目录可见性**：`get_remediation_capabilities` 不再隐藏无权动作，返回
+     全量并标注 `agent_authorized`——模型由此区分"没有修复手段"与"修复手段在更高
+     授权层"，升级时把无权动作写入 handoff 的建议人工动作。调用边界不变：无权动作
+     不生成可调用工具，Simulator 执行层拒绝兜底。
+  5. **硬墙保守升级**：`MaxAgentResumes` 触顶从 `CheckpointFailed`（运行失败）改为
+     `CheckpointEscalate`——Agent 无法继续自治时正确终点是移交人工而非崩掉。
+  6. Simulator 的探测前置条件拒绝消息补充指路：被拒后重查凭据元数据与变更记录
+     （凭据可能已被平台轮换），不要无新证据重复探测。
+- **验证**：单测覆盖 Gate A/B/C 各拒绝与放行路径、目录可见性、硬墙升级；对
+  eval-20260822T131025Z 批次回放：54 个 Intent 维度门禁零命中（上批教学已内化），
+  18 次升级中 gate-probe 命中 12（authneg/credfall/credrevoked/quota 全部——正是
+  未探测即升级的病态）、gate-budget 命中 2（budget 场景两个谎报 run）；
+  已通过 run 的命中均为"多一轮"成本。GLM 冒烟：budget 场景以
+  `workflow_budget_exhausted` 如实升级且 handoff 完整（建议人工动作精确到
+  "恢复上游 DNS，两项授权修复均已执行且失败"）；authneg 场景模型正确转向提交
+  探测意图（探测被场景的轮换时间线拒绝属设计内行为，正路是重查凭据元数据发现
+  轮换后探测），配合拒绝消息指路。
 
 ## 18. 修复成功后跳过探测与恢复直接关闭 Incident
 

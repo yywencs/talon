@@ -272,14 +272,15 @@ func (s *Simulator) GetRemediationCapabilities(ctx context.Context, query platfo
 	defer w.mu.RUnlock()
 	result := make([]platform.RemediationCapability, 0, len(w.remediationTools))
 	for _, definition := range w.remediationTools {
-		if definition.AgentAuthorized != nil && !*definition.AgentAuthorized {
-			continue
-		}
+		// 目录返回全部动作并标注授权状态：无权动作不隐藏，Agent 升级时可以
+		// 把它写入 handoff 的建议人工动作；调用边界的强制在 operations 层。
+		agentAuthorized := definition.AgentAuthorized == nil || *definition.AgentAuthorized
 		result = append(result, platform.RemediationCapability{
 			Name:             definition.Name,
 			Description:      definition.Description,
 			Risk:             definition.Risk,
 			RequiresApproval: definition.RequiresApproval,
+			AgentAuthorized:  agentAuthorized,
 			Arguments:        append([]string(nil), definition.Arguments...),
 			Preconditions:    cloneAnyMap(definition.Preconditions),
 		})

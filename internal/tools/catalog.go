@@ -35,9 +35,11 @@ type EvidenceGate interface {
 	// ValidateIntentEvidence 要求引用全部真实，且覆盖指标、日志、链路、
 	// 配置状态四类观测维度。
 	ValidateIntentEvidence(refs []string) error
-	// ValidateEscalationEvidence 要求引用全部真实，且不遗漏调查中已获得的
-	// 任何维度证据。
-	ValidateEscalationEvidence(refs []string) error
+	// ValidateEscalationEvidence 要求引用全部真实、不遗漏已获得的维度证据，
+	// 并按 reasonCode 做升级前置校验：断言无安全修复手段前必须探测过当前
+	// 状态；授权修复动作全部尝试耗尽时必须如实申报 workflow_budget_exhausted。
+	// authorizedTools 是当前能力目录中 Agent 有权调用的动作名清单。
+	ValidateEscalationEvidence(reasonCode platform.EscalationReasonCode, refs []string, authorizedTools []string) error
 }
 
 var discoveryAgentToolNames = []string{
@@ -103,10 +105,8 @@ func New(ctx context.Context, service platform.ToolOpsPlatform, incidentID strin
 		return nil, fmt.Errorf("workflow incident ID does not match tool incident ID")
 	}
 
-	staticTools, err := buildStaticTools(service, incidentID, config.evidence, config.evidenceGate)
-	if err != nil {
-		return nil, err
-	}
+	// 先取能力目录：escalate/incident 工具的门禁需要授权动作清单，
+	// 且能力快照决定哪些动作对 Agent 可调用。
 	capabilities, err := service.GetRemediationCapabilities(ctx, platform.StateQuery{
 		Scope: platform.Scope{IncidentID: incidentID},
 	})
@@ -114,6 +114,20 @@ func New(ctx context.Context, service platform.ToolOpsPlatform, incidentID strin
 		return nil, fmt.Errorf("get remediation capabilities: %w", err)
 	}
 	sort.Slice(capabilities, func(i, j int) bool { return capabilities[i].Name < capabilities[j].Name })
+	authorizedCapabilities := make(map[string]platform.RemediationCapability, len(capabilities))
+	authorizedNames := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		if !capability.AgentAuthorized {
+			continue
+		}
+		authorizedCapabilities[capability.Name] = capability
+		authorizedNames = append(authorizedNames, capability.Name)
+	}
+
+	staticTools, err := buildStaticTools(service, incidentID, config.evidence, config.evidenceGate, authorizedNames)
+	if err != nil {
+		return nil, err
+	}
 
 	set := &Set{
 		invokable: make(map[string]einotool.InvokableTool, len(staticTools)+len(capabilities)+1),
@@ -135,17 +149,18 @@ func New(ctx context.Context, service platform.ToolOpsPlatform, incidentID strin
 			}
 		}
 	}
+	// 只有授权动作生成可调用工具；无权动作停留在目录可见层，
+	// 调用边界由 Simulator 的执行拒绝兜底（纵深防御）。
 	for _, capability := range capabilities {
+		if !capability.AgentAuthorized {
+			continue
+		}
 		if err := set.add(ctx, newRemediationTool(service, incidentID, capability)); err != nil {
 			return nil, err
 		}
 	}
 	if config.workflow != nil {
-		remediationCapabilities := make(map[string]platform.RemediationCapability, len(capabilities))
-		for _, capability := range capabilities {
-			remediationCapabilities[capability.Name] = capability
-		}
-		intentTool, intentErr := newSubmitExecutionIntentTool(config.workflow, remediationCapabilities, config.evidenceGate)
+		intentTool, intentErr := newSubmitExecutionIntentTool(config.workflow, authorizedCapabilities, config.evidenceGate)
 		if intentErr != nil {
 			return nil, intentErr
 		}

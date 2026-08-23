@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/wen/opentalon/internal/platform"
 )
 
 type stubEvidenceGate struct {
@@ -14,8 +15,10 @@ type stubEvidenceGate struct {
 	escalationErr error
 }
 
-func (s stubEvidenceGate) ValidateIntentEvidence([]string) error     { return s.intentErr }
-func (s stubEvidenceGate) ValidateEscalationEvidence([]string) error { return s.escalationErr }
+func (s stubEvidenceGate) ValidateIntentEvidence([]string) error { return s.intentErr }
+func (s stubEvidenceGate) ValidateEscalationEvidence(platform.EscalationReasonCode, []string, []string) error {
+	return s.escalationErr
+}
 
 func TestSubmitExecutionIntentGateRejectsAsCorrectableError(t *testing.T) {
 	tool, err := newSubmitExecutionIntentTool(nil, nil, stubEvidenceGate{intentErr: errors.New("证据引用缺少维度：链路（query_traces）")})

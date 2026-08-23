@@ -219,12 +219,16 @@ type TaskQuery struct {
 // RemediationCapability 是允许向 Agent 暴露的安全修复函数说明。
 // 它不包含场景内部动作结果、隐藏根因或凭证材料。
 type RemediationCapability struct {
-	Name             string         `json:"name"`
-	Description      string         `json:"description"`
-	Risk             string         `json:"risk,omitempty"`
-	RequiresApproval bool           `json:"requires_approval"`
-	Arguments        []string       `json:"arguments"`
-	Preconditions    map[string]any `json:"preconditions,omitempty"`
+	Name             string `json:"name"`
+	Description      string `json:"description"`
+	Risk             string `json:"risk,omitempty"`
+	RequiresApproval bool   `json:"requires_approval"`
+	// AgentAuthorized 标记当前 Agent 是否有权调用该修复动作。目录会返回全部
+	// 动作：无权动作对 Agent 是"看得见但调不了"的事实，用于区分"没有修复
+	// 手段"与"修复手段在更高授权层"，升级时写入 handoff 的建议人工动作。
+	AgentAuthorized bool           `json:"agent_authorized"`
+	Arguments       []string       `json:"arguments"`
+	Preconditions   map[string]any `json:"preconditions,omitempty"`
 }
 
 // RecoveryPolicy 是 Controller 向 Agent 公开的确定性探测和逐级恢复规则。

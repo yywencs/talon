@@ -895,7 +895,10 @@ func (w *IncidentWorkflow) EvaluateCheckpoint() (DecisionCheckpoint, error) {
 
 func (w *IncidentWorkflow) needsAgentDecisionLocked(reason string) (CheckpointDecision, EventType, string) {
 	if w.agentResumesUsed >= w.limits.MaxAgentResumes {
-		return CheckpointFailed, EventCheckpointFailed, "maximum agent resume count exceeded"
+		// 唤回预算耗尽时保守升级而不是失败：Agent 无法继续自治时，
+		// 正确的终点是把 Incident 移交人工，而不是让运行崩掉丢失交接。
+		return CheckpointEscalate, EventCheckpointEscalated,
+			"maximum agent resume count exceeded: 自治修复轮次预算已耗尽，停止自治并升级人工"
 	}
 	return CheckpointNeedsAgent, EventCheckpointNeedsAgent, reason
 }

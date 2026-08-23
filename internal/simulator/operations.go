@@ -102,7 +102,7 @@ func (s *Simulator) RequestProbe(ctx context.Context, request platform.ProbeRequ
 	}
 	if required := asString(w.probeTool.Preconditions["credential_status_must_be"]); required != "" {
 		if credential, exists := w.credentials[route.ProviderID]; !exists || credential.Status != required {
-			return w.rejectOperationLocked(operation, "credential status does not satisfy probe policy", platform.ErrPreconditionFailed)
+			return w.rejectOperationLocked(operation, "credential status does not satisfy probe policy: 当前凭据状态不满足探测前置条件，请重新查询凭据元数据与凭据变更记录确认最新状态（凭据可能已被平台轮换）后再探测，不要无新证据重复相同探测", platform.ErrPreconditionFailed)
 		}
 	}
 

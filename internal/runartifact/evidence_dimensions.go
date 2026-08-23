@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/wen/opentalon/internal/platform"
 	"github.com/wen/opentalon/internal/workflow"
 )
 
@@ -98,11 +99,17 @@ func (r *Recorder) ValidateIntentEvidence(refs []string) error {
 	return nil
 }
 
-// ValidateEscalationEvidence 是 escalate_incident 的证据门禁：引用必须全部真实，
-// 且不得遗漏调查中已获得的任何维度。升级是把 Incident 移交给人工，扣留已到手
-// 的证据会迫使接手者重复调查；维度不完备本身不是升级的障碍——查不齐正说明
-// 需要人工介入。
-func (r *Recorder) ValidateEscalationEvidence(refs []string) error {
+// ValidateEscalationEvidence 是 escalate_incident 的证据门禁：引用必须全部真实、
+// 不得遗漏调查中已获得的任何维度，并按 reasonCode 做升级前置校验——
+//   - Gate A（先探测）：断言"无安全修复手段"或"凭据变更需人工"前，必须至少
+//     探测过一次当前状态。历史窗口的错误只证明过去发生过故障，瞬时故障可能
+//     已自愈，未探测不得断言无路可走。
+//   - Gate B（如实申报预算）：能力目录中全部授权修复动作都已尝试时，自治修复
+//     额度即已耗尽，reason_code 必须是 workflow_budget_exhausted——修复手段
+//     存在且已试过，谎报为 no_safe_remediation_available 会误导人工判断。
+//
+// 维度不完备本身不是升级的障碍——查不齐正说明需要人工介入。
+func (r *Recorder) ValidateEscalationEvidence(reasonCode platform.EscalationReasonCode, refs []string, authorizedTools []string) error {
 	if r == nil {
 		return fmt.Errorf("run artifact recorder is required")
 	}
@@ -123,6 +130,32 @@ func (r *Recorder) ValidateEscalationEvidence(refs []string) error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("本次调查已获得以下维度的证据，但升级引用未包含：%s。升级交接必须完整移交全部已获得的证据，请把对应查询返回的 evidence_ref 加入 evidence_refs 后重试", strings.Join(missing, "、"))
+	}
+	probeAttempted := false
+	attempted := make(map[string]struct{})
+	for _, operation := range r.artifact.Operations {
+		switch operation.Kind {
+		case platform.OperationProbe:
+			probeAttempted = true
+		case platform.OperationRemediation:
+			attempted[operation.Name] = struct{}{}
+		}
+	}
+	if (reasonCode == platform.EscalationReasonNoSafeRemediationAvailable ||
+		reasonCode == platform.EscalationReasonCredentialChangeRequiresHuman) && !probeAttempted {
+		return fmt.Errorf("升级被拒：reason_code=%s 断言没有安全自治路径，但本次运行从未探测过当前状态。历史窗口的错误只证明过去发生过故障，瞬时故障可能已经自愈；请先提交一个包含 request_probe Stage 的有界执行意图（checkpoint_policy 使用 fail-closed 默认决策）验证故障当前状态，再基于探测结果决定恢复流量或提交升级", reasonCode)
+	}
+	if len(authorizedTools) > 0 && reasonCode != platform.EscalationReasonWorkflowBudgetExhausted {
+		exhausted := true
+		for _, name := range authorizedTools {
+			if _, ok := attempted[name]; !ok {
+				exhausted = false
+				break
+			}
+		}
+		if exhausted {
+			return fmt.Errorf("升级被拒：能力目录中的全部授权修复动作（%s）都已尝试且未恢复，自治修复轮次已耗尽。此时必须如实使用 reason_code=workflow_budget_exhausted 升级，并在 handoff 中记录已尝试的动作与失败结果，供人工决策；不得谎报为无安全修复手段", strings.Join(authorizedTools, "、"))
+		}
 	}
 	return nil
 }
