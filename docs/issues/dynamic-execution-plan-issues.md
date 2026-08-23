@@ -469,3 +469,34 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
   22P05 拒绝，确认修复层挡在生产失败模式之前。注意两驱动读回表示不同：JSONB
   返回原始 U+FFFD 字符，SQLite 原样保留替换转义文本，回归断言按解码后的语义值
   比较而非字节形式。
+
+## 22. 复合故障把 probe 默认决策设为 failed 直接终死
+
+- **状态**：未修复。
+- **现场证据**：批次 `eval-20260823T093459Z-622c0dfc4816` 与
+  `eval-20260823T102148Z-a52b92bafd68` 中 compound-mapping-connection-001 共 6 个 run
+  以 `workflow stopped in failed state` 运行失败：模型把第一周期 probe Stage 的
+  fail-closed 默认决策设为 `failed`（默认理由"探测失败，禁止进入恢复"），而该场景
+  第一周期探测**预期**就是 hard_stop——正确默认应为 `needs_agent` 唤回自己进入
+  第二周期。`failed` 一触发整个 run 进入终态，连 failed artifact 之外的调查轨迹
+  都失去了继续的机会。
+- **首次错误**：问题 14 的门禁允许 `needs_agent/failed/escalate/blocked` 四种
+  fail-closed 默认决策，没有区分"探测失败后还有后续自治可能"的场景——复合故障
+  的失败探测是第二周期的必要新证据（问题 10 的教训在复合世界状态下的复发），
+  默认 `failed` 把"新证据输入"变成了"终审判决"。
+- **建议**：收紧 probe Stage 的默认决策约束——当能力目录仍存在未尝试的授权修复
+  动作时，probe 默认决策只允许 `needs_agent`（存在可继续的自治路径时，探测失败
+  必须交回 Agent 重新评估）；只有确无剩余能力时才允许 `failed/escalate`。该门禁
+  与升级门禁 Gate B 使用同一判定基础（授权动作 vs 已尝试动作），可一并实现。
+  预计连带改善 stuck/mapping-pool 的问题 19 族失败。
+
+## 23. Agent 无动作结束回合（no-progress）变体偶发
+
+- **状态**：未归因完成。
+- **现场证据**：跨批次累计 5-6 次、跨场景低频出现（如
+  `eval-20260823T102148Z` 的 connection-stale-sesions-001 Run `3794d3bc`：workflow
+  停在 investigating 且最后事件是 skill_loaded，Agent 无任何动作结束回合，
+  controller 以 `made no workflow progress` 终止运行）。此前的
+  credential-revoked-escalation-001 与 budget/compound 各出现过 1-2 次。
+- **首次错误**：待查——需读取对应 artifact 的 model_calls 尾部确认是模型提前
+  停止生成、还是调用预算/步数边界上的边界行为。低频且跨场景，暂不阻塞主线。

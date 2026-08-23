@@ -254,3 +254,13 @@ make eval-baseline EVAL_DATASET=toolops-v2 EVAL_PARALLEL=4 EVAL_JUDGE=1 EVAL_JUD
 - 修复后确定性报告：`evaluation-data/eval-20260820T024208Z-e9e2db44f57a-toolops-v2-r3-deterministic-result-fixed-expectations.json`
 - 含 Judge 完整报告（修复前 expectations）：同名 `-full-result.json`
 - 运行日志：`evaluation-data/eval-20260820T024208Z-e9e2db44f57a-toolops-v2-r3-run-logs/`
+
+## C2. PostgreSQL 存储契约测试跨运行不幂等
+
+- **状态**：未修复（以每次重建 `talon_test` 库绕过）。
+- **出现情况**：`TestPostgresApprovalStoreContract` 对同一 `TALON_TEST_POSTGRES_DSN`
+  连续运行两次时，`runArtifactStoreContract` 的 `List` 断言（期望 1 条）会命中上次
+  运行遗留的同 code_version 行（期望 1 实得 2）。SQLite 路径每次用 `t.TempDir`
+  新库所以从未暴露。
+- **建议**：契约测试为每张表使用运行期唯一 code_version 前缀（approval/
+  execution 部分已用时间戳前缀，artifact 部分遗漏），或测试开始前清理自身命名空间。
