@@ -33,7 +33,7 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
 | `eval-20260822T131025Z-b4bed00a90d0` | 问题 20 门禁 + Skill 修复后全量 45/45（43 completed + 2 no-progress failed）；成功 **23/45（51.1%）**、score 0.862、失败检查 129、Judge 根因 36/45、9.4 步 / 81.9k token/次 | `required_evidence_coverage` 33→18；mapping-regression/connection-recovery/misleading/telemetry-missing 升至 3/3，stale-sessions/quota 2/3，credrevoked/approval 修复；步数仅 +0.3、token +8%——模型大多提前合规，门禁为保底。剩余 0/3 场景病根转为问题 17（authneg/credfall 未探测即升级、budget reason_code/handoff 不合规）与问题 19（compound 第二周期） |
 
 | `eval-20260823T082824Z-6ca8a5e52ae7` | 问题 17 门禁批：45/45 导出（36 completed + 9 failed）；成功 18/45、步数 18.4、token 180k——回退 | Gate A 判定读 `artifact.Operations`（运行中恒空，仅 RecordFinalState 填充），credrevoked 探测过仍被误拒 4 次被迫在 probe 循环烧光预算（24 步/64 调用）；模拟器拒绝消息只进审计字段，指路模型看不到 |
-| `eval-20260823T093459Z-622c0dfc4816` | 时序修复批（ResolvedActions 数据源+指路入 SafeSummary+attempted_actions 契约）：19/45 | budget 历史首通（handoff.attempted_actions 字段补齐后）；但 Gate A 与场景设计冲突暴露——credrevoked 把无效凭据探测列为禁止动作、quota 期望不探测直接升 |
+| `eval-20260823T093459Z-622c0dfc4816` | 时序修复批（ResolvedActions 数据源+指路入 SafeSummary+attempted_actions 契约+verify 对 failed 运行放行空 model_calls 收尾）：19/45 | budget 历史首通（handoff.attempted_actions 字段补齐后）；但 Gate A 与场景设计冲突暴露——credrevoked 把无效凭据探测列为禁止动作、quota 期望不探测直接升 |
 | `eval-20260823T100534Z-ab6fe4d43bd0` | 空目录豁免批：21/45，43 completed | quota 恢复 2/3、budget 2/3；credrevoked 仍 0/3——工具描述未同步豁免（仍在教"先尝试探测"）+ reason_code 判别残留 |
 | `eval-20260823T102148Z-a52b92bafd68` | 描述判别批：**22/45（48.9%）**，42 completed，步数 10.1 / token 91.4k（循环消除） | credrevoked 恢复 2/3；quota/budget 各 2/3 站稳；升级场景失败形态从行为失控转为可归因语义缺口（authneg/credfall 的探测判断仍需 Prompt/Skill 教学） |
 
@@ -330,7 +330,9 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
   2. 修复批 19/45：数据源改 ResolvedActions（被平台拒绝的探测也算尝试过）、
      模拟器拒绝指导附入模型可见的 SafeSummary（此前只进审计字段——README 的
      "平台原始错误不进 Agent 上下文"让一切指路形同虚设）、补 handoff.attempted_actions
-     契约缺口（budget 场景该字段自始不可满足，历史首通）。
+     契约缺口（budget 场景该字段自始不可满足，历史首通）、verify 对 failed 运行
+     放行空 model_calls 的收尾 AgentRun（模型调用预算耗尽路径先记录唤回再在首次
+     调用前终止，审计轨迹完整，此前该形态会整批拒绝导出）。
   3. 豁免批 21/45：Gate A 与场景设计正面冲突——credrevoked 把无效凭据下的探测
      列为禁止动作、quota 期望不探测直接升级，两者授权目录均为空。空目录豁免：
      没有可尝试的自治修复时，空目录本身即"无路可走"的证明，探测义务只在
