@@ -32,6 +32,11 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
 | `eval-20260822T094845Z-db8179b96c04` | rejected 修复后复验：43 completed + 1 no-progress failed + 1 因问题 21 整 run 丢失（导出 44/45，流水线校验中止，评测对 44 份补跑）；成功 6/44、score 0.831、Judge 根因 30/44、75.7k token/次 | rejected 类 Guard 死亡未再现；quota-exhausted 0/3→2/3；但 `required_evidence_coverage` 失败 33 次成为一票否决项——mapping-regression/connection-recovery/credential-revoked 的失败清单几乎仅剩证据引用一项（问题 20 在 GLM 上未生效） |
 | `eval-20260822T131025Z-b4bed00a90d0` | 问题 20 门禁 + Skill 修复后全量 45/45（43 completed + 2 no-progress failed）；成功 **23/45（51.1%）**、score 0.862、失败检查 129、Judge 根因 36/45、9.4 步 / 81.9k token/次 | `required_evidence_coverage` 33→18；mapping-regression/connection-recovery/misleading/telemetry-missing 升至 3/3，stale-sessions/quota 2/3，credrevoked/approval 修复；步数仅 +0.3、token +8%——模型大多提前合规，门禁为保底。剩余 0/3 场景病根转为问题 17（authneg/credfall 未探测即升级、budget reason_code/handoff 不合规）与问题 19（compound 第二周期） |
 
+| `eval-20260823T082824Z-6ca8a5e52ae7` | 问题 17 门禁批：45/45 导出（36 completed + 9 failed）；成功 18/45、步数 18.4、token 180k——回退 | Gate A 判定读 `artifact.Operations`（运行中恒空，仅 RecordFinalState 填充），credrevoked 探测过仍被误拒 4 次被迫在 probe 循环烧光预算（24 步/64 调用）；模拟器拒绝消息只进审计字段，指路模型看不到 |
+| `eval-20260823T093459Z-622c0dfc4816` | 时序修复批（ResolvedActions 数据源+指路入 SafeSummary+attempted_actions 契约）：19/45 | budget 历史首通（handoff.attempted_actions 字段补齐后）；但 Gate A 与场景设计冲突暴露——credrevoked 把无效凭据探测列为禁止动作、quota 期望不探测直接升 |
+| `eval-20260823T100534Z-ab6fe4d43bd0` | 空目录豁免批：21/45，43 completed | quota 恢复 2/3、budget 2/3；credrevoked 仍 0/3——工具描述未同步豁免（仍在教"先尝试探测"）+ reason_code 判别残留 |
+| `eval-20260823T102148Z-a52b92bafd68` | 描述判别批：**22/45（48.9%）**，42 completed，步数 10.1 / token 91.4k（循环消除） | credrevoked 恢复 2/3；quota/budget 各 2/3 站稳；升级场景失败形态从行为失控转为可归因语义缺口（authneg/credfall 的探测判断仍需 Prompt/Skill 教学） |
+
 其中 `eval-20260818T101709Z-e35098c8f5b7` 的成功 Run ID 为
 `42117fab-62f9-4d69-b7bb-19db9d5799b2`：完整走过 refresh、失败 probe、
 `needs_agent`、人工审批、重建连接池、健康 probe 和 recovery，最终 route-a 从保护权重
@@ -315,15 +320,31 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
      `CheckpointEscalate`——Agent 无法继续自治时正确终点是移交人工而非崩掉。
   6. Simulator 的探测前置条件拒绝消息补充指路：被拒后重查凭据元数据与变更记录
      （凭据可能已被平台轮换），不要无新证据重复探测。
-- **验证**：单测覆盖 Gate A/B/C 各拒绝与放行路径、目录可见性、硬墙升级；对
-  eval-20260822T131025Z 批次回放：54 个 Intent 维度门禁零命中（上批教学已内化），
-  18 次升级中 gate-probe 命中 12（authneg/credfall/credrevoked/quota 全部——正是
-  未探测即升级的病态）、gate-budget 命中 2（budget 场景两个谎报 run）；
-  已通过 run 的命中均为"多一轮"成本。GLM 冒烟：budget 场景以
-  `workflow_budget_exhausted` 如实升级且 handoff 完整（建议人工动作精确到
-  "恢复上游 DNS，两项授权修复均已执行且失败"）；authneg 场景模型正确转向提交
-  探测意图（探测被场景的轮换时间线拒绝属设计内行为，正路是重查凭据元数据发现
-  轮换后探测），配合拒绝消息指路。
+- **验证与迭代史（四个全量批次，eval-20260823T082824Z→102148Z）**：
+  1. 门禁批 18/45（回退）：Gate A 判定读 `artifact.Operations`——该列表仅由
+     RecordFinalState 在运行结束填充，运行中恒空。credrevoked 的模型探测过
+     （被凭据前置条件拒绝）后尝试升级 4 次，全部被误拒"从未尝试过探测"，
+     被迫在 probe→needs_agent 循环烧光预算。教训一：运行中门禁的数据源必须是
+     Checkpoint 实时同步的 `ResolvedActions`；教训二：单测手动调
+     RecordFinalState 铺垫数据会掩盖时序 bug。
+  2. 修复批 19/45：数据源改 ResolvedActions（被平台拒绝的探测也算尝试过）、
+     模拟器拒绝指导附入模型可见的 SafeSummary（此前只进审计字段——README 的
+     "平台原始错误不进 Agent 上下文"让一切指路形同虚设）、补 handoff.attempted_actions
+     契约缺口（budget 场景该字段自始不可满足，历史首通）。
+  3. 豁免批 21/45：Gate A 与场景设计正面冲突——credrevoked 把无效凭据下的探测
+     列为禁止动作、quota 期望不探测直接升级，两者授权目录均为空。空目录豁免：
+     没有可尝试的自治修复时，空目录本身即"无路可走"的证明，探测义务只在
+     "有路可走"时生效。
+  4. 描述判别批 22/45（48.9%）：工具描述同步豁免措辞 + credential_change_requires_human
+     仅用于已验证存在可用回退但切换需人工的判别。credrevoked/quota/budget 各 2/3，
+     步数 10.1、token 91.4k（循环消除）。
+  净结论：相对门禁前峰值 23/45 为 -1，但 budget 0→2、全部升级死循环消除、
+  升级交接结构完整（attempted_actions/鉴权证据/预算如实申报）——行为失控类
+  失败清零，剩余 0/3 场景全部是可归因的语义缺口（authneg/credfall 的探测
+  判断需要 Prompt/Skill 语义教学，静态门禁无法区分"会自愈"与"真故障"）。
+  GLM 冒烟：credrevoked 探测 1 次被拒后引用被拒探测直接升级、attempted_actions
+  三条完整、6 步零循环；budget 以 workflow_budget_exhausted 如实升级且建议人工
+  动作精确到"恢复上游 DNS，两项授权修复均已执行且失败"。
 
 ## 18. 修复成功后跳过探测与恢复直接关闭 Incident
 
