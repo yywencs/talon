@@ -145,7 +145,11 @@ func (r *Recorder) ValidateEscalationEvidence(reasonCode platform.EscalationReas
 			attempted[resolved.ToolName] = struct{}{}
 		}
 	}
-	if (reasonCode == platform.EscalationReasonNoSafeRemediationAvailable ||
+	// Gate A（先探测）只在存在授权修复动作时适用：空目录本身即"无可尝试的
+	// 自治修复"的证明（凭据/配额类故障的人工域），此时强制探测只会诱发被
+	// 前置条件拒绝的重试循环——部分场景还把无效凭据下的探测列为禁止动作。
+	// 存在授权动作时，断言无路可走前必须探测验证当前状态。
+	if len(authorizedTools) > 0 && (reasonCode == platform.EscalationReasonNoSafeRemediationAvailable ||
 		reasonCode == platform.EscalationReasonCredentialChangeRequiresHuman) && !probeAttempted {
 		return fmt.Errorf("升级被拒：reason_code=%s 断言没有安全自治路径，但本次运行从未尝试过探测。历史窗口的错误只证明过去发生过故障，瞬时故障可能已经自愈；请先提交一个包含 request_probe Stage 的有界执行意图（checkpoint_policy 使用 fail-closed 默认决策）验证当前状态。注意：被前置条件拒绝的探测尝试同样算完成探测义务——若凭据/配额等状态使探测不可行，引用被拒的探测操作作为当前状态证据直接升级即可，不要为完成一次成功探测而反复重试", reasonCode)
 	}

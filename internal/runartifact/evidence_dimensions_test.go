@@ -116,6 +116,14 @@ func TestValidateEscalationEvidenceRequiresProbeBeforeNoSafeClaim(t *testing.T) 
 		[]string{"call-metrics", "call-logs", "call-traces", "call-config"}, []string{"rollback_mapping"}))
 }
 
+func TestValidateEscalationEvidenceSkipsProbeGateForEmptyCatalog(t *testing.T) {
+	recorder := newEvidenceGateRecorder(t)
+	// 空授权目录：无路可走由目录本身证明，不强制探测（凭据/配额类人工域）。
+	err := recorder.ValidateEscalationEvidence(platform.EscalationReasonNoSafeRemediationAvailable,
+		[]string{"call-metrics", "call-logs", "call-traces", "call-config"}, nil)
+	require.NoError(t, err)
+}
+
 func TestValidateEscalationEvidenceRequiresHonestBudgetExhaustion(t *testing.T) {
 	recorder := newEvidenceGateRecorder(t)
 	recordEscalationGateActions(t, recorder,
