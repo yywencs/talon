@@ -375,5 +375,8 @@ type EscalationHandoff struct {
 	CurrentProtectionState    map[string]any `json:"current_protection_state" jsonschema:"required,description=当前熔断或降权状态"`
 	AuthenticationEvidence    []string       `json:"authentication_evidence,omitempty" jsonschema:"description=鉴权故障相关的证据引用"`
 	UnavailableFallbackReason string         `json:"unavailable_fallback_reason,omitempty" jsonschema:"description=不存在安全回退路由的结构化原因"`
-	RecommendedHumanAction    string         `json:"recommended_human_action" jsonschema:"required,description=建议人工执行的下一步"`
+	// AttemptedActions 记录升级前已尝试的修复/探测动作与结果摘要。
+	// 人工接手的第一问题是"试过什么"，缺失会迫使重复调查。
+	AttemptedActions       []string `json:"attempted_actions,omitempty" jsonschema:"description=升级前已尝试的动作与结果摘要（如 rollback_mapping: dry_run 拒绝、request_probe: hard_stop）"`
+	RecommendedHumanAction string   `json:"recommended_human_action" jsonschema:"required,description=建议人工执行的下一步"`
 }

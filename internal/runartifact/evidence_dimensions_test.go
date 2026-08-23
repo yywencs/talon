@@ -95,9 +95,11 @@ func TestValidateEscalationEvidenceAllowsIncompleteDimensions(t *testing.T) {
 	require.NoError(t, recorder.ValidateEscalationEvidence(platform.EscalationReasonCriticalTelemetryMissing, []string{"call-logs"}, nil))
 }
 
-func recordEscalationGateOperations(t *testing.T, recorder *Recorder, operations ...platform.Operation) {
+func recordEscalationGateActions(t *testing.T, recorder *Recorder, resolved ...workflow.ResolvedAction) {
 	t.Helper()
-	recorder.RecordFinalState(operations, FinalState{})
+	// 模拟 Controller 的 Checkpoint 回调：ResolvedActions 在运行中实时同步，
+	// 门禁据此判定"尝试过探测/修复"（含随后被平台拒绝的尝试）。
+	recorder.RecordWorkflowCheckpoint(workflow.Snapshot{ResolvedActions: resolved})
 }
 
 func TestValidateEscalationEvidenceRequiresProbeBeforeNoSafeClaim(t *testing.T) {
@@ -106,20 +108,20 @@ func TestValidateEscalationEvidenceRequiresProbeBeforeNoSafeClaim(t *testing.T) 
 		[]string{"call-metrics", "call-logs", "call-traces", "call-config"}, []string{"rollback_mapping"})
 	// Gate A：从未探测就断言无路可走会被拒绝，错误指明 request_probe 出口。
 	require.ErrorContains(t, err, "request_probe")
-	require.ErrorContains(t, err, "从未探测")
+	require.ErrorContains(t, err, "从未尝试过探测")
 
-	recordEscalationGateOperations(t, recorder,
-		platform.Operation{Kind: platform.OperationProbe, Name: "request_probe", Status: platform.OperationSucceeded})
+	recordEscalationGateActions(t, recorder,
+		workflow.ResolvedAction{Kind: workflow.ActionKindProbe, ToolName: "request_probe"})
 	require.NoError(t, recorder.ValidateEscalationEvidence(platform.EscalationReasonNoSafeRemediationAvailable,
 		[]string{"call-metrics", "call-logs", "call-traces", "call-config"}, []string{"rollback_mapping"}))
 }
 
 func TestValidateEscalationEvidenceRequiresHonestBudgetExhaustion(t *testing.T) {
 	recorder := newEvidenceGateRecorder(t)
-	recordEscalationGateOperations(t, recorder,
-		platform.Operation{Kind: platform.OperationProbe, Name: "request_probe", Status: platform.OperationSucceeded},
-		platform.Operation{Kind: platform.OperationRemediation, Name: "refresh_provider_connection", Status: platform.OperationSucceeded},
-		platform.Operation{Kind: platform.OperationRemediation, Name: "recreate_provider_connection_pool", Status: platform.OperationSucceeded},
+	recordEscalationGateActions(t, recorder,
+		workflow.ResolvedAction{Kind: workflow.ActionKindProbe, ToolName: "request_probe"},
+		workflow.ResolvedAction{Kind: workflow.ActionKindRemediation, ToolName: "refresh_provider_connection"},
+		workflow.ResolvedAction{Kind: workflow.ActionKindRemediation, ToolName: "recreate_provider_connection_pool"},
 	)
 	authorized := []string{"refresh_provider_connection", "recreate_provider_connection_pool"}
 	// Gate B：授权动作全部尝试过还谎报"无安全修复手段"会被拒绝。
@@ -134,9 +136,9 @@ func TestValidateEscalationEvidenceRequiresHonestBudgetExhaustion(t *testing.T) 
 
 func TestValidateEscalationEvidenceBudgetGateAllowsUnattemptedTools(t *testing.T) {
 	recorder := newEvidenceGateRecorder(t)
-	recordEscalationGateOperations(t, recorder,
-		platform.Operation{Kind: platform.OperationProbe, Name: "request_probe", Status: platform.OperationSucceeded},
-		platform.Operation{Kind: platform.OperationRemediation, Name: "refresh_provider_connection", Status: platform.OperationSucceeded},
+	recordEscalationGateActions(t, recorder,
+		workflow.ResolvedAction{Kind: workflow.ActionKindProbe, ToolName: "request_probe"},
+		workflow.ResolvedAction{Kind: workflow.ActionKindRemediation, ToolName: "refresh_provider_connection"},
 	)
 	// 还有一个授权动作没试过：不是预算耗尽，no_safe_remediation_available 可用。
 	err := recorder.ValidateEscalationEvidence(platform.EscalationReasonNoSafeRemediationAvailable,

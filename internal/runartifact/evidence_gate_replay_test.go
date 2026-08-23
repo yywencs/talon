@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/wen/opentalon/internal/platform"
+	"github.com/wen/opentalon/internal/workflow"
 )
 
 // TestReplayEvidenceGateOnExportedBatch 对已导出的评测批次离线回放证据门禁：
@@ -98,13 +99,14 @@ func TestReplayEvidenceGateOnExportedBatch(t *testing.T) {
 				dimensionRejected++
 				rejectedRuns[runLabel] = append(rejectedRuns[runLabel], "escalation-dimension")
 			}
+			// 与运行时门禁同口径：以 ResolvedActions 判定尝试过（含被拒尝试）。
 			probeAttempted, attempted := false, map[string]struct{}{}
-			for _, op := range artifact.Operations {
-				switch op.Kind {
-				case platform.OperationProbe:
+			for _, resolved := range artifact.ResolvedActions {
+				switch resolved.Kind {
+				case workflow.ActionKindProbe:
 					probeAttempted = true
-				case platform.OperationRemediation:
-					attempted[op.Name] = struct{}{}
+				case workflow.ActionKindRemediation:
+					attempted[resolved.ToolName] = struct{}{}
 				}
 			}
 			if (reasonCode == platform.EscalationReasonNoSafeRemediationAvailable ||

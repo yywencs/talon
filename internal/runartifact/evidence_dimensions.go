@@ -131,19 +131,23 @@ func (r *Recorder) ValidateEscalationEvidence(reasonCode platform.EscalationReas
 	if len(missing) > 0 {
 		return fmt.Errorf("本次调查已获得以下维度的证据，但升级引用未包含：%s。升级交接必须完整移交全部已获得的证据，请把对应查询返回的 evidence_ref 加入 evidence_refs 后重试", strings.Join(missing, "、"))
 	}
+	// 探测/修复的"尝试过"以 ResolvedActions 为准：动作只要在已接受的 Intent 里
+	// 完成解析即视为尝试——包括随后被平台前置条件拒绝的探测（拒绝本身就是
+	// 当前状态证据）。该列表由 Workflow Checkpoint 回调实时同步，运行中可查；
+	// Operations 只在运行结束时填充，不能作为门禁数据源。
 	probeAttempted := false
 	attempted := make(map[string]struct{})
-	for _, operation := range r.artifact.Operations {
-		switch operation.Kind {
-		case platform.OperationProbe:
+	for _, resolved := range r.artifact.ResolvedActions {
+		switch resolved.Kind {
+		case workflow.ActionKindProbe:
 			probeAttempted = true
-		case platform.OperationRemediation:
-			attempted[operation.Name] = struct{}{}
+		case workflow.ActionKindRemediation:
+			attempted[resolved.ToolName] = struct{}{}
 		}
 	}
 	if (reasonCode == platform.EscalationReasonNoSafeRemediationAvailable ||
 		reasonCode == platform.EscalationReasonCredentialChangeRequiresHuman) && !probeAttempted {
-		return fmt.Errorf("升级被拒：reason_code=%s 断言没有安全自治路径，但本次运行从未探测过当前状态。历史窗口的错误只证明过去发生过故障，瞬时故障可能已经自愈；请先提交一个包含 request_probe Stage 的有界执行意图（checkpoint_policy 使用 fail-closed 默认决策）验证故障当前状态，再基于探测结果决定恢复流量或提交升级", reasonCode)
+		return fmt.Errorf("升级被拒：reason_code=%s 断言没有安全自治路径，但本次运行从未尝试过探测。历史窗口的错误只证明过去发生过故障，瞬时故障可能已经自愈；请先提交一个包含 request_probe Stage 的有界执行意图（checkpoint_policy 使用 fail-closed 默认决策）验证当前状态。注意：被前置条件拒绝的探测尝试同样算完成探测义务——若凭据/配额等状态使探测不可行，引用被拒的探测操作作为当前状态证据直接升级即可，不要为完成一次成功探测而反复重试", reasonCode)
 	}
 	if len(authorizedTools) > 0 && reasonCode != platform.EscalationReasonWorkflowBudgetExhausted {
 		exhausted := true

@@ -384,6 +384,16 @@ func actionExecutionFailure(record execution.Record) workflow.StageFailure {
 		value.Category = workflow.FailureCategoryPreconditionChanged
 		value.Code = "action_operation_rejected"
 		value.SafeSummary = "Stage Action 的 Operation 被平台拒绝，需要 Agent 重新决策"
+		// 被拒操作的 LastError 是平台/Harness 生成的可信指导文本（模拟器与
+		// 受控策略层产出，不含未脱敏的外部内容），附到模型可见的摘要里，
+		// 让"被拒后该做什么"的出口指引真正到达 Agent——否则模型只看到通用
+		// 拒绝语，容易原样重试直至烧尽预算。
+		if guidance := strings.TrimSpace(record.LastError); guidance != "" {
+			if runes := []rune(guidance); len(runes) > 256 {
+				guidance = string(runes[:256]) + "…"
+			}
+			value.SafeSummary = value.SafeSummary + "：" + guidance
+		}
 	case platform.OperationCancelled:
 		value.Category = workflow.FailureCategoryResultUnknown
 		value.Code = "action_operation_cancelled"

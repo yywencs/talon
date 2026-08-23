@@ -165,7 +165,11 @@ def verify_export(
                 "AgentRun context digest is invalid",
             )
             model_calls = agent_run.get("model_calls")
-            if not isinstance(model_calls, list) or not model_calls:
+            if not isinstance(model_calls, list):
+                raise VerificationError("AgentRun model_calls must be an array")
+            # failed 运行允许以空 model_calls 的 AgentRun 收尾：模型调用预算
+            # 耗尽等终路径会先记录唤回、再在首次调用前终止，审计轨迹仍然完整。
+            if not model_calls and artifact.get("outcome") != "failed":
                 raise VerificationError("AgentRun model_calls must be a non-empty array")
             for model_call in model_calls:
                 model_call = _mapping(model_call, "Artifact ModelCall")
