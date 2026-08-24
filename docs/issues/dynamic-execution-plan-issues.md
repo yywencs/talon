@@ -474,7 +474,7 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
 
 ## 22. 复合故障把 probe 默认决策设为 failed 直接终死
 
-- **状态**：未修复。
+- **状态**：已修复（probe 终局决策门禁，2026-08-24）。
 - **现场证据**：批次 `eval-20260823T093459Z-4e1699ecc66a` 与
   `eval-20260823T102148Z-85b6e2aef9ba` 中 compound-mapping-connection-001 共 6 个 run
   以 `workflow stopped in failed state` 运行失败：模型把第一周期 probe Stage 的
@@ -485,12 +485,34 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
 - **首次错误**：问题 14 的门禁允许 `needs_agent/failed/escalate/blocked` 四种
   fail-closed 默认决策，没有区分"探测失败后还有后续自治可能"的场景——复合故障
   的失败探测是第二周期的必要新证据（问题 10 的教训在复合世界状态下的复发），
-  默认 `failed` 把"新证据输入"变成了"终审判决"。
-- **建议**：收紧 probe Stage 的默认决策约束——当能力目录仍存在未尝试的授权修复
-  动作时，probe 默认决策只允许 `needs_agent`（存在可继续的自治路径时，探测失败
-  必须交回 Agent 重新评估）；只有确无剩余能力时才允许 `failed/escalate`。该门禁
-  与升级门禁 Gate B 使用同一判定基础（授权动作 vs 已尝试动作），可一并实现。
-  预计连带改善 stuck/mapping-pool 的问题 19 族失败。
+  默认 `failed` 把"新证据输入"变成了"终审判决"。升级门禁 Gate A/B 挂在
+  escalate_incident 工具边界，checkpoint 的 failed/escalate 决策直接驱动状态机
+  终态、完全绕过它们；v5 Prompt 只教了"失败探测满足某能力前置条件"单一分支，
+  compound 的第二修复动作没有前置条件，教学套不上。
+- **修复（2026-08-24，门禁 + 教学）**：
+  1. **probe 终局决策门禁**：`submit_execution_intent` 冻结前新增校验——
+     `remaining = 能力目录授权修复 − ResolvedActions 既往尝试（含执行失败/被拒）−
+     本次草案自带修复动作` 非空时，probe Stage 的 fail-closed 默认决策与终局
+     规则都不得选择 `failed/escalate/blocked`，只能 `needs_agent`；确无剩余能力
+     时维持现状。判定基础与升级门禁 Gate B 同源。实现位于
+     `runartifact.GateProbeCheckpointDecisions`/`RemainingAuthorizedRemediations`
+     （纯函数，支持离线回放）与 Recorder 的 `ValidateIntentProbeDecisions`，
+     经 `tools.EvidenceGate` 新方法由提交工具注入，拒绝作为可纠正工具结果返回。
+     若新证据表明剩余动作不适用，出口是 needs_agent 评估后走 escalate_incident
+     （语义判断留给模型，提交期只做能力耗尽判定）。
+  2. **教学同步**：submit_execution_intent 工具描述、checkpoint_policy Schema
+     描述、v5 Prompt（checkpoint 契约段 + 探测失败段补"复合故障第二周期"原则）、
+     mapping Skill（回滚后 hard_stop 且暴露 fallback 连接日志 → needs_agent
+     读新证据修第二故障，不得 failed 终止）。
+- **验证**：表驱动单测覆盖剩余能力计算（既往尝试/草案自带扣除、去重、顺序）、
+  默认决策与规则双口径拒绝（错误点名剩余动作、needs_agent 去向与升级出口）、
+  目录耗尽/空目录放行、非 probe Stage 不受限、request_probe 按 ToolName 识别、
+  Recorder 经 ResolvedActions 的两周期判定（第一周期拒绝→第二周期耗尽放行）、
+  工具层作为可纠正错误返回。对 `eval-20260821T101800Z-361e455b7418` 全批次
+  离线回放（`TALON_REPLAY_DIR`，按 Intent 提交顺序精确还原时点）：66 个含 probe
+  Stage 的 Intent 命中 8 次，全部集中在 compound/mapping-pool/stuck 各 2 个
+  未及格 run（问题 19/22 族），9 个及格场景零命中——它们使用 failed/escalate
+  默认时目录确已耗尽，属合法终局。
 
 ## 23. Agent 无动作结束回合（no-progress）变体偶发
 

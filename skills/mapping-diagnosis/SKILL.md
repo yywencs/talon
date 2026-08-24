@@ -22,6 +22,7 @@ description: >-
 - 至少保留故障指标、结构化错误、变更或版本差异以及 Trace 终止阶段四类证据，并在提交时全部引用。
 - 已确认当前版本引入不兼容且存在已知健康版本时，停止继续扩展调查并提交 Execution Intent。
 - 证据否定 mapping 假设并指向凭据或连接故障时，引用新证据调用 `unload_skill`；下一轮再加载对应 Skill。若证据表明是复合故障，则保留本 Skill 并追加对应 Skill。
+- 回滚后首次探测仍 `hard_stop` 且新日志暴露备用路由连接类错误（如 `fallback_route_connection_refused`）时，这是第二故障的证据而不是终审：probe Stage 默认决策使用 `needs_agent`，读取新暴露的日志与连接状态后针对第二故障继续修复，不得使用 `failed` 终止。
 - 关键遥测缺失、没有安全修复能力或无法确定健康目标版本时，调用 `escalate_incident`。
 
 ## 约束

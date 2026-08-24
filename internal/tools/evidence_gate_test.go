@@ -8,14 +8,19 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/wen/opentalon/internal/platform"
+	"github.com/wen/opentalon/internal/workflow"
 )
 
 type stubEvidenceGate struct {
 	intentErr     error
+	probeErr      error
 	escalationErr error
 }
 
 func (s stubEvidenceGate) ValidateIntentEvidence([]string) error { return s.intentErr }
+func (s stubEvidenceGate) ValidateIntentProbeDecisions([]workflow.ExecutionStageDraft, []string) error {
+	return s.probeErr
+}
 func (s stubEvidenceGate) ValidateEscalationEvidence(platform.EscalationReasonCode, []string, []string) error {
 	return s.escalationErr
 }
@@ -44,6 +49,31 @@ func TestSubmitExecutionIntentNilGateKeepsLegacyBehavior(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(raw), &decoded))
 	// gate 缺席时不应改变既有校验顺序：先撞到 stages 必填校验。
 	require.Contains(t, decoded.Error, "intent stages is required")
+}
+
+func TestSubmitExecutionIntentProbeDecisionGateRejectsAsCorrectableError(t *testing.T) {
+	// probe 终局决策门禁在 Stage 转换之后、意图冻结之前执行：
+	// 剩余授权能力未耗尽时 failed/escalate/blocked 默认决策作为可纠正错误返回。
+	tool, err := newSubmitExecutionIntentTool(nil, nil, stubEvidenceGate{probeErr: errors.New("probe 默认决策 \"failed\" 被拒：仍存在未尝试的授权修复动作（recreate_provider_connection_pool），必须用 needs_agent 唤回重新评估")})
+	require.NoError(t, err)
+	raw, runErr := tool.InvokableRun(context.Background(), `{
+		"summary": "rollback then probe",
+		"root_cause": "compound fault",
+		"evidence_refs": [],
+		"stages": [{
+			"stage_id": "verify",
+			"goal": "probe after rollback",
+			"actions": [{"tool_name": "request_probe", "arguments": {"route_id": "route-a", "policy_id": "default-safe-recovery", "idempotency_key": "k1"}}],
+			"checkpoint_policy": {"default_decision": "failed"}
+		}]
+	}`)
+	require.NoError(t, runErr)
+	var decoded struct {
+		Error string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(raw), &decoded))
+	require.Contains(t, decoded.Error, "recreate_provider_connection_pool")
+	require.Contains(t, decoded.Error, "needs_agent")
 }
 
 func TestEscalateIncidentGateRejectsBeforePlatformCall(t *testing.T) {
