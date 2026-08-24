@@ -124,7 +124,7 @@ Anthropic 协议接入共修 5 项：provider 通道与 max_tokens 必填、空�
 - credential-revoked r3 只加载 Skill 即结束回合，`no workflow progress in "investigating"`
   终止（行为问题，待归因）。
 
-### 证据门禁批（eval-20260822T131025Z-b4bed00a90d0，45/45）
+### 证据门禁批（eval-20260822T131025Z-f8f1eea438a9，45/45）
 
 问题 20 的门禁 + Skill 修复落地后的全量。45 次全部落库（问题 21 修复经受住
 全量考验），43 completed + 2 次 no-workflow-progress 行为性失败。

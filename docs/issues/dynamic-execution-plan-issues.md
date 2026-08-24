@@ -30,12 +30,12 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
 | `eval-20260821T020709Z-361e455b7418` | v5 Prompt + 问题 18 门禁后运行至 30/45 因 token 成本中止；确定性评测 11/30 通过，Judge 未运行 | approval-gate 与 connection-recovery 升至 3/3（问题 18/20 生效）；credential-revoked 3/3→0/3 为 v5 凭据 reason_code 示例过度泛化，已在工作区改为条件式并推广先探测再升级，待复验 |
 | `eval-20260821T101800Z-361e455b7418` | GLM-5.3 首轮全量 45/45；9/45 通过（score 0.812，Judge 根因 35/45，80.9k token/次），另 3 次运行时失败（1 次即 rejected 误判 bug） | 模型/Prompt v5 修正版/瘦状态栏三变量同变的 GLM 系基线；quota-exhausted 3/3→0/3、connection-stale-sessions 3/3→1/3 为新退化 |
 | `eval-20260822T094845Z-db8179b96c04` | rejected 修复后复验：43 completed + 1 no-progress failed + 1 因问题 21 整 run 丢失（导出 44/45，流水线校验中止，评测对 44 份补跑）；成功 6/44、score 0.831、Judge 根因 30/44、75.7k token/次 | rejected 类 Guard 死亡未再现；quota-exhausted 0/3→2/3；但 `required_evidence_coverage` 失败 33 次成为一票否决项——mapping-regression/connection-recovery/credential-revoked 的失败清单几乎仅剩证据引用一项（问题 20 在 GLM 上未生效） |
-| `eval-20260822T131025Z-b4bed00a90d0` | 问题 20 门禁 + Skill 修复后全量 45/45（43 completed + 2 no-progress failed）；成功 **23/45（51.1%）**、score 0.862、失败检查 129、Judge 根因 36/45、9.4 步 / 81.9k token/次 | `required_evidence_coverage` 33→18；mapping-regression/connection-recovery/misleading/telemetry-missing 升至 3/3，stale-sessions/quota 2/3，credrevoked/approval 修复；步数仅 +0.3、token +8%——模型大多提前合规，门禁为保底。剩余 0/3 场景病根转为问题 17（authneg/credfall 未探测即升级、budget reason_code/handoff 不合规）与问题 19（compound 第二周期） |
+| `eval-20260822T131025Z-f8f1eea438a9` | 问题 20 门禁 + Skill 修复后全量 45/45（43 completed + 2 no-progress failed）；成功 **23/45（51.1%）**、score 0.862、失败检查 129、Judge 根因 36/45、9.4 步 / 81.9k token/次 | `required_evidence_coverage` 33→18；mapping-regression/connection-recovery/misleading/telemetry-missing 升至 3/3，stale-sessions/quota 2/3，credrevoked/approval 修复；步数仅 +0.3、token +8%——模型大多提前合规，门禁为保底。剩余 0/3 场景病根转为问题 17（authneg/credfall 未探测即升级、budget reason_code/handoff 不合规）与问题 19（compound 第二周期） |
 
-| `eval-20260823T082824Z-6ca8a5e52ae7` | 问题 17 门禁批：45/45 导出（36 completed + 9 failed）；成功 18/45、步数 18.4、token 180k——回退 | Gate A 判定读 `artifact.Operations`（运行中恒空，仅 RecordFinalState 填充），credrevoked 探测过仍被误拒 4 次被迫在 probe 循环烧光预算（24 步/64 调用）；模拟器拒绝消息只进审计字段，指路模型看不到 |
-| `eval-20260823T093459Z-622c0dfc4816` | 时序修复批（ResolvedActions 数据源+指路入 SafeSummary+attempted_actions 契约+verify 对 failed 运行放行空 model_calls 收尾）：19/45 | budget 历史首通（handoff.attempted_actions 字段补齐后）；但 Gate A 与场景设计冲突暴露——credrevoked 把无效凭据探测列为禁止动作、quota 期望不探测直接升 |
-| `eval-20260823T100534Z-ab6fe4d43bd0` | 空目录豁免批：21/45，43 completed | quota 恢复 2/3、budget 2/3；credrevoked 仍 0/3——工具描述未同步豁免（仍在教"先尝试探测"）+ reason_code 判别残留 |
-| `eval-20260823T102148Z-a52b92bafd68` | 描述判别批：**22/45（48.9%）**，42 completed，步数 10.1 / token 91.4k（循环消除） | credrevoked 恢复 2/3；quota/budget 各 2/3 站稳；升级场景失败形态从行为失控转为可归因语义缺口（authneg/credfall 的探测判断仍需 Prompt/Skill 教学） |
+| `eval-20260823T082824Z-ff691faf2f14` | 问题 17 门禁批：45/45 导出（36 completed + 9 failed）；成功 18/45、步数 18.4、token 180k——回退 | Gate A 判定读 `artifact.Operations`（运行中恒空，仅 RecordFinalState 填充），credrevoked 探测过仍被误拒 4 次被迫在 probe 循环烧光预算（24 步/64 调用）；模拟器拒绝消息只进审计字段，指路模型看不到 |
+| `eval-20260823T093459Z-4e1699ecc66a` | 时序修复批（ResolvedActions 数据源+指路入 SafeSummary+attempted_actions 契约+verify 对 failed 运行放行空 model_calls 收尾）：19/45 | budget 历史首通（handoff.attempted_actions 字段补齐后）；但 Gate A 与场景设计冲突暴露——credrevoked 把无效凭据探测列为禁止动作、quota 期望不探测直接升 |
+| `eval-20260823T100534Z-07931f0fce0f` | 空目录豁免批：21/45，43 completed | quota 恢复 2/3、budget 2/3；credrevoked 仍 0/3——工具描述未同步豁免（仍在教"先尝试探测"）+ reason_code 判别残留 |
+| `eval-20260823T102148Z-85b6e2aef9ba` | 描述判别批：**22/45（48.9%）**，42 completed，步数 10.1 / token 91.4k（循环消除） | credrevoked 恢复 2/3；quota/budget 各 2/3 站稳；升级场景失败形态从行为失控转为可归因语义缺口（authneg/credfall 的探测判断仍需 Prompt/Skill 教学） |
 
 其中 `eval-20260818T101709Z-e35098c8f5b7` 的成功 Run ID 为
 `42117fab-62f9-4d69-b7bb-19db9d5799b2`：完整走过 refresh、失败 probe、
@@ -475,8 +475,8 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
 ## 22. 复合故障把 probe 默认决策设为 failed 直接终死
 
 - **状态**：未修复。
-- **现场证据**：批次 `eval-20260823T093459Z-622c0dfc4816` 与
-  `eval-20260823T102148Z-a52b92bafd68` 中 compound-mapping-connection-001 共 6 个 run
+- **现场证据**：批次 `eval-20260823T093459Z-4e1699ecc66a` 与
+  `eval-20260823T102148Z-85b6e2aef9ba` 中 compound-mapping-connection-001 共 6 个 run
   以 `workflow stopped in failed state` 运行失败：模型把第一周期 probe Stage 的
   fail-closed 默认决策设为 `failed`（默认理由"探测失败，禁止进入恢复"），而该场景
   第一周期探测**预期**就是 hard_stop——正确默认应为 `needs_agent` 唤回自己进入
