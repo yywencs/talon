@@ -151,7 +151,10 @@ func (s *Simulator) RequestRecovery(ctx context.Context, request platform.Recove
 	if w.lastProbeOutcome != "healthy" {
 		return w.rejectOperationLocked(operation, "a healthy probe is required before recovery", platform.ErrPreconditionFailed)
 	}
-	if request.RouteID == "" || request.RouteID != w.affectedRouteID {
+	// 后续时间线事件可能影响其他路由并更新 affectedRouteID；恢复资格应以
+	// 路由当前是否仍低于基线权重为准，而不是以最近一次受影响路由为准。
+	route, exists := w.routes[request.RouteID]
+	if request.RouteID == "" || !exists || route.Weight >= route.BaselineWeight {
 		return w.rejectOperationLocked(operation, "recovery route does not match the protected route", platform.ErrPreconditionFailed)
 	}
 	if len(w.recoveries) > 0 {

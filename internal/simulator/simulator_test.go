@@ -253,6 +253,80 @@ func TestSimulatorUsesFailedProbeEvidenceBeforeRecreatingPool(t *testing.T) {
 	require.Equal(t, 70, simulator.Snapshot().Routes["route-a"].Weight)
 }
 
+func TestSimulatorRecoversOriginallyProtectedRouteAfterFallbackFault(t *testing.T) {
+	item := findVersionTwoTestCase(t, "compound-mapping-connection-001")
+	simulator, err := New(item.Scenario)
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	// route-a 先被保护；随后 route-b 的连接故障不得改变最终要恢复的路由。
+	require.NoError(t, simulator.Advance(ctx, 9*time.Minute))
+	require.Equal(t, 10, simulator.Snapshot().Routes["route-a"].Weight)
+	require.Equal(t, 90, simulator.Snapshot().Routes["route-b"].Weight)
+
+	rollback, err := simulator.ExecuteRemediation(ctx, platform.RemediationRequest{
+		IncidentID: item.Scenario.Metadata.ID, ToolName: "rollback_mapping",
+		Arguments: map[string]any{
+			"tool_id": "generate_thumbnail", "target_version": "mapping-v1",
+		},
+		ExpectedVersion: "mapping-v2", IdempotencyKey: "compound-rollback",
+	})
+	require.NoError(t, err)
+	require.Equal(t, platform.OperationPending, rollback.Status)
+	require.NoError(t, simulator.Advance(ctx, time.Minute))
+
+	firstProbe, err := simulator.RequestProbe(ctx, platform.ProbeRequest{
+		IncidentID: item.Scenario.Metadata.ID, RouteID: "route-a",
+		PolicyID: "default-safe-recovery", IdempotencyKey: "compound-probe-1",
+	})
+	require.NoError(t, err)
+	require.NoError(t, simulator.Advance(ctx, time.Minute))
+	firstProbe, err = simulator.GetOperation(ctx, platform.OperationQuery{
+		IncidentID: item.Scenario.Metadata.ID, OperationID: firstProbe.ID,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "hard_stop", firstProbe.Result["outcome"])
+
+	rebuild, err := simulator.ExecuteRemediation(ctx, platform.RemediationRequest{
+		IncidentID: item.Scenario.Metadata.ID, ToolName: "recreate_provider_connection_pool",
+		Arguments: map[string]any{
+			"provider_id": "provider-thumb-b", "expected_pool_generation": 11,
+		},
+		IdempotencyKey: "compound-rebuild-pool",
+	})
+	require.NoError(t, err)
+	require.Equal(t, platform.OperationPending, rebuild.Status)
+	require.NoError(t, simulator.Advance(ctx, 2*time.Minute))
+
+	secondProbe, err := simulator.RequestProbe(ctx, platform.ProbeRequest{
+		IncidentID: item.Scenario.Metadata.ID, RouteID: "route-a",
+		PolicyID: "default-safe-recovery", IdempotencyKey: "compound-probe-2",
+	})
+	require.NoError(t, err)
+	require.NoError(t, simulator.Advance(ctx, 6*time.Minute))
+	secondProbe, err = simulator.GetOperation(ctx, platform.OperationQuery{
+		IncidentID: item.Scenario.Metadata.ID, OperationID: secondProbe.ID,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "healthy", secondProbe.Result["outcome"])
+
+	recovery, err := simulator.RequestRecovery(ctx, platform.RecoveryRequest{
+		IncidentID: item.Scenario.Metadata.ID, RouteID: "route-a",
+		PolicyID: "default-safe-recovery", IdempotencyKey: "compound-recovery",
+	})
+	require.NoError(t, err)
+	require.Equal(t, platform.OperationPending, recovery.Status)
+	require.NoError(t, simulator.Advance(ctx, 12*time.Minute))
+	recovery, err = simulator.GetOperation(ctx, platform.OperationQuery{
+		IncidentID: item.Scenario.Metadata.ID, OperationID: recovery.ID,
+	})
+	require.NoError(t, err)
+	require.Equal(t, platform.OperationSucceeded, recovery.Status)
+	require.Equal(t, "healthy", recovery.Result["outcome"])
+	require.Equal(t, 70, simulator.Snapshot().Routes["route-a"].Weight)
+	require.Equal(t, 30, simulator.Snapshot().Routes["route-b"].Weight)
+}
+
 func TestSimulatorRejectsTelemetryRangeAfterVirtualTime(t *testing.T) {
 	item := findTestCase(t, "connection-recovery-two-cycles-001")
 	simulator, err := New(item.Scenario)
