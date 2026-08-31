@@ -195,10 +195,10 @@ func validateDynamicExecutionIntentDraft(stages []ExecutionStageDraft, limits Ex
 }
 
 // validateProbeStageCheckpoint 是 probe Stage 的 fail-closed 门禁（问题 14/15）：
-// 必须提供显式 fail-closed 默认决策；任何规则不得对 probe 选择 succeeded；
-// 唯一允许的 continue 是当前 probe 的 output.outcome=healthy，
-// 且其后必须紧跟显式 request_recovery Stage——探测执行成功不等于业务健康，
-// 探测健康也只证明修复有效，不等于流量已恢复。
+// 必须提供显式 fail-closed 默认决策；任何规则不得对 probe 选择 succeeded。
+// 恢复型探测的 healthy 分支可以 continue，但其后必须紧跟 request_recovery；
+// 验证型探测（例如验证 fallback）可以在 healthy 后 needs_agent，把结构化结果
+// 交回 Agent 决定保持保护并升级等后续动作。两条路径都不能仅凭 probe 关闭事件。
 func validateProbeStageCheckpoint(stageIndex int, stage ExecutionStageDraft, stages []ExecutionStageDraft) error {
 	probeActions := make(map[string]struct{})
 	for actionIndex, action := range stage.Actions {
@@ -220,27 +220,34 @@ func validateProbeStageCheckpoint(stageIndex int, stage ExecutionStageDraft, sta
 	if !failClosedCheckpointDecision(stage.CheckpointPolicy.DefaultDecision) {
 		return fmt.Errorf("intent stages[%d].checkpoint_policy for request_probe requires an explicit fail-closed default_decision (needs_agent, failed, escalate, or blocked)", stageIndex)
 	}
-	if stageIndex+1 >= len(stages) || !stageContainsManagedRecovery(stages[stageIndex+1]) {
-		return fmt.Errorf("intent stages[%d] containing request_probe requires the next linear stage to contain an explicit request_recovery action", stageIndex)
-	}
 	healthyProgress := make(map[string]bool, len(probeActions))
+	requiresRecovery := false
 	for ruleIndex, rule := range stage.CheckpointPolicy.Rules {
 		if rule.Decision == CheckpointSucceeded {
-			return fmt.Errorf("intent stages[%d].checkpoint_policy.rules[%d] cannot select succeeded for a probe stage; a healthy probe must continue to an explicit recovery stage", stageIndex, ruleIndex)
+			return fmt.Errorf("intent stages[%d].checkpoint_policy.rules[%d] cannot select succeeded for a probe stage; a healthy probe must either continue to an explicit recovery stage or use needs_agent for a semantic follow-up", stageIndex, ruleIndex)
 		}
-		if rule.Decision != CheckpointContinue {
+		if rule.Decision != CheckpointContinue && rule.Decision != CheckpointNeedsAgent {
 			continue
 		}
 		_, isProbe := probeActions[strings.TrimSpace(rule.SourceActionID)]
 		outcome, isString := rule.Equals.(string)
 		if !isProbe || strings.TrimSpace(rule.OutputPath) != "output.outcome" || !isString || outcome != "healthy" {
-			return fmt.Errorf("intent stages[%d].checkpoint_policy.rules[%d] cannot select %q for a probe stage unless the current probe output.outcome equals healthy", stageIndex, ruleIndex, rule.Decision)
+			if rule.Decision == CheckpointContinue {
+				return fmt.Errorf("intent stages[%d].checkpoint_policy.rules[%d] cannot select %q for a probe stage unless the current probe output.outcome equals healthy", stageIndex, ruleIndex, rule.Decision)
+			}
+			continue
 		}
 		healthyProgress[strings.TrimSpace(rule.SourceActionID)] = true
+		if rule.Decision == CheckpointContinue {
+			requiresRecovery = true
+		}
+	}
+	if requiresRecovery && (stageIndex+1 >= len(stages) || !stageContainsManagedRecovery(stages[stageIndex+1])) {
+		return fmt.Errorf("intent stages[%d] continuing after a healthy request_probe requires the next linear stage to contain an explicit request_recovery action", stageIndex)
 	}
 	for actionID := range probeActions {
 		if !healthyProgress[actionID] {
-			return fmt.Errorf("intent stages[%d].checkpoint_policy must define a healthy output.outcome continue rule to an explicit recovery stage for probe action %q", stageIndex, actionID)
+			return fmt.Errorf("intent stages[%d].checkpoint_policy must define a healthy output.outcome rule that either continues to an explicit recovery stage or selects needs_agent for probe action %q", stageIndex, actionID)
 		}
 	}
 	return nil

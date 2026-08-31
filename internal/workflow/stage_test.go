@@ -188,7 +188,7 @@ func TestDynamicIntentRequiresFailClosedProbeCheckpoint(t *testing.T) {
 		{name: "healthy directly succeeds", policy: CheckpointPolicy{Rules: []CheckpointRule{{
 			SourceActionID: "probe-action", OutputPath: "output.outcome", Equals: "healthy", Decision: CheckpointSucceeded,
 		}}, DefaultDecision: CheckpointNeedsAgent}, wantError: "cannot select succeeded for a probe stage"},
-		{name: "missing healthy rule", policy: CheckpointPolicy{DefaultDecision: CheckpointNeedsAgent}, wantError: "must define a healthy output.outcome continue rule"},
+		{name: "missing healthy rule", policy: CheckpointPolicy{DefaultDecision: CheckpointNeedsAgent}, wantError: "must define a healthy output.outcome rule"},
 		{name: "safe", policy: CheckpointPolicy{Rules: []CheckpointRule{healthyRule, {
 			SourceActionID: "probe-action", OutputPath: "output.outcome", Equals: "hard_stop", Decision: CheckpointNeedsAgent,
 		}}, DefaultDecision: CheckpointNeedsAgent}},
@@ -239,6 +239,26 @@ func TestDynamicIntentRequiresRecoveryImmediatelyAfterProbe(t *testing.T) {
 	})
 	require.ErrorContains(t, err, "next linear stage to contain an explicit request_recovery action")
 	assert.Equal(t, StateInvestigating, instance.Snapshot().State)
+}
+
+func TestDynamicIntentAllowsHealthyValidationProbeToReturnToAgent(t *testing.T) {
+	instance, err := NewIncidentWorkflow(Config{IncidentID: "fallback-validation-probe"})
+	require.NoError(t, err)
+	_, err = instance.Apply(Event{Type: EventStartInvestigation, Actor: ActorController})
+	require.NoError(t, err)
+	_, err = instance.SubmitExecutionIntent(ExecutionIntentDraft{
+		Summary: "validate fallback before escalation", RootCause: "primary credential invalid", EvidenceRefs: []string{"evidence:auth"},
+		Stages: []ExecutionStageDraft{{
+			StageID: "probe-fallback", Goal: "verify fallback", Actions: []IntendedAction{{
+				Key: "probe-fallback-action", Kind: ActionKindProbe, ToolName: "request_probe",
+			}}, CheckpointPolicy: CheckpointPolicy{Rules: []CheckpointRule{{
+				SourceActionID: "probe-fallback-action", OutputPath: "output.outcome", Equals: "healthy",
+				Decision: CheckpointNeedsAgent,
+			}}, DefaultDecision: CheckpointNeedsAgent},
+		}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, StateValidating, instance.Snapshot().State)
 }
 
 func TestDynamicIntentRequiresProbeAfterRemediation(t *testing.T) {

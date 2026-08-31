@@ -308,6 +308,16 @@ type ProbeRequest struct {
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
+// ProbeEscalationPolicy 表示在断言无安全自治路径或凭据变更需人工前，
+// 当前场景是否适合用探测验证最新状态。
+type ProbeEscalationPolicy string
+
+const (
+	ProbeEscalationConditional   ProbeEscalationPolicy = "conditional"
+	ProbeEscalationRequired      ProbeEscalationPolicy = "required"
+	ProbeEscalationNotApplicable ProbeEscalationPolicy = "not_applicable"
+)
+
 // RecoveryRequest 请求控制器对已通过探测的指定路由进入逐级恢复流程。
 type RecoveryRequest struct {
 	IncidentID     string `json:"incident_id"`

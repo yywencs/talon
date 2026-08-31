@@ -146,7 +146,7 @@ func Run(ctx context.Context, cfg Config) (result Result, err error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("create scenario simulator: %w", err)
 	}
-	incidentAt, err := firstTimelineEvent(item.Scenario)
+	incidentAt, err := agentStartOffset(item.Scenario)
 	if err != nil {
 		return Result{}, err
 	}
@@ -291,6 +291,17 @@ func firstTimelineEvent(document scenario.Scenario) (time.Duration, error) {
 		}
 	}
 	return selected, nil
+}
+
+func agentStartOffset(document scenario.Scenario) (time.Duration, error) {
+	if value := strings.TrimSpace(document.Clock.IncidentAt); value != "" {
+		incidentAt, err := time.ParseDuration(value)
+		if err != nil {
+			return 0, fmt.Errorf("parse scenario clock.incident_at: %w", err)
+		}
+		return incidentAt, nil
+	}
+	return firstTimelineEvent(document)
 }
 
 // driveSimulatorClock 只在存在活动异步 Operation 时推进虚拟时间。

@@ -35,6 +35,9 @@ func validateScenario(document Scenario) error {
 	if err := validateTimeline(document.Timeline, endAfter); err != nil {
 		return err
 	}
+	if err := validateIncidentAt(document.Clock, document.Timeline, endAfter); err != nil {
+		return err
+	}
 	if err := validateObservation(document.Observation); err != nil {
 		return err
 	}
@@ -183,6 +186,31 @@ func validateClock(clock Clock) (time.Duration, error) {
 	return endAfter, nil
 }
 
+func validateIncidentAt(clock Clock, timeline []TimelineEvent, endAfter time.Duration) error {
+	if strings.TrimSpace(clock.IncidentAt) == "" {
+		return nil
+	}
+	incidentAt, err := time.ParseDuration(clock.IncidentAt)
+	if err != nil {
+		return fmt.Errorf("clock.incident_at must be a duration: %w", err)
+	}
+	if incidentAt < 0 || incidentAt > endAfter {
+		return fmt.Errorf("clock.incident_at must be within [0, clock.end_after]")
+	}
+	for index, event := range timeline {
+		at, parseErr := time.ParseDuration(event.At)
+		if parseErr != nil {
+			return fmt.Errorf("parse timeline[%d].at: %w", index, parseErr)
+		}
+		if at > incidentAt {
+			break
+		}
+		// 至少推进到首个故障事件；后续事件可以显式位于 Agent 启动前。
+		return nil
+	}
+	return fmt.Errorf("clock.incident_at must not precede the first timeline event")
+}
+
 func validateController(controller Controller) error {
 	if _, err := positiveDuration("controller.detection_policy.window", controller.DetectionPolicy.Window); err != nil {
 		return err
@@ -303,6 +331,11 @@ func validateTools(remediation []ToolDefinition, probe, escalation ToolDefinitio
 	}
 	if err := validateTool("probe_tool", probe, seen); err != nil {
 		return err
+	}
+	switch probe.EscalationProbePolicy {
+	case "", "conditional", "required", "not_applicable":
+	default:
+		return fmt.Errorf("probe_tool.escalation_probe_policy must be conditional, required, or not_applicable")
 	}
 	return validateTool("escalation_tool", escalation, seen)
 }

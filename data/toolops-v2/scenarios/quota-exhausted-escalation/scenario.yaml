@@ -124,6 +124,7 @@ probe_tool:
   description: 请求控制器按恢复策略对指定路由执行小流量健康探测。配额未恢复前探测必然失败，不得用于验证。
   arguments: [incident_id, route_id, policy_id, idempotency_key]
   controller_owns_traffic_weight: true
+  escalation_probe_policy: not_applicable
 
 escalation_tool:
   name: escalate_incident

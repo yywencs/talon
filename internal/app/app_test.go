@@ -13,6 +13,7 @@ import (
 	"github.com/wen/opentalon/internal/controller"
 	"github.com/wen/opentalon/internal/platform"
 	"github.com/wen/opentalon/internal/runartifact"
+	"github.com/wen/opentalon/internal/scenario"
 	"github.com/wen/opentalon/internal/storage"
 	"github.com/wen/opentalon/internal/workflow"
 )
@@ -137,6 +138,27 @@ func TestRunPersistsFailedArtifact(t *testing.T) {
 	persisted, getErr := database.RunArtifacts().Get(context.Background(), result.Artifact.RunID)
 	require.NoError(t, getErr)
 	assert.Equal(t, result.Artifact, persisted)
+}
+
+func TestAgentStartOffsetUsesExplicitIncidentTime(t *testing.T) {
+	document := scenario.Scenario{
+		Metadata: scenario.Metadata{ID: "detected-after-window"},
+		Clock:    scenario.Clock{IncidentAt: "9m"},
+		Timeline: []scenario.TimelineEvent{{At: "4m"}, {At: "8m"}},
+	}
+	offset, err := agentStartOffset(document)
+	require.NoError(t, err)
+	assert.Equal(t, 9*time.Minute, offset)
+}
+
+func TestAgentStartOffsetKeepsLegacyFirstEventDefault(t *testing.T) {
+	document := scenario.Scenario{
+		Metadata: scenario.Metadata{ID: "legacy-start"},
+		Timeline: []scenario.TimelineEvent{{At: "8m"}, {At: "4m"}},
+	}
+	offset, err := agentStartOffset(document)
+	require.NoError(t, err)
+	assert.Equal(t, 4*time.Minute, offset)
 }
 
 func testDatasetRoot(t *testing.T) string {

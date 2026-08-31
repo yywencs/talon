@@ -109,7 +109,7 @@ func (r *Recorder) ValidateIntentEvidence(refs []string) error {
 //     存在且已试过，谎报为 no_safe_remediation_available 会误导人工判断。
 //
 // 维度不完备本身不是升级的障碍——查不齐正说明需要人工介入。
-func (r *Recorder) ValidateEscalationEvidence(reasonCode platform.EscalationReasonCode, refs []string, authorizedTools []string) error {
+func (r *Recorder) ValidateEscalationEvidence(reasonCode platform.EscalationReasonCode, refs []string, authorizedTools []string, probePolicy platform.ProbeEscalationPolicy) error {
 	if r == nil {
 		return fmt.Errorf("run artifact recorder is required")
 	}
@@ -145,11 +145,12 @@ func (r *Recorder) ValidateEscalationEvidence(reasonCode platform.EscalationReas
 			attempted[resolved.ToolName] = struct{}{}
 		}
 	}
-	// Gate A（先探测）只在存在授权修复动作时适用：空目录本身即"无可尝试的
-	// 自治修复"的证明（凭据/配额类故障的人工域），此时强制探测只会诱发被
-	// 前置条件拒绝的重试循环——部分场景还把无效凭据下的探测列为禁止动作。
-	// 存在授权动作时，断言无路可走前必须探测验证当前状态。
-	if len(authorizedTools) > 0 && (reasonCode == platform.EscalationReasonNoSafeRemediationAvailable ||
+	// Gate A（先探测）优先服从平台给出的机器可判定适用性。conditional 为旧场景
+	// 保留能力目录推断；required 可覆盖“无授权修复但 fallback 可验证”的场景；
+	// not_applicable 则避免在失效凭据或确定配额耗尽时制造无意义探测。
+	probeRequired := probePolicy == platform.ProbeEscalationRequired ||
+		((probePolicy == "" || probePolicy == platform.ProbeEscalationConditional) && len(authorizedTools) > 0)
+	if probeRequired && (reasonCode == platform.EscalationReasonNoSafeRemediationAvailable ||
 		reasonCode == platform.EscalationReasonCredentialChangeRequiresHuman) && !probeAttempted {
 		return fmt.Errorf("升级被拒：reason_code=%s 断言没有安全自治路径，但本次运行从未尝试过探测。历史窗口的错误只证明过去发生过故障，瞬时故障可能已经自愈；请先提交一个包含 request_probe Stage 的有界执行意图（checkpoint_policy 使用 fail-closed 默认决策）验证当前状态。注意：被前置条件拒绝的探测尝试同样算完成探测义务——若凭据/配额等状态使探测不可行，引用被拒的探测操作作为当前状态证据直接升级即可，不要为完成一次成功探测而反复重试", reasonCode)
 	}

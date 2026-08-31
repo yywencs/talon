@@ -288,6 +288,29 @@ func (s *Simulator) GetRemediationCapabilities(ctx context.Context, query platfo
 	return result, nil
 }
 
+// GetProbeEscalationPolicy 返回场景声明的升级前探测适用性。旧数据集未声明时
+// 使用 conditional，由门禁保留原有的能力目录推断以兼容历史场景。
+func (s *Simulator) GetProbeEscalationPolicy(ctx context.Context, query platform.StateQuery) (platform.ProbeEscalationPolicy, error) {
+	if err := contextError(ctx); err != nil {
+		return "", err
+	}
+	snapshot := s.Snapshot()
+	if !snapshotMatchesIncident(snapshot, query.Scope) {
+		return platform.ProbeEscalationConditional, nil
+	}
+	w, err := s.mutableWorld()
+	if err != nil {
+		return "", err
+	}
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	policy := platform.ProbeEscalationPolicy(w.probeTool.EscalationProbePolicy)
+	if policy == "" {
+		policy = platform.ProbeEscalationConditional
+	}
+	return policy, nil
+}
+
 // GetRecoveryPolicies 返回 Controller 允许当前 Incident 引用的恢复策略。
 // 策略只读；实际探测比例和恢复权重始终由 Controller 执行。
 func (s *Simulator) GetRecoveryPolicies(ctx context.Context, query platform.StateQuery) ([]platform.RecoveryPolicy, error) {

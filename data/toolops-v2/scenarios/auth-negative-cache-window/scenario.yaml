@@ -11,6 +11,7 @@ clock:
   start_at: 2026-08-11T14:00:00Z
   tick: 1m
   end_after: 40m
+  incident_at: 9m
 
 initial_state:
   service:
@@ -159,6 +160,7 @@ probe_tool:
   description: 请求控制器按恢复策略对指定路由执行小流量健康探测。仅当凭证当前状态为 active 时探测才会被接受。
   arguments: [incident_id, route_id, policy_id, idempotency_key]
   controller_owns_traffic_weight: true
+  escalation_probe_policy: required
   preconditions:
     credential_status_must_be: active
 

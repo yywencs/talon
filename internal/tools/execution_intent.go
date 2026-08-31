@@ -26,7 +26,7 @@ type submitExecutionStageInput struct {
 	Goal             string                             `json:"goal" jsonschema:"required,description=当前阶段的单一目标"`
 	Actions          []submitExecutionIntentActionInput `json:"actions" jsonschema:"required,description=本阶段按顺序执行的动作"`
 	SuccessCriteria  []string                           `json:"success_criteria,omitempty"`
-	CheckpointPolicy workflow.CheckpointPolicy          `json:"checkpoint_policy" jsonschema:"required,description=确定性阶段检查规则；request_probe Stage 仅允许 output.outcome=healthy 时 continue 到显式 recovery Stage，不能直接 succeeded，并使用 fail-closed 默认决策；能力目录仍有未尝试的授权修复动作时，该默认决策和规则只能是 needs_agent，不能 failed/escalate/blocked 终止运行"`
+	CheckpointPolicy workflow.CheckpointPolicy          `json:"checkpoint_policy" jsonschema:"required,description=确定性阶段检查规则；request_probe Stage 的 healthy 结果可 continue 到显式 recovery Stage，或在仅验证 fallback 时选择 needs_agent 返回 Agent，不能直接 succeeded，并使用 fail-closed 默认决策；能力目录仍有未尝试的授权修复动作时，非健康规则只能是 needs_agent"`
 }
 
 type submitExecutionIntentInput struct {
@@ -50,7 +50,7 @@ func newSubmitExecutionIntentTool(instance *workflow.IncidentWorkflow, remediati
 	sort.Strings(authorizedTools)
 	tool, err := toolutils.InferTool(
 		"submit_execution_intent",
-		"证据足够后提交当前有界执行意图。优先只提交当前可确定的短 Stage；仅当后续动作已经确定且只依赖前序结构化输出时，才可附带紧邻 Stage。Stage action 可使用已注册 remediation、request_probe 或 request_recovery。remediation 动作成功只能 continue 到紧随其后的显式 request_probe Stage，不能直接 succeeded——修复执行成功不等于 Incident 已解决。request_probe 健康只能 continue 到显式 request_recovery Stage，不能直接 succeeded。request_probe 和 request_recovery 的 arguments 必须是 route_id、policy_id、idempotency_key（策略字段名是 policy_id，不是 recovery_policy_id）。request_probe Stage 的 fail-closed 默认决策在能力目录仍有未尝试的授权修复动作时只能是 needs_agent——探测失败（如 hard_stop）是新证据输入，须交回自己结合新证据重新评估，可能指向另一个尚未修复的故障；只有授权修复动作全部尝试且未恢复才可 failed/escalate/blocked。evidence_refs 必须引用四类观测维度（指标 query_metrics、日志 query_logs、链路 query_traces、配置状态 get_change_records/get_config_versions/get_connection_metadata/get_credential_metadata/get_providers/get_routes）中每一类的至少一次成功查询，缺维度会被拒绝；某维度确实无法获得时应升级人工而非降低标准。该工具只冻结意图并推进到 validating，不会直接执行动作；无安全方案时应升级人工。",
+		"证据足够后提交当前有界执行意图。优先只提交当前可确定的短 Stage；仅当后续动作已经确定且只依赖前序结构化输出时，才可附带紧邻 Stage。Stage action 可使用已注册 remediation、request_probe 或 request_recovery。remediation 动作成功只能 continue 到紧随其后的显式 request_probe Stage，不能直接 succeeded。恢复型 request_probe 健康应 continue 到显式 request_recovery Stage；仅验证 fallback 时，healthy 应选择 needs_agent 返回 Agent，保持保护并作语义决策，不附带 recovery；两者都不能直接 succeeded。request_probe 和 request_recovery 的 arguments 必须是 route_id、policy_id、idempotency_key。request_probe Stage 的 fail-closed 默认决策在能力目录仍有未尝试的授权修复动作时只能是 needs_agent。evidence_refs 必须引用指标、日志、链路、配置状态四类观测维度中每一类的至少一次成功查询；某维度确实无法获得时应升级人工。该工具只冻结意图并推进到 validating，不会直接执行动作。",
 		func(_ context.Context, input submitExecutionIntentInput) (response[workflow.ExecutionIntentSubmission], error) {
 			if gate != nil {
 				if err := gate.ValidateIntentEvidence(input.EvidenceRefs); err != nil {

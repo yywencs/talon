@@ -63,9 +63,10 @@ type Metadata struct {
 }
 
 type Clock struct {
-	StartAt  string `yaml:"start_at"`
-	Tick     string `yaml:"tick"`
-	EndAfter string `yaml:"end_after"`
+	StartAt    string `yaml:"start_at"`
+	Tick       string `yaml:"tick"`
+	EndAfter   string `yaml:"end_after"`
+	IncidentAt string `yaml:"incident_at,omitempty"`
 }
 
 // InitialState 描述故障发生前用于初始化 Simulator World 的状态。
@@ -205,6 +206,7 @@ type ToolDefinition struct {
 	Effect                      map[string]any `yaml:"effect"`
 	CompensatingAction          string         `yaml:"compensating_action"`
 	ControllerOwnsTrafficWeight bool           `yaml:"controller_owns_traffic_weight"`
+	EscalationProbePolicy       string         `yaml:"escalation_probe_policy,omitempty"`
 	Note                        string         `yaml:"note"`
 }
 

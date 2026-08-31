@@ -44,7 +44,7 @@ type EvidenceGate interface {
 	// 并按 reasonCode 做升级前置校验：断言无安全修复手段前必须探测过当前
 	// 状态；授权修复动作全部尝试耗尽时必须如实申报 workflow_budget_exhausted。
 	// authorizedTools 是当前能力目录中 Agent 有权调用的动作名清单。
-	ValidateEscalationEvidence(reasonCode platform.EscalationReasonCode, refs []string, authorizedTools []string) error
+	ValidateEscalationEvidence(reasonCode platform.EscalationReasonCode, refs []string, authorizedTools []string, probePolicy platform.ProbeEscalationPolicy) error
 }
 
 var discoveryAgentToolNames = []string{
@@ -118,6 +118,12 @@ func New(ctx context.Context, service platform.ToolOpsPlatform, incidentID strin
 	if err != nil {
 		return nil, fmt.Errorf("get remediation capabilities: %w", err)
 	}
+	probePolicy, err := service.GetProbeEscalationPolicy(ctx, platform.StateQuery{
+		Scope: platform.Scope{IncidentID: incidentID},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get probe escalation policy: %w", err)
+	}
 	sort.Slice(capabilities, func(i, j int) bool { return capabilities[i].Name < capabilities[j].Name })
 	authorizedCapabilities := make(map[string]platform.RemediationCapability, len(capabilities))
 	authorizedNames := make([]string, 0, len(capabilities))
@@ -129,7 +135,7 @@ func New(ctx context.Context, service platform.ToolOpsPlatform, incidentID strin
 		authorizedNames = append(authorizedNames, capability.Name)
 	}
 
-	staticTools, err := buildStaticTools(service, incidentID, config.evidence, config.evidenceGate, authorizedNames)
+	staticTools, err := buildStaticTools(service, incidentID, config.evidence, config.evidenceGate, authorizedNames, probePolicy)
 	if err != nil {
 		return nil, err
 	}

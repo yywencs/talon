@@ -21,7 +21,7 @@ func (s stubEvidenceGate) ValidateIntentEvidence([]string) error { return s.inte
 func (s stubEvidenceGate) ValidateIntentProbeDecisions([]workflow.ExecutionStageDraft, []string) error {
 	return s.probeErr
 }
-func (s stubEvidenceGate) ValidateEscalationEvidence(platform.EscalationReasonCode, []string, []string) error {
+func (s stubEvidenceGate) ValidateEscalationEvidence(platform.EscalationReasonCode, []string, []string, platform.ProbeEscalationPolicy) error {
 	return s.escalationErr
 }
 

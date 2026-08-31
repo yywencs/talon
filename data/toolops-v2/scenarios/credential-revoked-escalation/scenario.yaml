@@ -148,6 +148,7 @@ probe_tool:
   description: 请求控制器按恢复策略对指定路由执行小流量健康探测。仅在路由凭证状态满足策略时使用。
   arguments: [incident_id, route_id, policy_id, idempotency_key]
   controller_owns_traffic_weight: true
+  escalation_probe_policy: not_applicable
   preconditions:
     credential_status_must_be: active
 

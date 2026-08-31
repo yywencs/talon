@@ -36,8 +36,8 @@ type escalationInput struct {
 	IdempotencyKey        string                        `json:"idempotency_key" jsonschema:"required,description=本次升级请求的唯一幂等键"`
 }
 
-func buildActionTools(service platform.ToolOpsPlatform, incidentID string, gate EvidenceGate, authorizedTools []string) ([]einotool.InvokableTool, error) {
-	probe, err := toolutils.InferTool("request_probe", "修复完成后，请求控制器按策略执行小流量探测。Agent不能自行修改流量权重；探测失败时必须停止恢复并继续调查。", func(ctx context.Context, input probeInput) (response[platform.Operation], error) {
+func buildActionTools(service platform.ToolOpsPlatform, incidentID string, gate EvidenceGate, authorizedTools []string, probePolicy platform.ProbeEscalationPolicy) ([]einotool.InvokableTool, error) {
+	probe, err := toolutils.InferTool("request_probe", "请求控制器按策略执行小流量探测，可用于验证修复后的主路由或可用 fallback。健康主路由可进入 request_recovery；仅验证 fallback 时应回到 Agent、保持保护并按需升级，不能用探测直接结束事件。探测失败时停止恢复并继续调查。", func(ctx context.Context, input probeInput) (response[platform.Operation], error) {
 		result, callErr := service.RequestProbe(ctx, platform.ProbeRequest{
 			IncidentID: incidentID, RouteID: input.RouteID, PolicyID: input.PolicyID, IdempotencyKey: input.IdempotencyKey,
 		})
@@ -62,7 +62,7 @@ func buildActionTools(service platform.ToolOpsPlatform, incidentID string, gate 
 	if err != nil {
 		return nil, fmt.Errorf("build get_operation tool: %w", err)
 	}
-	escalation, err := toolutils.InferTool("escalate_incident", "当没有安全修复方案、修复超过策略限制、需要更高权限或风险继续扩大时，提交证据和结构化 handoff 并升级人工处理。升级交接必须完整移交调查中已获得的全部维度证据：已查询过指标、日志、Trace 或配置状态的，对应 evidence_ref 都必须加入 evidence_refs，缺一会被拒绝。使用 no_safe_remediation_available 前先确认能力目录：目录为空时可直接升级（空目录即无可尝试自治修复的证明，不要为满足探测义务在凭据无效等状态下强行探测）；目录非空时必须先尝试过探测（被前置条件拒绝的尝试也算完成义务，该拒绝即当前状态证据，引用它直接升级，不要为「完成一次成功探测」而重复提交）。credential_change_requires_human 仅用于已验证存在可用回退/替代但切换需人工执行的场景；凭据失效且无可行回退时应使用 no_safe_remediation_available。能力目录中全部授权修复动作都已尝试且未恢复时，必须如实使用 workflow_budget_exhausted 而不是谎报无安全修复手段。升级前已尝试过修复或探测动作的，把动作与结果摘要填入 handoff.attempted_actions。能力目录中 agent_authorized=false 的动作超出 Agent 权限，应写入 handoff.recommended_human_action 移交给相应人工团队。handoff 的受影响服务、当前保护状态和建议人工动作为必填。", func(ctx context.Context, input escalationInput) (response[platform.Operation], error) {
+	escalation, err := toolutils.InferTool("escalate_incident", "当没有安全修复方案、修复超过策略限制、需要更高权限或风险继续扩大时，提交证据和结构化 handoff 并升级人工处理。升级交接必须完整移交调查中已获得的全部维度证据：已查询过指标、日志、Trace 或配置状态的，对应 evidence_ref 都必须加入 evidence_refs，缺一会被拒绝。升级前是否必须探测由当前场景的机器策略决定：required 时即使授权修复目录为空也必须先探测；not_applicable 时不要在凭据无效、配额耗尽等确定不可探测状态下强行探测；conditional 由能力目录判断。credential_change_requires_human 仅用于已验证存在可用回退/替代但切换需人工执行的场景；凭据失效且无可行回退时应使用 no_safe_remediation_available。能力目录中全部授权修复动作都已尝试且未恢复时，必须如实使用 workflow_budget_exhausted。升级前已尝试过修复或探测动作的，把动作与结果摘要填入 handoff.attempted_actions。能力目录中 agent_authorized=false 的动作超出 Agent 权限，应写入 handoff.recommended_human_action。handoff 的受影响服务、当前保护状态和建议人工动作为必填。", func(ctx context.Context, input escalationInput) (response[platform.Operation], error) {
 		if !input.ReasonCode.Valid() {
 			return platformResponse(platform.Operation{}, fmt.Errorf(
 				"reason_code %q 不在稳定类别列表中；只能使用 suspected_security_incident、possible_data_corruption、critical_telemetry_missing、no_safe_remediation_available、insufficient_permissions、credential_change_requires_human、rollback_failed、blast_radius_expanding 或 workflow_budget_exhausted",
@@ -72,7 +72,7 @@ func buildActionTools(service platform.ToolOpsPlatform, incidentID string, gate 
 			return platformResponse(platform.Operation{}, err), nil
 		}
 		if gate != nil {
-			if err := gate.ValidateEscalationEvidence(input.ReasonCode, input.EvidenceRefs, authorizedTools); err != nil {
+			if err := gate.ValidateEscalationEvidence(input.ReasonCode, input.EvidenceRefs, authorizedTools, probePolicy); err != nil {
 				return platformResponse(platform.Operation{}, err), nil
 			}
 		}

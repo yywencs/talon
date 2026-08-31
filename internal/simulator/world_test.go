@@ -1,6 +1,7 @@
 package simulator
 
 import (
+	"context"
 	"encoding/json"
 	"path/filepath"
 	"runtime"
@@ -19,6 +20,30 @@ func TestNewWorldBuildsEveryVersionOneScenario(t *testing.T) {
 			world, err := NewWorld(item.Scenario)
 			require.NoError(t, err)
 			require.Equal(t, item.Scenario.Metadata.ID, world.Snapshot().ScenarioID)
+		})
+	}
+}
+
+func TestVersionTwoCredentialScenariosExposeProbeApplicability(t *testing.T) {
+	tests := []struct {
+		id   string
+		want platform.ProbeEscalationPolicy
+	}{
+		{id: "auth-negative-cache-window-001", want: platform.ProbeEscalationRequired},
+		{id: "credential-fallback-available-001", want: platform.ProbeEscalationRequired},
+		{id: "credential-revoked-escalation-001", want: platform.ProbeEscalationNotApplicable},
+		{id: "quota-exhausted-escalation-001", want: platform.ProbeEscalationNotApplicable},
+	}
+	for _, test := range tests {
+		t.Run(test.id, func(t *testing.T) {
+			item := findVersionTwoTestCase(t, test.id)
+			instance, err := New(item.Scenario)
+			require.NoError(t, err)
+			policy, err := instance.GetProbeEscalationPolicy(context.Background(), platform.StateQuery{
+				Scope: platform.Scope{IncidentID: test.id},
+			})
+			require.NoError(t, err)
+			require.Equal(t, test.want, policy)
 		})
 	}
 }
@@ -105,10 +130,14 @@ func TestNewWorldRejectsRouteWithUnknownProvider(t *testing.T) {
 }
 
 func loadTestDataset(t *testing.T) *scenario.Dataset {
+	return loadTestDatasetVersion(t, "toolops-v1")
+}
+
+func loadTestDatasetVersion(t *testing.T, version string) *scenario.Dataset {
 	t.Helper()
 	_, filename, _, ok := runtime.Caller(0)
 	require.True(t, ok)
-	root := filepath.Clean(filepath.Join(filepath.Dir(filename), "..", "..", "data", "toolops-v1"))
+	root := filepath.Clean(filepath.Join(filepath.Dir(filename), "..", "..", "data", version))
 	dataset, err := scenario.LoadDataset(root)
 	require.NoError(t, err)
 	return dataset
@@ -117,6 +146,13 @@ func loadTestDataset(t *testing.T) *scenario.Dataset {
 func findTestCase(t *testing.T, id string) *scenario.Case {
 	t.Helper()
 	item, ok := loadTestDataset(t).Find(id)
+	require.True(t, ok)
+	return item
+}
+
+func findVersionTwoTestCase(t *testing.T, id string) *scenario.Case {
+	t.Helper()
+	item, ok := loadTestDatasetVersion(t, "toolops-v2").Find(id)
 	require.True(t, ok)
 	return item
 }
