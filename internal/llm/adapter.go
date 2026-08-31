@@ -15,11 +15,15 @@ import (
 	"github.com/wen/opentalon/internal/config"
 )
 
-const defaultRequestTimeout = 120 * time.Second
+const (
+	defaultRequestTimeout          = 120 * time.Second
+	defaultAnthropicRequestTimeout = 180 * time.Second
+)
 
 // defaultAnthropicMaxTokens 是 Anthropic Messages API 必填的 max_tokens。
-// Agent 单轮回复由结构化 Intent 或简短说明构成，8192 足够且远低于模型上限。
-const defaultAnthropicMaxTokens = 8192
+// GLM-5.3 的推理内容也会占用输出预算；为避免模型在生成工具调用前被截断，
+// 默认预留 16384 tokens。
+const defaultAnthropicMaxTokens = 16384
 
 type options struct {
 	httpClient *http.Client
@@ -61,10 +65,12 @@ func NewChatModel(ctx context.Context, cfg config.LLMConfig, opts ...Option) (mo
 	}
 	if provider == "anthropic-compatible" {
 		chatModel, err := claudeadapter.NewChatModel(ctx, &claudeadapter.Config{
-			APIKey:    strings.TrimSpace(cfg.APIKey),
-			BaseURL:   &endpoint,
-			Model:     modelName,
-			MaxTokens: defaultAnthropicMaxTokens,
+			APIKey:         strings.TrimSpace(cfg.APIKey),
+			BaseURL:        &endpoint,
+			Model:          modelName,
+			MaxTokens:      defaultAnthropicMaxTokens,
+			HTTPClient:     settings.httpClient,
+			RequestTimeout: defaultAnthropicRequestTimeout,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create Eino %s chat model: %w", provider, err)

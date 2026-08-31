@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/assert"
@@ -58,6 +59,47 @@ func TestNewChatModelCallsOpenAICompatibleAPI(t *testing.T) {
 	assert.Equal(t, "Bearer test-key", authorization)
 	assert.Equal(t, "test-model", requestBody["model"])
 	assert.NotEmpty(t, requestBody["tools"])
+}
+
+func TestNewChatModelSetsAnthropicCompatibleRequestTimeout(t *testing.T) {
+	var requestPath string
+	var requestDeadline time.Time
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestPath = request.URL.Path
+		var ok bool
+		requestDeadline, ok = request.Context().Deadline()
+		require.True(t, ok)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{
+				"id":"msg_test",
+				"type":"message",
+				"role":"assistant",
+				"model":"test-model",
+				"content":[{"type":"text","text":"连接成功"}],
+				"stop_reason":"end_turn",
+				"usage":{"input_tokens":1,"output_tokens":1}
+			}`)),
+			Request: request,
+		}, nil
+	})}
+
+	startedAt := time.Now()
+	chatModel, err := NewChatModel(context.Background(), config.LLMConfig{
+		Provider: "anthropic-compatible",
+		Endpoint: "https://llm.example.com/api/anthropic",
+		APIKey:   "test-key",
+		Model:    "test-model",
+	}, WithHTTPClient(client))
+	require.NoError(t, err)
+
+	result, err := chatModel.Generate(context.Background(), []*schema.Message{schema.UserMessage("ping")})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "连接成功", result.Content)
+	assert.Equal(t, "/api/anthropic/v1/messages", requestPath)
+	assert.WithinDuration(t, startedAt.Add(defaultAnthropicRequestTimeout), requestDeadline, time.Second)
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
