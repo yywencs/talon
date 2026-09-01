@@ -370,7 +370,7 @@ class EvaluatorTests(unittest.TestCase):
         checks = {item["id"]: item for item in result["checks"]}
         self.assertEqual("passed", checks["diagnosis.failed_probe_evidence"]["status"])
 
-    def test_obsolete_peer_is_derived_from_cited_trace_and_provider_facts(self):
+    def test_obsolete_peer_is_derived_from_cited_trace_and_connection_facts(self):
         payload = mapping_input()
         payload["expectations"]["diagnosis"]["required_evidence"] = [
             "trace.peer_address_obsolete"
@@ -382,20 +382,75 @@ class EvaluatorTests(unittest.TestCase):
                 "action": "read",
                 "status": "succeeded",
                 "evidence_ids": ["trace.peer_address_observed"],
-                "output": {"data": [{"attributes": {"peer_address": "old:443"}}]},
+                "output": {
+                    "data": [
+                        {
+                            "scope": {"provider_id": "provider-media-a"},
+                            "attributes": {"peer_address": "198.51.100.40"},
+                        }
+                    ]
+                },
             },
             {
-                "call_id": "provider-call",
-                "name": "get_providers",
+                "call_id": "connection-call",
+                "name": "get_connection_metadata",
                 "action": "read",
                 "status": "succeeded",
-                "evidence_ids": ["provider.endpoint_healthy"],
-                "output": {"data": [{"endpoint": "new:443"}]},
+                "evidence_ids": ["connection.resolver_cache_generation"],
+                "output": {
+                    "data": [
+                        {"provider_id": "provider-media-a", "resolved_ip": "198.51.100.90"}
+                    ]
+                },
             },
         ]
         payload["artifact"]["execution_intents"][0]["evidence_refs"] = [
             "trace-call",
-            "provider-call",
+            "connection-call",
+        ]
+
+        result = evaluate(payload)
+
+        checks = {item["id"]: item for item in result["checks"]}
+        self.assertEqual("passed", checks["diagnosis.required_evidence_coverage"]["status"])
+
+    def test_matching_peer_and_resolved_ip_derives_no_obsolete_address(self):
+        payload = mapping_input()
+        payload["expectations"]["diagnosis"]["required_evidence"] = [
+            "trace.peer_address_observed"
+        ]
+        payload["artifact"]["agent_runs"][0]["tool_calls"] = [
+            {
+                "call_id": "trace-call",
+                "name": "query_traces",
+                "action": "read",
+                "status": "succeeded",
+                "evidence_ids": ["trace.peer_address_observed"],
+                "output": {
+                    "data": [
+                        {
+                            "scope": {"provider_id": "provider-media-a"},
+                            "attributes": {"peer_address": "198.51.100.40"},
+                        }
+                    ]
+                },
+            },
+            {
+                "call_id": "connection-call",
+                "name": "get_connection_metadata",
+                "action": "read",
+                "status": "succeeded",
+                "evidence_ids": ["connection.resolver_cache_generation"],
+                "output": {
+                    "data": [
+                        {"provider_id": "provider-media-a", "resolved_ip": "198.51.100.40"}
+                    ]
+                },
+            },
+        ]
+        payload["artifact"]["execution_intents"][0]["evidence_refs"] = [
+            "trace-call",
+            "connection-call",
         ]
 
         result = evaluate(payload)

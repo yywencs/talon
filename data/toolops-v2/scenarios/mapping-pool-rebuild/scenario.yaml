@@ -215,7 +215,8 @@ action_behavior:
                   component: provider-connector
                   code: stale_pool_generation
                   message: connection pool generation 20 was built from regressed mapping-v3 and still serves old response parsing
-      - steps:
+      - when: {after_world_effect: recreate_provider_connection_pool}
+        steps:
           - sample_count: 60
             success_rate: 0.99
             latency_p95_ms: 1500

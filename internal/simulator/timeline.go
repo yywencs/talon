@@ -112,9 +112,22 @@ func (w *World) nextOperationAtLocked() (string, time.Time, bool) {
 	return selectedID, selectedAt, selectedID != ""
 }
 
+// firedEventRecord 是 when.after_event 谓词的匹配源：记录事件触发时声明的
+// 名称、目标与 internal_cause，供探针剧本页按字段子集匹配。
+type firedEventRecord struct {
+	Event  string
+	Target string
+	Cause  string
+}
+
 func (w *World) applyTimelineEventLocked(event scenario.TimelineEvent) error {
 	effect := asMap(event.Values["internal_effect"])
 	w.applyTrafficEffectLocked(effect, event.Target)
+	w.firedEvents = append(w.firedEvents, firedEventRecord{
+		Event:  event.Event,
+		Target: event.Target,
+		Cause:  asString(event.Values["internal_cause"]),
+	})
 
 	switch event.Event {
 	case "config.publish":
@@ -130,6 +143,16 @@ func (w *World) applyTimelineEventLocked(event scenario.TimelineEvent) error {
 			provider.Endpoint = endpoint
 		}
 		w.providers[event.Target] = provider
+		// current_provider_ip 是 Provider 当前的真实地址；连接器侧的过时解析值
+		// 只存在于 Trace 遥测里。两者不一致即"对端地址已过时"证据的来源。
+		if currentIP := asString(effect["current_provider_ip"]); currentIP != "" {
+			if connection, ok := w.connections[event.Target]; ok {
+				now := w.now
+				connection.ResolvedIP = currentIP
+				connection.LastPingAt = &now
+				w.connections[event.Target] = connection
+			}
+		}
 	default:
 		return fmt.Errorf("unsupported timeline event %q", event.Event)
 	}

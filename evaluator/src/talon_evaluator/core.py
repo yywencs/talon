@@ -634,8 +634,8 @@ def _cited_evidence_ids(
 
     cited = {value for value in references if isinstance(value, str) and value}
     result: set[str] = set()
-    peer_addresses: set[str] = set()
-    provider_endpoints: set[str] = set()
+    trace_peers: dict[str, str] = {}
+    resolved_ips: dict[str, str] = {}
     for call in tool_calls:
         if call.get("status") != "succeeded" or call.get("action") != "read":
             continue
@@ -646,16 +646,24 @@ def _cited_evidence_ids(
         if call.get("name") == "query_traces":
             for trace in _dict_list(data):
                 peer = _dict(trace.get("attributes")).get("peer_address")
-                if isinstance(peer, str) and peer.strip():
-                    peer_addresses.add(peer.strip())
-        elif call.get("name") == "get_providers":
-            for provider in _dict_list(data):
-                endpoint = provider.get("endpoint")
-                if isinstance(endpoint, str) and endpoint.strip():
-                    provider_endpoints.add(endpoint.strip())
-    # Trace 对端与 Provider 声明端点不一致时，派生“旧地址”这一跨工具证据。
-    if provider_endpoints and any(peer not in provider_endpoints for peer in peer_addresses):
-        result.add("trace.peer_address_obsolete")
+                provider = _dict(trace.get("scope")).get("provider_id")
+                if isinstance(peer, str) and peer.strip() and isinstance(provider, str) and provider.strip():
+                    trace_peers[provider.strip()] = peer.strip()
+        elif call.get("name") == "get_connection_metadata":
+            for connection in _dict_list(data):
+                provider = connection.get("provider_id")
+                resolved = connection.get("resolved_ip")
+                if isinstance(provider, str) and provider.strip() and isinstance(resolved, str) and resolved.strip():
+                    # 后一次引用覆盖先前的：派生以“当前已引用的解析状态”为准。
+                    resolved_ips[provider.strip()] = resolved.strip()
+    # Trace 对端地址与连接元数据当前解析出的对端不一致时，派生“旧地址”这一
+    # 跨工具证据。两个值都是 IP（同型比较）；Trace 与连接记录按 provider 归属
+    # 匹配，没有对应连接元数据引用时不做比较。
+    for provider, peer in trace_peers.items():
+        resolved = resolved_ips.get(provider)
+        if resolved is not None and peer != resolved:
+            result.add("trace.peer_address_obsolete")
+            break
     return result
 
 

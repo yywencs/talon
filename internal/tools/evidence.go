@@ -10,9 +10,8 @@ import (
 	"github.com/wen/opentalon/internal/platform"
 )
 
-// evidenceResponse annotates successful read results with stable semantic IDs.
-// The IDs describe facts already present in data; they do not expose hidden
-// scenario expectations or causes.
+// evidenceResponse 为成功的只读工具结果标注稳定的语义化 EvidenceID。
+// ID 只描述数据中已经存在的事实，不泄露场景隐藏的期望或成因。
 func evidenceResponse[T any](data T, err error) response[T] {
 	result := platformResponse(data, err)
 	if err == nil {
@@ -21,6 +20,9 @@ func evidenceResponse[T any](data T, err error) response[T] {
 	return result
 }
 
+// canonicalEvidenceIDs 从只读工具返回的数据本身提取规范化事实 ID：按结果类型
+// 识别指标名、日志错误码、Trace 终止特征与 Provider、路由、变更、凭据、连接
+// 状态等事实，去重后按字典序返回。事实与数据一一对应，不引入数据之外的判断。
 func canonicalEvidenceIDs(value any) []string {
 	ids := make(map[string]struct{})
 	add := func(value string) {
@@ -56,7 +58,7 @@ func canonicalEvidenceIDs(value any) []string {
 			if number(trace.Attributes["provider_status_code"]) == 401 {
 				add("trace.provider_status_401")
 			}
-			if peer, _ := trace.Attributes["peer_address"].(string); strings.TrimSpace(peer) != "" && trace.TerminalSpan == "provider.connect" {
+			if peer, _ := trace.Attributes["peer_address"].(string); strings.TrimSpace(peer) != "" {
 				add("trace.peer_address_observed")
 			}
 		}
@@ -99,6 +101,8 @@ func canonicalEvidenceIDs(value any) []string {
 	return result
 }
 
+// canonicalSegment 把任意字符串归一化为小写字母、数字和下划线组成的段，
+// 用于把日志错误码、配置版本等原始值拼入事实 ID。
 func canonicalSegment(value string) string {
 	value = strings.TrimSpace(strings.ToLower(value))
 	var result strings.Builder
@@ -115,6 +119,7 @@ func canonicalSegment(value string) string {
 	return strings.Trim(result.String(), "_")
 }
 
+// number 尽力把任意数值类型或可解析为整数的值转换为 int64，无法转换时返回 0。
 func number(value any) int64 {
 	switch item := value.(type) {
 	case int:

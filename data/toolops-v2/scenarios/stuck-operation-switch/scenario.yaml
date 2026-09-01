@@ -164,6 +164,19 @@ action_behavior:
     attempts:
       - steps:
           - sample_count: 50
+            success_rate: 0.45
+            latency_p95_ms: 4000
+            telemetry_complete: true
+            error_types: [request_timeout]
+            reveal_on_hard_stop:
+              logs:
+                - level: error
+                  component: provider-connector
+                  code: queue_backlog_exceeded
+                  message: provider request queue backlog still exceeds 10000; queue workers are not draining
+      - when: {after_world_effect: force_queue_drain}
+        steps:
+          - sample_count: 50
             success_rate: 0.99
             latency_p95_ms: 1000
             telemetry_complete: true

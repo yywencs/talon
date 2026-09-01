@@ -2,6 +2,7 @@ package scenario
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -47,7 +48,78 @@ func validateScenario(document Scenario) error {
 	if len(document.ActionBehavior) == 0 {
 		return fmt.Errorf("action_behavior is required")
 	}
+	if err := validateActionBehavior(document.ActionBehavior); err != nil {
+		return err
+	}
 	return nil
+}
+
+// validateActionBehavior 校验探针剧本页的 when 生效条件结构。when 是模拟器把
+// 探针结果与世界状态绑定的谓词，结构手误会让场景静默退回按次序翻页，因此在
+// 加载期直接拒绝：只允许 after_event / after_world_effect 两个键，且必须能
+// 构成有效条件。
+func validateActionBehavior(behavior map[string]map[string]any) error {
+	names := make([]string, 0, len(behavior))
+	for name := range behavior {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		for index, item := range asAnyMapSlice(behavior[name]["attempts"]) {
+			path := fmt.Sprintf("action_behavior.%s.attempts[%d].when", name, index)
+			when, ok := item["when"]
+			if !ok || when == nil {
+				continue
+			}
+			spec, ok := when.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s must be a mapping", path)
+			}
+			if len(spec) == 0 {
+				return fmt.Errorf("%s must declare after_event or after_world_effect", path)
+			}
+			for key, value := range spec {
+				switch key {
+				case "after_event":
+					event, ok := value.(map[string]any)
+					if !ok {
+						return fmt.Errorf("%s.after_event must be a mapping with event/target/cause fields", path)
+					}
+					hasField := false
+					for _, field := range []string{"event", "target", "cause"} {
+						if text, ok := event[field].(string); ok && strings.TrimSpace(text) != "" {
+							hasField = true
+						}
+					}
+					if !hasField {
+						return fmt.Errorf("%s.after_event requires at least one non-empty event/target/cause", path)
+					}
+				case "after_world_effect":
+					text, _ := value.(string)
+					if strings.TrimSpace(text) == "" {
+						return fmt.Errorf("%s.after_world_effect must be a non-empty remediation tool name", path)
+					}
+				default:
+					return fmt.Errorf("%s has unsupported key %q (only after_event/after_world_effect)", path, key)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func asAnyMapSlice(value any) []map[string]any {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if mapped, ok := item.(map[string]any); ok {
+			result = append(result, mapped)
+		}
+	}
+	return result
 }
 
 func validateInitialState(state InitialState) error {

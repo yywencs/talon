@@ -60,7 +60,7 @@ func TestReplayProbeDecisionGateOnExportedBatch(t *testing.T) {
 				drafts = append(drafts, workflow.ExecutionStageDraft{StageID: stage.StageID, Goal: stage.Goal,
 					Actions: stage.Actions, SuccessCriteria: stage.SuccessCriteria, CheckpointPolicy: stage.CheckpointPolicy})
 			}
-			if gateErr := GateProbeCheckpointDecisions(attempted, drafts, authorizedByScenario[artifact.ScenarioID]); gateErr != nil {
+			if gateErr := GateProbeCheckpointDecisions(attempted, drafts, authorizedByScenario[artifact.ScenarioID], ""); gateErr != nil {
 				rejected++
 				rejectedRuns[runLabel] = append(rejectedRuns[runLabel], "probe-decision")
 			}

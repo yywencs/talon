@@ -40,14 +40,15 @@ type submitExecutionIntentInput struct {
 // remediations 是当前 Incident 允许使用的修复能力快照；工具只负责校验并冻结当前意图，
 // 不会在提交过程中执行修复。提交成功后，Workflow 会从 investigating 转为 validating。
 // gate 非 nil 时在冻结前校验证据引用的真实性与四维度覆盖、以及 probe 终局决策
-// 与剩余授权能力的一致性，被拒的提交作为可纠正工具结果返回，模型可在下一轮
-// 修正后重新提交。
-func newSubmitExecutionIntentTool(instance *workflow.IncidentWorkflow, remediations map[string]platform.RemediationCapability, gate EvidenceGate) (einotool.InvokableTool, error) {
+// 与剩余授权能力及场景探测适用性的一致性，被拒的提交作为可纠正工具结果返回，
+// 模型可在下一轮修正后重新提交。
+func newSubmitExecutionIntentTool(instance *workflow.IncidentWorkflow, remediations map[string]platform.RemediationCapability, gate EvidenceGate, probePolicy platform.ProbeEscalationPolicy) (einotool.InvokableTool, error) {
 	authorizedTools := make([]string, 0, len(remediations))
 	for name := range remediations {
 		authorizedTools = append(authorizedTools, name)
 	}
 	sort.Strings(authorizedTools)
+
 	tool, err := toolutils.InferTool(
 		"submit_execution_intent",
 		"证据足够后提交当前有界执行意图。优先只提交当前可确定的短 Stage；仅当后续动作已经确定且只依赖前序结构化输出时，才可附带紧邻 Stage。Stage action 可使用已注册 remediation、request_probe 或 request_recovery。remediation 动作成功只能 continue 到紧随其后的显式 request_probe Stage，不能直接 succeeded。恢复型 request_probe 健康应 continue 到显式 request_recovery Stage；仅验证 fallback 时，healthy 应选择 needs_agent 返回 Agent，保持保护并作语义决策，不附带 recovery；两者都不能直接 succeeded。request_probe 和 request_recovery 的 arguments 必须是 route_id、policy_id、idempotency_key。request_probe Stage 的 fail-closed 默认决策在能力目录仍有未尝试的授权修复动作时只能是 needs_agent。evidence_refs 必须引用指标、日志、链路、配置状态四类观测维度中每一类的至少一次成功查询；某维度确实无法获得时应升级人工。该工具只冻结意图并推进到 validating，不会直接执行动作。",
@@ -130,7 +131,7 @@ func newSubmitExecutionIntentTool(instance *workflow.IncidentWorkflow, remediati
 					CreatedBy: string(workflow.ActorAgent)})
 			}
 			if gate != nil {
-				if err := gate.ValidateIntentProbeDecisions(stages, authorizedTools); err != nil {
+				if err := gate.ValidateIntentProbeDecisions(stages, authorizedTools, probePolicy); err != nil {
 					return platformResponse(workflow.ExecutionIntentSubmission{}, err), nil
 				}
 			}

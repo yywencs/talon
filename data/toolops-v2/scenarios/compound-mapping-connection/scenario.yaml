@@ -120,7 +120,7 @@ timeline:
           version: mapping-v2
           previous_version: mapping-v1
           actor: deployment-service
-  - at: 9m
+  - at: 6m
     event: provider.endpoint.change
     target: provider-thumb-b
     values:
@@ -240,7 +240,8 @@ action_behavior:
                   component: provider-connector
                   code: fallback_route_connection_refused
                   message: route-a mapping fixed but route-b still refuses connections from stale resolver cache
-      - steps:
+      - when: {after_world_effect: recreate_provider_connection_pool}
+        steps:
           - sample_count: 60
             success_rate: 0.99
             latency_p95_ms: 820

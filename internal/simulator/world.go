@@ -45,6 +45,11 @@ type World struct {
 	affectedRouteID   string
 	lastErrorType     string
 
+	// firedEvents 与 appliedEffects 是剧本页 when 谓词的两本台账：
+	// 前者记录已触发的 timeline 事件，后者记录已通过 world_effect 落地的修复动作。
+	firedEvents    []firedEventRecord
+	appliedEffects map[string]bool
+
 	controller        scenario.Controller
 	agentPolicy       scenario.AgentPolicy
 	timeline          []scenario.TimelineEvent
@@ -109,6 +114,7 @@ func NewWorld(document scenario.Scenario) (*World, error) {
 		pending:          make(map[string]scheduledOperation),
 		probes:           make(map[string]*probeSession),
 		recoveries:       make(map[string]*recoverySession),
+		appliedEffects:   make(map[string]bool),
 		controller:       document.Controller,
 		agentPolicy:      document.AgentPolicy,
 		timeline:         append([]scenario.TimelineEvent(nil), document.Timeline...),

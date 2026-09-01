@@ -18,7 +18,7 @@ type stubEvidenceGate struct {
 }
 
 func (s stubEvidenceGate) ValidateIntentEvidence([]string) error { return s.intentErr }
-func (s stubEvidenceGate) ValidateIntentProbeDecisions([]workflow.ExecutionStageDraft, []string) error {
+func (s stubEvidenceGate) ValidateIntentProbeDecisions([]workflow.ExecutionStageDraft, []string, platform.ProbeEscalationPolicy) error {
 	return s.probeErr
 }
 func (s stubEvidenceGate) ValidateEscalationEvidence(platform.EscalationReasonCode, []string, []string, platform.ProbeEscalationPolicy) error {
@@ -26,7 +26,7 @@ func (s stubEvidenceGate) ValidateEscalationEvidence(platform.EscalationReasonCo
 }
 
 func TestSubmitExecutionIntentGateRejectsAsCorrectableError(t *testing.T) {
-	tool, err := newSubmitExecutionIntentTool(nil, nil, stubEvidenceGate{intentErr: errors.New("证据引用缺少维度：链路（query_traces）")})
+	tool, err := newSubmitExecutionIntentTool(nil, nil, stubEvidenceGate{intentErr: errors.New("证据引用缺少维度：链路（query_traces）")}, "")
 	require.NoError(t, err)
 	raw, runErr := tool.InvokableRun(context.Background(), `{"summary":"rollback","root_cause":"mapping regression","evidence_refs":["tool:query_logs:x"],"stages":[]}`)
 	// 门禁拒绝是可纠正的工具结果：不返回 Go 错误，模型可在下一轮补齐后重试。
@@ -39,7 +39,7 @@ func TestSubmitExecutionIntentGateRejectsAsCorrectableError(t *testing.T) {
 }
 
 func TestSubmitExecutionIntentNilGateKeepsLegacyBehavior(t *testing.T) {
-	tool, err := newSubmitExecutionIntentTool(nil, nil, nil)
+	tool, err := newSubmitExecutionIntentTool(nil, nil, nil, "")
 	require.NoError(t, err)
 	raw, runErr := tool.InvokableRun(context.Background(), `{"summary":"rollback","root_cause":"mapping regression","evidence_refs":[],"stages":[]}`)
 	require.NoError(t, runErr)
@@ -54,7 +54,7 @@ func TestSubmitExecutionIntentNilGateKeepsLegacyBehavior(t *testing.T) {
 func TestSubmitExecutionIntentProbeDecisionGateRejectsAsCorrectableError(t *testing.T) {
 	// probe 终局决策门禁在 Stage 转换之后、意图冻结之前执行：
 	// 剩余授权能力未耗尽时 failed/escalate/blocked 默认决策作为可纠正错误返回。
-	tool, err := newSubmitExecutionIntentTool(nil, nil, stubEvidenceGate{probeErr: errors.New("probe 默认决策 \"failed\" 被拒：仍存在未尝试的授权修复动作（recreate_provider_connection_pool），必须用 needs_agent 唤回重新评估")})
+	tool, err := newSubmitExecutionIntentTool(nil, nil, stubEvidenceGate{probeErr: errors.New("probe 默认决策 \"failed\" 被拒：仍存在未尝试的授权修复动作（recreate_provider_connection_pool），必须用 needs_agent 唤回重新评估")}, "")
 	require.NoError(t, err)
 	raw, runErr := tool.InvokableRun(context.Background(), `{
 		"summary": "rollback then probe",

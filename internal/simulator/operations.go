@@ -396,6 +396,11 @@ func (w *World) completeOperationLocked(operationID string) {
 		operation.Status = platform.OperationFailed
 		operation.Message = asString(pending.behavior["reason"])
 	} else {
+		if len(asMap(pending.behavior["world_effect"])) > 0 {
+			// 只记真实落地的 world_effect；dry-run 不经过这里，无效果的
+			// 动作（如 stuck 的 rebuild）也不占用 when.after_world_effect 谓词。
+			w.appliedEffects[operation.Name] = true
+		}
 		w.applyWorldEffectLocked(asMap(pending.behavior["world_effect"]), pending.arguments)
 		operation.Status = platform.OperationSucceeded
 		operation.Message = "remediation completed"

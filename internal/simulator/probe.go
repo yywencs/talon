@@ -40,11 +40,7 @@ func (w *World) newProbeSessionLocked(operationID, routeID string, behavior map[
 	attempt := behavior
 	attempts := asMapSlice(behavior["attempts"])
 	if len(attempts) > 0 {
-		index := w.probeAttempt
-		if index >= len(attempts) {
-			index = len(attempts) - 1
-		}
-		attempt = attempts[index]
+		attempt = attempts[w.selectProbeAttemptLocked(attempts)]
 	}
 	durationText := asString(attempt["window_duration"])
 	if durationText == "" {
@@ -86,6 +82,75 @@ func (w *World) newProbeSessionLocked(operationID, routeID string, behavior map[
 		operationID: operationID, routeID: routeID, policy: w.controller.RecoveryPolicy,
 		windowDuration: windowDuration, stepProfiles: profiles, dueAt: w.now.Add(windowDuration),
 	}, nil
+}
+
+// selectProbeAttemptLocked 选择本次探测使用的剧本页。没有任何页声明 when 时保持
+// 按调用次序翻页的既有行为（其余场景零改动）；存在 when 时改为按世界状态选择——
+// 取最后一个条件满足的页（无 when 的页视为恒满足），全部不满足时回退第一页。
+// 页的顺序即优先级：健康页应声明 when 并排在故障页之后。
+func (w *World) selectProbeAttemptLocked(attempts []map[string]any) int {
+	hasWhen := false
+	for _, item := range attempts {
+		if len(asMap(item["when"])) > 0 {
+			hasWhen = true
+			break
+		}
+	}
+	if !hasWhen {
+		index := w.probeAttempt
+		if index >= len(attempts) {
+			index = len(attempts) - 1
+		}
+		return index
+	}
+	selected := 0
+	for index, item := range attempts {
+		if w.probeAttemptWhenSatisfiedLocked(asMap(item["when"])) {
+			selected = index
+		}
+	}
+	return selected
+}
+
+// probeAttemptWhenSatisfiedLocked 评估单个 when 谓词；空 when 恒满足。
+//   - after_event：按字段子集匹配已触发的 timeline 事件（event/target/cause，
+//     指定的非空字段全部一致即命中；同一事件名多次触发时用 cause 区分）
+//   - after_world_effect：指定修复动作的 world_effect 已真实落地
+func (w *World) probeAttemptWhenSatisfiedLocked(when map[string]any) bool {
+	if len(when) == 0 {
+		return true
+	}
+	if spec := asMap(when["after_event"]); len(spec) > 0 {
+		matched := false
+		for _, record := range w.firedEvents {
+			if eventMatchesSpec(record, spec) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	if tool := asString(when["after_world_effect"]); tool != "" {
+		if !w.appliedEffects[tool] {
+			return false
+		}
+	}
+	return true
+}
+
+func eventMatchesSpec(record firedEventRecord, spec map[string]any) bool {
+	if value := asString(spec["event"]); value != "" && record.Event != value {
+		return false
+	}
+	if value := asString(spec["target"]); value != "" && record.Target != value {
+		return false
+	}
+	if value := asString(spec["cause"]); value != "" && record.Cause != value {
+		return false
+	}
+	return true
 }
 
 func (w *World) parseProbeWindowProfileLocked(data, legacy map[string]any, trafficFraction float64, windowDuration time.Duration) (probeWindowProfile, error) {

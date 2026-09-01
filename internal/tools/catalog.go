@@ -36,10 +36,11 @@ type EvidenceGate interface {
 	// 配置状态四类观测维度。
 	ValidateIntentEvidence(refs []string) error
 	// ValidateIntentProbeDecisions 要求 probe Stage 的终局决策与剩余授权能力
-	// 一致：仍存在未尝试且不在本次草案内的授权修复动作时，probe 的 fail-closed
+	// 及场景探测适用性一致：仍存在未尝试且不在本次草案内的授权修复动作、或
+	// 场景声明 escalation_probe_policy=required 时，probe 的 fail-closed
 	// 去向只能是 needs_agent。authorizedTools 是当前能力目录中 Agent 有权调用的
 	// 动作名清单。
-	ValidateIntentProbeDecisions(stages []workflow.ExecutionStageDraft, authorizedTools []string) error
+	ValidateIntentProbeDecisions(stages []workflow.ExecutionStageDraft, authorizedTools []string, probePolicy platform.ProbeEscalationPolicy) error
 	// ValidateEscalationEvidence 要求引用全部真实、不遗漏已获得的维度证据，
 	// 并按 reasonCode 做升级前置校验：断言无安全修复手段前必须探测过当前
 	// 状态；授权修复动作全部尝试耗尽时必须如实申报 workflow_budget_exhausted。
@@ -171,7 +172,7 @@ func New(ctx context.Context, service platform.ToolOpsPlatform, incidentID strin
 		}
 	}
 	if config.workflow != nil {
-		intentTool, intentErr := newSubmitExecutionIntentTool(config.workflow, authorizedCapabilities, config.evidenceGate)
+		intentTool, intentErr := newSubmitExecutionIntentTool(config.workflow, authorizedCapabilities, config.evidenceGate, probePolicy)
 		if intentErr != nil {
 			return nil, intentErr
 		}

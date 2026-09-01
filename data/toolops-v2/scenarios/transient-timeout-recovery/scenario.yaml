@@ -110,7 +110,7 @@ timeline:
         provider_metadata:
           endpoint: api.fetch-a.example
           endpoint_health: healthy
-  - at: 12m
+  - at: 6m
     event: provider.endpoint.change
     target: provider-fetch-a
     values:
@@ -165,9 +165,10 @@ remediation_tools:
 
 probe_tool:
   name: request_probe
-  description: 请求控制器按恢复策略对指定路由执行小流量健康探测。故障自愈后必须通过探测验证再恢复流量。
+  description: 请求控制器按恢复策略对指定路由执行小流量健康探测。故障自愈后必须通过探测验证再恢复流量；探测不健康时必须以 needs_agent 交回重新评估，瞬时故障可能仍在自愈中。
   arguments: [incident_id, route_id, policy_id, idempotency_key]
   controller_owns_traffic_weight: true
+  escalation_probe_policy: required
 
 escalation_tool:
   name: escalate_incident
@@ -183,6 +184,19 @@ action_behavior:
     window_duration: 1m
     attempts:
       - steps:
+          - sample_count: 100
+            success_rate: 0.55
+            latency_p95_ms: 620
+            telemetry_complete: true
+            error_types: [connection_refused]
+            reveal_on_hard_stop:
+              logs:
+                - level: info
+                  component: provider-connector
+                  code: standby_promotion_pending
+                  message: upstream node hardware blip detected; standby promotion in progress, retry after failover completes
+      - when: {after_event: {event: provider.endpoint.change, target: provider-fetch-a, cause: standby_node_promoted_by_platform}}
+        steps:
           - sample_count: 100
             success_rate: 0.99
             latency_p95_ms: 620
