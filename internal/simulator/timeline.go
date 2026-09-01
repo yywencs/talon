@@ -142,17 +142,14 @@ func (w *World) applyTimelineEventLocked(event scenario.TimelineEvent) error {
 		if endpoint := asString(event.Values["endpoint"]); endpoint != "" {
 			provider.Endpoint = endpoint
 		}
-		w.providers[event.Target] = provider
-		// current_provider_ip 是 Provider 当前的真实地址；连接器侧的过时解析值
-		// 只存在于 Trace 遥测里。两者不一致即"对端地址已过时"证据的来源。
+		// current_provider_ip 是 Provider 当前的真实地址（连接器侧的过时解析值
+		// 仍在 connections 中，只存在于 Trace 遥测的 peer_address）。真值放在
+		// Provider 上：连接器修复动作（refresh/recreate）改写 connections 时
+		// 不会掩盖"Trace 对端地址已过时"的证据来源。
 		if currentIP := asString(effect["current_provider_ip"]); currentIP != "" {
-			if connection, ok := w.connections[event.Target]; ok {
-				now := w.now
-				connection.ResolvedIP = currentIP
-				connection.LastPingAt = &now
-				w.connections[event.Target] = connection
-			}
+			provider.EndpointIP = currentIP
 		}
+		w.providers[event.Target] = provider
 	default:
 		return fmt.Errorf("unsupported timeline event %q", event.Event)
 	}

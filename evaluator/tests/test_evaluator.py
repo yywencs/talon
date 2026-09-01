@@ -370,7 +370,7 @@ class EvaluatorTests(unittest.TestCase):
         checks = {item["id"]: item for item in result["checks"]}
         self.assertEqual("passed", checks["diagnosis.failed_probe_evidence"]["status"])
 
-    def test_obsolete_peer_is_derived_from_cited_trace_and_connection_facts(self):
+    def test_obsolete_peer_is_derived_from_cited_trace_and_provider_facts(self):
         payload = mapping_input()
         payload["expectations"]["diagnosis"]["required_evidence"] = [
             "trace.peer_address_obsolete"
@@ -392,21 +392,21 @@ class EvaluatorTests(unittest.TestCase):
                 },
             },
             {
-                "call_id": "connection-call",
-                "name": "get_connection_metadata",
+                "call_id": "provider-call",
+                "name": "get_providers",
                 "action": "read",
                 "status": "succeeded",
-                "evidence_ids": ["connection.resolver_cache_generation"],
+                "evidence_ids": ["provider.endpoint_healthy"],
                 "output": {
                     "data": [
-                        {"provider_id": "provider-media-a", "resolved_ip": "198.51.100.90"}
+                        {"id": "provider-media-a", "endpoint_ip": "198.51.100.90"}
                     ]
                 },
             },
         ]
         payload["artifact"]["execution_intents"][0]["evidence_refs"] = [
             "trace-call",
-            "connection-call",
+            "provider-call",
         ]
 
         result = evaluate(payload)
@@ -414,7 +414,7 @@ class EvaluatorTests(unittest.TestCase):
         checks = {item["id"]: item for item in result["checks"]}
         self.assertEqual("passed", checks["diagnosis.required_evidence_coverage"]["status"])
 
-    def test_matching_peer_and_resolved_ip_derives_no_obsolete_address(self):
+    def test_matching_peer_and_endpoint_ip_derives_no_obsolete_address(self):
         payload = mapping_input()
         payload["expectations"]["diagnosis"]["required_evidence"] = [
             "trace.peer_address_observed"
@@ -436,21 +436,21 @@ class EvaluatorTests(unittest.TestCase):
                 },
             },
             {
-                "call_id": "connection-call",
-                "name": "get_connection_metadata",
+                "call_id": "provider-call",
+                "name": "get_providers",
                 "action": "read",
                 "status": "succeeded",
-                "evidence_ids": ["connection.resolver_cache_generation"],
+                "evidence_ids": ["provider.endpoint_healthy"],
                 "output": {
                     "data": [
-                        {"provider_id": "provider-media-a", "resolved_ip": "198.51.100.40"}
+                        {"id": "provider-media-a", "endpoint_ip": "198.51.100.40"}
                     ]
                 },
             },
         ]
         payload["artifact"]["execution_intents"][0]["evidence_refs"] = [
             "trace-call",
-            "connection-call",
+            "provider-call",
         ]
 
         result = evaluate(payload)

@@ -144,6 +144,7 @@ type Provider struct {
 	ID               string         `json:"id"`
 	Health           ProviderHealth `json:"health"`
 	Endpoint         string         `json:"endpoint,omitempty"`
+	EndpointIP       string         `json:"endpoint_ip,omitempty"`
 	SchemaCompatible *bool          `json:"schema_compatible,omitempty"`
 }
 

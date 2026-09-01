@@ -29,9 +29,9 @@ func TestProbeHealthyPageGatedByWorldEffect(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, simulator.Advance(ctx, 7*time.Minute))
 
-	// 6m 端点变更事件把 Provider 真实地址落到连接元数据，Trace 里的过时地址
-	// 与它构成"对端已过时"证据来源。
-	require.Equal(t, "198.51.100.90", simulator.Snapshot().Connections["provider-thumb-b"].ResolvedIP)
+	// 6m 端点变更事件把 Provider 真实地址落到 Provider 元数据，Trace 里的过时地址
+	// 与它构成"对端已过时"证据来源（连接器侧 resolved_ip 不受事件影响）。
+	require.Equal(t, "198.51.100.90", simulator.Snapshot().Providers["provider-thumb-b"].EndpointIP)
 
 	// 未执行 recreate 前探测必须停留在故障页：健康页的 when 条件不满足。
 	first, err := simulator.RequestProbe(ctx, platform.ProbeRequest{
@@ -78,7 +78,7 @@ func TestProbeHealthyPageGatedByEventCause(t *testing.T) {
 	// 5m 故障事件已触发、6m 自愈事件未到：故障事件与自愈事件同名同目标，
 	// 谓词必须靠 internal_cause 区分。
 	require.NoError(t, simulator.Advance(ctx, 5*time.Minute+30*time.Second))
-	require.Equal(t, "198.51.100.77", simulator.Snapshot().Connections["provider-fetch-a"].ResolvedIP)
+	require.Equal(t, "198.51.100.77", simulator.Snapshot().Providers["provider-fetch-a"].EndpointIP)
 
 	first, err := simulator.RequestProbe(ctx, platform.ProbeRequest{
 		IncidentID: item.Scenario.Metadata.ID, RouteID: "route-a",
@@ -88,8 +88,8 @@ func TestProbeHealthyPageGatedByEventCause(t *testing.T) {
 	require.NoError(t, simulator.Advance(ctx, 3*time.Minute))
 	require.Equal(t, "hard_stop", probeOutcome(t, simulator, item.Scenario.Metadata.ID, first.ID))
 
-	// 6m 自愈事件触发后（cause 命中），健康页生效且连接真值更新。
-	require.Equal(t, "198.51.100.20", simulator.Snapshot().Connections["provider-fetch-a"].ResolvedIP)
+	// 6m 自愈事件触发后（cause 命中），健康页生效且 Provider 真值更新。
+	require.Equal(t, "198.51.100.20", simulator.Snapshot().Providers["provider-fetch-a"].EndpointIP)
 	second, err := simulator.RequestProbe(ctx, platform.ProbeRequest{
 		IncidentID: item.Scenario.Metadata.ID, RouteID: "route-a",
 		PolicyID: "default-safe-recovery", IdempotencyKey: "transient-probe-2",
