@@ -596,11 +596,13 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
      Agent 快慢，被唤醒时自愈都已完成，日志可引用）。
   3. **词汇表对齐**：`peer_address_observed` 发射条件放宽为"Trace 携带非空
      peer_address"（语义本就与终止阶段无关）；evaluator 派生改为同型比较——
-     被引用 Trace 的 peer_address ≠ 被引用 get_connection_metadata 中同 provider
-     的 resolved_ip 时派生 obsolete（两者都是 IP）。世界侧
+     被引用 Trace 的 peer_address ≠ 被引用 get_providers 中同 provider 的
+     endpoint_ip 时派生 obsolete（两者都是 IP）。世界侧
      `provider.endpoint.change` 把 `internal_effect.current_provider_ip` 落到
-     `connections[target].ResolvedIP`（此前该字段被丢弃）；过时值经 Trace 遥测
-     呈现。七个场景的双 IP 字段已核对，yaml 零补充。
+     `providers[target].EndpointIP`（新增字段，此前该值被丢弃）；过时值经
+     Trace 遥测呈现。七个场景的双 IP 字段已核对，yaml 零补充。注意真值
+     **不能**落到 `connections[].ResolvedIP`——该字段承载"连接器当前解析"
+     语义，refresh 修复会按剧本合法地把它写回过时值（见复验一节的回归）。
   4. **required 接入 checkpoint 门禁**：`GateProbeCheckpointDecisions` 在
      `escalation_probe_policy=required` 时同样禁止 probe Stage 的终局默认决策与
      终局规则——探测适用且会改变决策的场景（瞬时自愈），探测不健康必须以
@@ -615,5 +617,19 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
   内聚合结果"的正确推理）→复探 healthy→recovery（权重 90）。
   Go 全量测试与 evaluator 31 测试全绿（新增 when 谓词三门禁测试、required 门禁
   测试、IP 落库断言、同型比较正反用例）。
-- **遗留**：全量 ×3 复验待跑（预期四场景 12/12，其余场景无 when 零改动应无
-  回归）；当日 LLM 端点多次超时（C1）导致冒烟重试多轮，与场景逻辑无关。
+- **复验（`eval-20260901T035810Z-d5b6f4c2e36b`，45-run 全量）**：36/45 成功、
+  score 0.977（上批 32/45、0.9764）。compound 与 transient 各 3/3 全过；
+  auth-negative 3/3（上批 1 次引用抖动消失）。**一次回归**：connection-recovery
+  0/3——首版把真值 IP 落到 `connections[].ResolvedIP`，但 refresh 修复的
+  world_effect 按剧本把它写回过时值，"后一次引用覆盖"撞上相等值，派生消失
+  （该场景此前 3/3 通过恰好依赖旧 hostname/IP 比较 bug）。修正：真值改落
+  `providers[].EndpointIP`（连接器字段承载连接器语义，平台真值放 Provider），
+  evaluator 派生改比 endpoint_ip；修正后两个场景重跑均 resolved 且
+  required_evidence_coverage 0 失败、obsolete 派生不依赖任何 bug。
+  剩余失败 9 次：credential-revoked ×2（引用选择抖动，问题 20 类，从
+  auth-negative 迁移至此）；stuck ×2（跳过 rebuild 直接 force——环境未给出
+  先 rebuild 的动机，遗留）；pool-rebuild ×2（诚实探针暴露"修复前多探一轮"，
+  `[hard_stop,hard_stop,healthy]` 撞上严格两态 outcome_sequence 期望，是否判负
+  值得商榷）+ ×1 端点超时（C1）。
+- **遗留**：引用选择抖动（问题 20 引导）；stuck 的 rebuild 优先动机（force 加
+  前置条件或 Skill 引导）；pool-rebuild 的 outcome_sequence 期望校准。
