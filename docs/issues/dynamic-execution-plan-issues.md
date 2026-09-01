@@ -36,6 +36,8 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
 | `eval-20260823T093459Z-4e1699ecc66a` | 时序修复批（ResolvedActions 数据源+指路入 SafeSummary+attempted_actions 契约+verify 对 failed 运行放行空 model_calls 收尾）：19/45 | budget 历史首通（handoff.attempted_actions 字段补齐后）；但 Gate A 与场景设计冲突暴露——credrevoked 把无效凭据探测列为禁止动作、quota 期望不探测直接升 |
 | `eval-20260823T100534Z-07931f0fce0f` | 空目录豁免批：21/45，43 completed | quota 恢复 2/3、budget 2/3；credrevoked 仍 0/3——工具描述未同步豁免（仍在教"先尝试探测"）+ reason_code 判别残留 |
 | `eval-20260823T102148Z-85b6e2aef9ba` | 描述判别批：**22/45（48.9%）**，42 completed，步数 10.1 / token 91.4k（循环消除） | credrevoked 恢复 2/3；quota/budget 各 2/3 站稳；升级场景失败形态从行为失控转为可归因语义缺口（authneg/credfall 的探测判断仍需 Prompt/Skill 教学） |
+| `eval-20260829T092228Z-4f11be3f8744` | 修复前复验：21/45，score 0.842，38 completed + 7 failed | auth-negative/credential-fallback 仍 0/3；空授权目录启发式无法区分“fallback 可安全验证”和“凭据失效/配额耗尽不可探测”，compound 仍有 recovery route 映射与 no-progress 问题 |
+| `eval-20260831T145155Z-97e1de73d009` | 显式探测适用性与验证型 probe 修复后：**32/45（71.1%）**，score **0.976351**，45/45 completed、运行时失败 0 | 问题 17 的四个目标/边界场景均走对终态：credential-fallback/credential-revoked/quota 各 3/3，auth-negative 3 次均完成 probe→recovery（其中 1 次仅因漏引 authentication_error_rate 证据未计整 run 成功） |
 
 其中 `eval-20260818T101709Z-e35098c8f5b7` 的成功 Run ID 为
 `42117fab-62f9-4d69-b7bb-19db9d5799b2`：完整走过 refresh、失败 probe、
@@ -284,7 +286,8 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
 
 ## 17. 升级判断两极分化：该升不升、能修乱升
 
-- **状态**：已修复（升级门禁化 + 能力目录可见性 + 硬墙保守升级，2026-08-23）。
+- **状态**：已修复（2026-08-23 完成基础门禁；2026-08-31 补齐显式探测适用性、
+  验证型 probe 与事故启动时刻，并由 45-run 全量复验确认）。
 - **现场证据**：批次 `eval-20260820T024208Z-e9e2db44f57a` 中四组形态：
   budget-exhausted-escalation-001 3/3 未升级（如 Run ID
   `16027052-c33c-4f24-a1a3-131fb7fb83e6`），`escalation.reason_code` 与 `destination`
@@ -347,6 +350,37 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
   GLM 冒烟：credrevoked 探测 1 次被拒后引用被拒探测直接升级、attempted_actions
   三条完整、6 步零循环；budget 以 workflow_budget_exhausted 如实升级且建议人工
   动作精确到"恢复上游 DNS，两项授权修复均已执行且失败"。
+- **二阶段修复（2026-08-31，消除“未经探测就升级”的剩余语义缺口）**：
+  1. **验证型 probe 合法回到 Agent**：Workflow 允许健康 probe 选择两种受控出口：
+     恢复型 probe `continue` 到紧邻的显式 `request_recovery`；仅验证 fallback 的
+     probe 使用 `needs_agent`，保持保护并把健康结论交回 Agent 后升级。两者仍禁止
+     probe 直接 `succeeded` 关闭 Incident。
+  2. **显式事故启动时间**：场景 Clock 新增可选 `incident_at`。auth-negative-cache
+     显式在 `9m`（4m 故障发生 + 5m 检测窗口）启动 Agent，使 8m 已完成的平台凭据
+     轮换成为当前状态；未声明的旧场景继续从首个 timeline 事件启动。
+  3. **机器可判定的探测适用性**：`probe_tool.escalation_probe_policy` 使用
+     `required | not_applicable | conditional` 三态替代“授权修复目录是否为空”的
+     启发式。auth-negative 与 credential-fallback 标为 `required`；credential-revoked
+     与 quota 标为 `not_applicable`；历史场景 `conditional` 保持兼容。升级 Gate A
+     优先读取该策略，因此空授权目录下的健康 fallback 仍必须验证，而失效凭据、
+     确定性配额耗尽不会被迫制造无效 probe。
+  4. **教学与工具契约同步**：Credential Skill 增加 active/已轮换、兼容 fallback、
+     无兼容 fallback 三分支；v5 Prompt、`request_probe`、`escalate_incident` 与
+     `submit_execution_intent` 描述同步恢复型/验证型 probe 和探测豁免语义。
+- **最终验证（`eval-20260831T145155Z-97e1de73d009`）**：
+  - 全量 15 场景 ×3：45/45 completed、运行时失败 0；32/45 成功，score 0.976351，
+    相比 `eval-20260829T092228Z-4f11be3f8744` 的 21/45、0.842 明显提升。
+  - 目标任务 auth-negative：3/3 均识别凭据已轮换为 active，完成健康 probe、显式
+    recovery，并把 route-main 恢复到基线权重；确定性口径 2/3，唯一未计成功的 Run
+    `3c083115-b173-476d-a67a-476bb9f394c7` 仅漏引
+    `metric.authentication_error_rate`，其 probe/recovery/终态检查全部通过，属于问题 20
+    的证据引用波动，不是本问题行为回归。
+  - 目标任务 credential-fallback：3/3 全过；均先验证 fallback healthy，再经
+    `needs_agent` 回到调查态，以 `credential_change_requires_human` 升级并维持保护。
+  - 边界任务 credential-revoked 与 quota：各 3/3 全过；均未强行探测，使用
+    `no_safe_remediation_available` 正确升级。
+  - 结论：本问题的四类目标/边界行为 12/12 到达预期终态，确定性整 run 11/12；
+    “是否应先探测”已由场景策略和 Workflow 契约稳定约束，可关闭问题 17 的剩余缺口。
 
 ## 18. 修复成功后跳过探测与恢复直接关闭 Incident
 
@@ -524,3 +558,62 @@ Harness 验证缺口和执行器错误。可确定、重复或高风险的规则
   credential-revoked-escalation-001 与 budget/compound 各出现过 1-2 次。
 - **首次错误**：待查——需读取对应 artifact 的 model_calls 尾部确认是模型提前
   停止生成、还是调用预算/步数边界上的边界行为。低频且跨场景，暂不阻塞主线。
+
+## 24. 剩余失败场景的"世界不诚实"：探针剧本翻页、证据时间错位与词汇表分裂
+
+- **状态**：已修复（2026-09-01，冒烟验证四场景全通；全量 ×3 复验待跑）。
+- **现场证据**：`eval-20260831T145155Z-97e1de73d009` 基线中 compound/transient/
+  stuck/pool-rebuild 各 0/3、auth-negative 2/3。逐 run 解剖确认失败主体不是 Agent
+  行为，而是运行时契约与评测题目的四类错位：
+  1. **证据晚于调查窗口**：compound 的第二故障遥测（`log.connection_refused`、
+     过时 IP Trace）由 9m timeline 事件注入，而正确路径的调查窗口在 6-7m（probe
+     hard_stop 揭示后立即 recreate）；transient 的自愈证据
+     `standby_failover_completed` 由 12m 事件注入，正确路径 9m 即结束。三次
+     compound 运行的动作序列完全正确却因证据不可引用判负。
+  2. **探针剧本翻页与世界零耦合**：probe 结果按"第 N 次被接受的探测"读剧本页
+     （`w.probeAttempt` 计数器，probe.go），修复落地与否不影响结果。stuck 的
+     rebuild 无 world_effect、pool-rebuild 的 recreate 被乐观锁拒绝后，第二次探针
+     仍照剧本返回 healthy——"没修复却恢复成功"的假阳性结案。
+  3. **证据 ID 词汇表三方分裂**：expectations 要求 `trace.peer_address_observed`，
+     evidence.go 仅在 `terminal_span == provider.connect` 时发射（stuck 的 Trace 是
+     `provider.queued`，永不可发射）；evaluator 用 Trace 对端 IP 与 get_providers
+     端点 hostname 做字符串比较（core.py:646-658，永不相等）——任何被引用的
+     peer Trace 都派生 `trace.peer_address_obsolete`。connection-recovery-two-cycles
+     3/3 通过恰恰依赖这个 bug。
+  4. **checkpoint 终局决策缺口**：transient 授权目录为空 + 探测适用（瞬时自愈），
+     旧门禁（剩余授权修复动作）放行 `default_decision: escalate`，首探 hard_stop
+     即由 workflow 终局升级，Agent 不再获得控制权（`checkpoint_escalated`）。
+- **修复内容**（"让世界诚实"四件套 + 门禁接入）：
+  1. **probe 剧本页 when 谓词**：`action_behavior.<tool>.attempts[i].when` 支持
+     `after_event`（按 event/target/cause 字段子集匹配已触发 timeline 事件，
+     同名同目标事件靠 internal_cause 区分）与 `after_world_effect`（指定修复的
+     world_effect 已落地）。存在 when 时选最后一个满足页，无 when 场景保持按次序
+     翻页（其余 11 个场景零改动）。世界侧新增 firedEvents/appliedEffects 两本台账
+     （timeline 派发与 applyWorldEffectLocked 漏斗处记录；dry-run 与无 world_effect
+     的动作不占用谓词）。结构校验进 scenario validation。
+  2. **时间线对齐**：compound 第二故障事件 9m→6m（探测前后，保住"探测揭示"的
+     两轮设计）；transient 自愈事件 12m→6m（恰落在首次探测窗口结束时刻——无论
+     Agent 快慢，被唤醒时自愈都已完成，日志可引用）。
+  3. **词汇表对齐**：`peer_address_observed` 发射条件放宽为"Trace 携带非空
+     peer_address"（语义本就与终止阶段无关）；evaluator 派生改为同型比较——
+     被引用 Trace 的 peer_address ≠ 被引用 get_connection_metadata 中同 provider
+     的 resolved_ip 时派生 obsolete（两者都是 IP）。世界侧
+     `provider.endpoint.change` 把 `internal_effect.current_provider_ip` 落到
+     `connections[target].ResolvedIP`（此前该字段被丢弃）；过时值经 Trace 遥测
+     呈现。七个场景的双 IP 字段已核对，yaml 零补充。
+  4. **required 接入 checkpoint 门禁**：`GateProbeCheckpointDecisions` 在
+     `escalation_probe_policy=required` 时同样禁止 probe Stage 的终局默认决策与
+     终局规则——探测适用且会改变决策的场景（瞬时自愈），探测不健康必须以
+     needs_agent 交回重新评估。transient 声明 `required` 并同步 probe_tool 描述。
+- **验证**：四场景冒烟（`logs/smoke3/`）全部 resolved 且链路符合 expectations：
+  compound rollback→hard_stop→recreate→healthy→recovery（权重 70）；stuck rebuild
+  干等 30m→hard_stop（如实失败）→needs_agent→force→healthy→recovery——**无需
+  执行层卡住机制**（原设想的 operation deadline/stuck 阈值/取消原语可以不做，
+  诚实探针 + needs_agent 唤回已使 [rebuild→force] 切换自然发生）；pool-rebuild
+  rollback→hard_stop→recreate→healthy→recovery；transient 首探 hard_stop→
+  needs_agent 唤回→识别 failover 已完成（含"上次 hard_stop 是 failover 完成窗口
+  内聚合结果"的正确推理）→复探 healthy→recovery（权重 90）。
+  Go 全量测试与 evaluator 31 测试全绿（新增 when 谓词三门禁测试、required 门禁
+  测试、IP 落库断言、同型比较正反用例）。
+- **遗留**：全量 ×3 复验待跑（预期四场景 12/12，其余场景无 when 零改动应无
+  回归）；当日 LLM 端点多次超时（C1）导致冒烟重试多轮，与场景逻辑无关。
