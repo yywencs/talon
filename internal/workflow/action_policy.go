@@ -162,25 +162,11 @@ func (w *IncidentWorkflow) RecordActionApproval(approval ActionApproval) (Action
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if err := w.validateActionApprovalLocked(approval); err != nil {
+		return ActionApproval{}, err
+	}
 	if existing := findActionApproval(w.actionApprovals, approval.ActionID); existing != nil && existing.IntentID == approval.IntentID {
-		if existing.ActionDigest != approval.ActionDigest || existing.Decision != approval.Decision || existing.Approver != approval.Approver || existing.Reason != approval.Reason {
-			return ActionApproval{}, fmt.Errorf("intent action approval already has an immutable decision by %q", existing.Approver)
-		}
 		return *cloneActionApprovalPointer(existing), nil
-	}
-	if w.state != StateAwaitingApproval {
-		return ActionApproval{}, fmt.Errorf("%w: intent approval is not allowed in state %q", ErrInvalidTransition, w.state)
-	}
-	if w.intent == nil || w.intent.ID != approval.IntentID {
-		return ActionApproval{}, fmt.Errorf("intent approval does not match the current frozen intent")
-	}
-	action := findIntendedAction(w.executableActionsLocked(), approval.ActionID)
-	if action == nil || action.Digest != approval.ActionDigest {
-		return ActionApproval{}, fmt.Errorf("intent approval does not match a frozen action")
-	}
-	policy := findActionPolicyDecision(w.actionPolicies, approval.ActionID)
-	if policy == nil || policy.Outcome != ActionPolicyApprovalRequired {
-		return ActionApproval{}, fmt.Errorf("intent action approval requires an approval_required policy decision")
 	}
 
 	approval.DecidedAt = w.now()
@@ -200,6 +186,46 @@ func (w *IncidentWorkflow) RecordActionApproval(approval ActionApproval) (Action
 		}
 	}
 	return *cloneActionApprovalPointer(findActionApproval(w.actionApprovals, approval.ActionID)), nil
+}
+
+// ValidateActionApproval checks a decision without changing Workflow state.
+// Callers use it before persistence; RecordActionApproval checks again when applying.
+// This is a preflight check, not a transaction spanning memory and storage.
+func (w *IncidentWorkflow) ValidateActionApproval(approval ActionApproval) error {
+	if w == nil {
+		return fmt.Errorf("workflow is not initialized")
+	}
+	normalizeActionApproval(&approval)
+	if err := validateActionApproval(approval); err != nil {
+		return err
+	}
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.validateActionApprovalLocked(approval)
+}
+
+func (w *IncidentWorkflow) validateActionApprovalLocked(approval ActionApproval) error {
+	if existing := findActionApproval(w.actionApprovals, approval.ActionID); existing != nil && existing.IntentID == approval.IntentID {
+		if existing.ActionDigest != approval.ActionDigest || existing.Decision != approval.Decision || existing.Approver != approval.Approver || existing.Reason != approval.Reason {
+			return fmt.Errorf("intent action approval already has an immutable decision by %q", existing.Approver)
+		}
+		return nil
+	}
+	if w.state != StateAwaitingApproval {
+		return fmt.Errorf("%w: intent approval is not allowed in state %q", ErrInvalidTransition, w.state)
+	}
+	if w.intent == nil || w.intent.ID != approval.IntentID {
+		return fmt.Errorf("intent approval does not match the current frozen intent")
+	}
+	action := findIntendedAction(w.executableActionsLocked(), approval.ActionID)
+	if action == nil || action.Digest != approval.ActionDigest {
+		return fmt.Errorf("intent approval does not match a frozen action")
+	}
+	policy := findActionPolicyDecision(w.actionPolicies, approval.ActionID)
+	if policy == nil || policy.Outcome != ActionPolicyApprovalRequired {
+		return fmt.Errorf("intent action approval requires an approval_required policy decision")
+	}
+	return nil
 }
 
 func normalizeActionPolicyDecision(value *ActionPolicyDecision) {

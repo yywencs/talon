@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wen/opentalon/internal/runartifact"
+	"github.com/wen/opentalon/internal/runmeta"
 	"github.com/wen/opentalon/internal/scenario"
 	"github.com/wen/opentalon/internal/simulator"
 	"github.com/wen/opentalon/internal/skill"
@@ -85,7 +86,7 @@ func TestToolOpsAgentRefreshesContextBeforeEveryModelCall(t *testing.T) {
 	ctx := context.Background()
 	service, incidentID := testSimulator(t)
 	flow := investigatingWorkflow(t, incidentID)
-	recorder := runartifact.New(incidentID, runartifact.Provenance{}, runartifact.RunConfig{})
+	recorder := runartifact.New(incidentID, runmeta.Provenance{}, runmeta.Config{})
 	chatModel := &scriptedModel{}
 	toolOpsAgent, err := NewToolOpsAgent(ctx, Config{
 		Model: chatModel, Platform: service, IncidentID: incidentID, Workflow: flow, Artifact: recorder,
@@ -133,7 +134,7 @@ func TestToolOpsAgentCarriesPriorEvidenceIntoNextRunContext(t *testing.T) {
 	ctx := context.Background()
 	service, incidentID := testSimulator(t)
 	flow := investigatingWorkflow(t, incidentID)
-	recorder := runartifact.New(incidentID, runartifact.Provenance{}, runartifact.RunConfig{})
+	recorder := runartifact.New(incidentID, runmeta.Provenance{}, runmeta.Config{})
 	recorder.BeginAgentRun("collect initial evidence", flow.Snapshot())
 	recorder.RecordToolCall(
 		"call-initial-logs", "query_logs", workflow.AgentActionRead, `{}`,
@@ -194,7 +195,7 @@ func TestToolOpsAgentLoadsSkillAndFiltersTools(t *testing.T) {
 		}
 	}}
 	flow := investigatingWorkflow(t, incidentID)
-	recorder := runartifact.New(incidentID, runartifact.Provenance{}, runartifact.RunConfig{})
+	recorder := runartifact.New(incidentID, runmeta.Provenance{}, runmeta.Config{})
 	registry, err := skill.LoadDirectory("../../skills")
 	require.NoError(t, err)
 	session, err := skill.NewSession(registry, 2, recorder.ValidateEvidenceRefs)

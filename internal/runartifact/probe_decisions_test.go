@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wen/opentalon/internal/platform"
+	"github.com/wen/opentalon/internal/runmeta"
 	"github.com/wen/opentalon/internal/workflow"
 )
 
@@ -101,7 +102,7 @@ func TestGateProbeCheckpointDecisionsDetectsProbeByToolName(t *testing.T) {
 }
 
 func TestValidateIntentProbeDecisionsReadsResolvedActions(t *testing.T) {
-	recorder := New("gate-scenario", Provenance{CodeVersion: "test", DatasetVersion: "toolops-v1"}, RunConfig{})
+	recorder := New("gate-scenario", runmeta.Provenance{CodeVersion: "test", DatasetVersion: "toolops-v1"}, runmeta.Config{})
 	recorder.BeginAgentRun("investigate", workflow.Snapshot{State: workflow.StateInvestigating})
 	authorized := []string{"rollback_mapping", "recreate_provider_connection_pool"}
 	// 第一周期提交：recreate 未尝试也不在草案内，failed 默认决策被拒。

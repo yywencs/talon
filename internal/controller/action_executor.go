@@ -309,14 +309,14 @@ func (p *ExecutionCoordinator) finishAction(ctx context.Context, snapshot workfl
 	recorded, err := p.executionStore.Complete(ctx, claimed.ActionID, p.workerID,
 		operation.ID, string(operation.Status), status, message)
 	if err != nil {
-		return claimed, errors.Join(fmt.Errorf("complete action execution: %w", err), p.persistCheckpoint(ctx))
+		return claimed, errors.Join(fmt.Errorf("complete action execution: %w", err), p.persistWorkflowAudit(ctx))
 	}
 	records, err := p.executionStore.ListIntent(ctx, claimed.IntentID)
 	if err != nil {
 		return recorded, fmt.Errorf("list action executions after completion: %w", err)
 	}
 	_, transitionErr := p.reconcileExecutionStage(snapshot, records)
-	transitionErr = errors.Join(transitionErr, p.persistCheckpoint(ctx))
+	transitionErr = errors.Join(transitionErr, p.persistWorkflowAudit(ctx))
 	if status == execution.StatusFailed {
 		if transitionErr != nil {
 			return recorded, transitionErr

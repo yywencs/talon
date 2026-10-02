@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"github.com/wen/opentalon/internal/platform"
 	"github.com/wen/opentalon/internal/runartifact"
 	"github.com/wen/opentalon/internal/scenario"
+	"github.com/wen/opentalon/internal/simulator"
 	"github.com/wen/opentalon/internal/storage"
 	"github.com/wen/opentalon/internal/workflow"
 )
@@ -124,6 +127,39 @@ func TestRunStopsAtApprovalWhenAutoApprovalDisabled(t *testing.T) {
 	assert.Equal(t, string(controller.StopAwaitingApproval), result.Artifact.StopReason)
 }
 
+func TestRunAutoApprovalDoesNotDecidePreviousRunRequests(t *testing.T) {
+	ctx := context.Background()
+	database, err := storage.OpenSQLite(ctx, filepath.Join(t.TempDir(), "talon.db"))
+	require.NoError(t, err)
+	defer database.Close()
+	cfg := Config{
+		DatasetRoot: testDatasetRoot(t), Storage: database,
+		ClockPollInterval: time.Millisecond, WorkerRetryInterval: time.Millisecond,
+		InvestigatorFactory: func(flow *workflow.IncidentWorkflow, _ platform.ToolOpsPlatform) (controller.Investigator, error) {
+			return &intentInvestigator{flow: flow, incidentID: flow.Snapshot().IncidentID}, nil
+		},
+	}
+	first, err := Run(ctx, cfg)
+	require.NoError(t, err)
+	require.Equal(t, controller.StopAwaitingApproval, first.Controller.Reason)
+	oldPending, err := database.Approvals().ListPending(ctx)
+	require.NoError(t, err)
+	require.Len(t, oldPending, 1)
+
+	cfg.AutoApprove = true
+	second, err := Run(ctx, cfg)
+	require.NoError(t, err)
+	assert.Equal(t, controller.StopResolved, second.Controller.Reason)
+	assert.NotEqual(t, first.Artifact.RunID, second.Artifact.RunID)
+	assert.Equal(t, first.Controller.Snapshot.IncidentID, second.Controller.Snapshot.IncidentID)
+	remaining, err := database.Approvals().ListPending(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, oldPending, remaining, "the previous run's approval must remain untouched")
+	oldCheckpoint, err := database.Checkpoints().Get(ctx, first.Artifact.RunID)
+	require.NoError(t, err)
+	assert.Equal(t, workflow.StateAwaitingApproval, oldCheckpoint.Workflow.State)
+}
+
 func TestRunPersistsFailedArtifact(t *testing.T) {
 	database, err := storage.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "talon.db"))
 	require.NoError(t, err)
@@ -177,4 +213,93 @@ func activeArtifactConfig(values []runartifact.ConfigState) string {
 		}
 	}
 	return ""
+}
+
+func TestRunPropagatesAuditWriteFailures(t *testing.T) {
+	for _, when := range []string{"investigation", "final"} {
+		t.Run(when, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "audit.db")
+			db, err := storage.OpenSQLite(context.Background(), path)
+			require.NoError(t, err)
+			defer db.Close()
+			faults, err := sql.Open("sqlite", path)
+			require.NoError(t, err)
+			defer faults.Close()
+			condition := "json_array_length(NEW.artifact, '$.agent_runs') > 0"
+			if when == "final" {
+				condition = "NEW.outcome != 'running'"
+			}
+			_, err = faults.Exec(fmt.Sprintf(`CREATE TRIGGER fail_audit BEFORE UPDATE ON run_artifacts WHEN %s BEGIN SELECT RAISE(ABORT, 'injected audit failure'); END`, condition))
+			require.NoError(t, err)
+			result, err := Run(context.Background(), Config{
+				DatasetRoot: testDatasetRoot(t), Storage: db, AutoApprove: true,
+				ClockPollInterval: time.Millisecond, WorkerRetryInterval: time.Millisecond,
+				InvestigatorFactory: func(flow *workflow.IncidentWorkflow, _ platform.ToolOpsPlatform) (controller.Investigator, error) {
+					return &intentInvestigator{flow: flow, incidentID: flow.Snapshot().IncidentID}, nil
+				},
+			})
+			require.ErrorContains(t, err, "injected audit failure")
+			assert.Equal(t, "failed", result.Artifact.Outcome)
+			if when == "investigation" {
+				assert.Empty(t, result.World.Operations)
+			} else {
+				assert.Equal(t, workflow.StateResolved, result.Controller.Snapshot.State)
+				assert.Contains(t, err.Error(), "persist final run artifact")
+			}
+		})
+	}
+}
+
+// Cancellation while the virtual clock is active must finish audit and release
+// the clock before Run returns; the captured world remains stable afterwards.
+func TestRunCancellationStopsClockBeforeFinalAudit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	db, err := storage.OpenSQLite(ctx, filepath.Join(t.TempDir(), "cancel.db"))
+	require.NoError(t, err)
+	defer db.Close()
+	writer := &cancelOnOperation{cancel: cancel}
+	var service *simulator.Simulator
+	done := make(chan struct{})
+	var result Result
+	var runErr error
+	go func() {
+		defer close(done)
+		result, runErr = Run(ctx, Config{
+			DatasetRoot: testDatasetRoot(t), Storage: db, Output: writer, AutoApprove: true,
+			ClockPollInterval: time.Millisecond, WorkerRetryInterval: time.Millisecond,
+			InvestigatorFactory: func(flow *workflow.IncidentWorkflow, platformService platform.ToolOpsPlatform) (controller.Investigator, error) {
+				service = platformService.(*simulator.Simulator)
+				return &intentInvestigator{flow: flow, incidentID: flow.Snapshot().IncidentID}, nil
+			},
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("canceled run did not finish within persistence timeout")
+	}
+	require.ErrorIs(t, runErr, context.Canceled)
+	require.True(t, writer.canceled)
+	persisted, err := db.RunArtifacts().Get(context.Background(), result.Artifact.RunID)
+	require.NoError(t, err)
+	assert.Equal(t, result.Artifact, persisted)
+	assert.Equal(t, result.World.Now, result.Artifact.FinalState.VirtualTime)
+	assert.Equal(t, result.World, service.Snapshot())
+	// A former clock iteration must not outlive the returned result.
+	time.Sleep(5 * time.Millisecond)
+	assert.Equal(t, result.World, service.Snapshot())
+}
+
+type cancelOnOperation struct {
+	cancel   context.CancelFunc
+	canceled bool
+}
+
+func (w *cancelOnOperation) Write(value []byte) (int, error) {
+	if !w.canceled && bytes.Contains(value, []byte("[operation]")) {
+		w.canceled = true
+		w.cancel()
+	}
+	return len(value), nil
 }

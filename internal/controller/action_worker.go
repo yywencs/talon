@@ -43,7 +43,7 @@ func (w *ActionWorker) Run(ctx context.Context) error {
 		}
 
 		record, err := w.processor.ExecuteNext(ctx)
-		if err != nil && !errors.Is(err, execution.ErrNoClaimable) && !errors.Is(err, ErrActionExecutionUnknown) {
+		if errors.Is(err, ErrWorkflowAudit) || (err != nil && !errors.Is(err, execution.ErrNoClaimable) && !errors.Is(err, ErrActionExecutionUnknown)) {
 			return err
 		}
 		if w.processor.workflow.Snapshot().State != workflow.StateExecuting {

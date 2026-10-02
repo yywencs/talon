@@ -14,9 +14,17 @@ import (
 )
 
 type sqlApprovalStore struct {
-	db     *sql.DB
+	db     approvalDB
 	driver Driver
 	now    func() time.Time
+}
+
+// Both *sql.DB and *sql.Tx implement this boundary so approval creation can
+// participate in the same transaction as a run checkpoint.
+type approvalDB interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
 var _ approval.Store = (*sqlApprovalStore)(nil)

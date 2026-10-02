@@ -104,6 +104,36 @@ go run ./cmd/talon \
 go run ./cmd/talon --help
 ```
 
+## 运行检查点（保存与 Workflow 重建）
+
+运行前需按 `docs/sql/README.md` 应用数据库迁移；已有数据库需新增执行 `006_create_run_checkpoints.up.sql`。运行时不会自动建表。
+
+`run_checkpoints` 按 `run_id` 保存最近一次检查点，包含版本信息、运行配置、Workflow 快照和 Intent ID 前缀。目前接入三个保存位置：
+
+| 位置 | 保存时机 | 保存失败时 |
+| --- | --- | --- |
+| `created` | Workflow 创建后，调查开始前 | 停止启动 |
+| `intent_accepted` | 调查轮次返回、意图已冻结，预执行开始前 | 不进入预执行 |
+| `awaiting_approval` | 策略要求审批时，与审批请求在同一事务提交 | 回滚审批请求，不继续执行 |
+
+检查点使用独立的 `revision` 做条件更新，拒绝旧版本覆盖；使用相同预期版本重试同一份数据时，返回已提交记录。JSON 的 `schema_version` 用于识别数据格式，读取不支持的格式会报错。冻结动作的参数原样保存，读取时保留大整数精度。
+
+这一阶段支持保存、读取和 Workflow 对象重建，尚未实现重启续跑入口或重启后的跨层状态对账；执行层已有租约、Operation 查询与 unknown 处理继续保留。检查点只代表上述最近一次保存位置，执行继续推进后可能落后于实际状态；终态仍查看 RunArtifact。Agent 对话和 Simulator 状态不在该快照中，不能直接把它当作完整进程恢复镜像。
+
+应用代码可调用 `app.LoadWorkflow(ctx, database.Checkpoints(), runID)`，取得原始检查点（含 revision、运行配置、模型调用计数）和独立的 Workflow 对象。底层 `workflow.Restore(snapshot)` 校验身份、完整转换历史、计数、阶段位置及当前动作/预执行/审批的关联，再复制状态；不会重新生成 ID、重置预算或产生新事件。空切片经过 JSON 的 `omitempty` 后可能变为 nil，序列化状态保持一致。
+
+该入口只读数据库，不创建新运行、不启动 Controller、不执行平台动作，也不自动应用更新的审批结果。必须完成审批和执行记录对账后才能接入实际续跑。
+
+运行编排与持久化的职责如下（详见 [运行生命周期与持久化边界](docs/run-lifecycle.md)）：
+
+- `app.Run` 准备输入、新建运行与 Workflow，再组装组件、推进运行和收尾；模拟器时钟退出后才捕获最终世界状态。
+- `intentPersistenceGate` 在调查返回后同步保存已接受意图，即使调查返回错误或取消也会尝试保存；失败会阻止 DryRun。审计包装器只记录调查过程与错误。
+- `runCheckpointWriter` 构造检查点、管理独立 revision 并锁定保存失败。不可变身份和配置来自 `runmeta`，动态用量只读取模型调用计数，不复制整个审计轨迹。
+- `checkpoint.Data` 校验保存边界的数据及审批绑定；`storage` 在读写入口调用校验，并负责 SQL、JSONB、CAS 和审批跨表事务。
+- Workflow 的 `DecisionCheckpoint` 是业务阶段判定；`WithWorkflowAudit` / `RecordWorkflow` 同步审计轨迹；`checkpoint.Store` 保存恢复所需的运行状态。三者不互相替代。
+
+取消后的检查点和审计写入保留各自最长 5 秒的尽力保存窗口；无法保证进程被强制终止时写入完成。审计写入失败同样必须传播并停止推进。
+
 ## 导出离线评测数据
 
 按代码版本和数据集版本导出该组合下的所有终态运行，包括 `completed` 和 `failed`：

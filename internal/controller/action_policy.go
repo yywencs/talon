@@ -97,6 +97,13 @@ func (p *ExecutionCoordinator) decideApproval(ctx context.Context, request Appro
 	if p.approvalStore == nil {
 		return workflow.ActionApproval{}, fmt.Errorf("approval store is required for human decisions")
 	}
+	value := workflow.ActionApproval{
+		IntentID: request.IntentID, ActionID: request.ActionID, ActionDigest: request.ActionDigest,
+		Decision: decision, Approver: request.Approver, Reason: request.Reason,
+	}
+	if err := p.workflow.ValidateActionApproval(value); err != nil {
+		return workflow.ActionApproval{}, fmt.Errorf("validate intent approval before persistence: %w", err)
+	}
 	status := approval.StatusApproved
 	if decision == workflow.ActionApprovalRejected {
 		status = approval.StatusRejected
@@ -108,15 +115,12 @@ func (p *ExecutionCoordinator) decideApproval(ctx context.Context, request Appro
 	}); err != nil {
 		return workflow.ActionApproval{}, fmt.Errorf("persist intent action approval: %w", err)
 	}
-	result, err := p.workflow.RecordActionApproval(workflow.ActionApproval{
-		IntentID: request.IntentID, ActionID: request.ActionID, ActionDigest: request.ActionDigest,
-		Decision: decision, Approver: request.Approver, Reason: request.Reason,
-	})
+	result, err := p.workflow.RecordActionApproval(value)
 	if err != nil {
 		return workflow.ActionApproval{}, fmt.Errorf("record intent approval: %w", err)
 	}
-	if err := p.persistCheckpoint(ctx); err != nil {
-		return result, fmt.Errorf("persist intent approval checkpoint: %w", err)
+	if err := p.persistWorkflowAudit(ctx); err != nil {
+		return result, fmt.Errorf("persist intent approval audit: %w", err)
 	}
 	return result, nil
 }
@@ -136,6 +140,7 @@ func (p *ExecutionCoordinator) ensureApprovalRequests(ctx context.Context, snaps
 	if snapshot.ExecutionIntent == nil {
 		return fmt.Errorf("persist approval requests: workflow has no frozen intent")
 	}
+	var requests []approval.Request
 	for _, policy := range snapshot.ActionPolicies {
 		if policy.Outcome != workflow.ActionPolicyApprovalRequired {
 			continue
@@ -144,14 +149,22 @@ func (p *ExecutionCoordinator) ensureApprovalRequests(ctx context.Context, snaps
 		if action == nil || action.Digest != policy.ActionDigest {
 			return fmt.Errorf("persist approval request: policy does not match frozen action %q", policy.ActionID)
 		}
-		_, err := p.approvalStore.Create(ctx, approval.Request{
+		requests = append(requests, approval.Request{
 			ID: approval.RequestID(action.ID), IncidentID: snapshot.IncidentID,
 			IntentID: snapshot.ExecutionIntent.ID, ActionID: action.ID, ActionDigest: action.Digest,
 			DryRunOperationID: policy.DryRunOperationID, ToolName: action.ToolName,
 			Arguments: cloneMap(action.Arguments), Risk: policy.Risk, PolicyReason: policy.Reason,
 		})
-		if err != nil {
-			return fmt.Errorf("persist approval request for action %q: %w", action.ID, err)
+	}
+	if len(requests) == 0 {
+		return nil
+	}
+	if p.approvalCheckpoint != nil {
+		return p.approvalCheckpoint(ctx, snapshot, requests)
+	}
+	for _, request := range requests {
+		if _, err := p.approvalStore.Create(ctx, request); err != nil {
+			return fmt.Errorf("persist approval request for action %q: %w", request.ActionID, err)
 		}
 	}
 	return nil

@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/wen/opentalon/internal/approval"
 	"github.com/wen/opentalon/internal/runartifact"
+	"github.com/wen/opentalon/internal/runmeta"
 	"github.com/wen/opentalon/internal/workflow"
 )
 
@@ -124,7 +125,7 @@ func TestPostgresApprovalStoreContract(t *testing.T) {
 func runArtifactStoreContract(t *testing.T, store runartifact.Store) {
 	t.Helper()
 	ctx := context.Background()
-	recorder := runartifact.New("scenario-artifact-store", runartifact.Provenance{CodeVersion: "test", DatasetVersion: "toolops-v1"}, runartifact.RunConfig{})
+	recorder := runartifact.New("scenario-artifact-store", runmeta.Provenance{CodeVersion: "test", DatasetVersion: "toolops-v1"}, runmeta.Config{})
 	running := recorder.Snapshot()
 	require.NoError(t, store.Upsert(ctx, running))
 	persisted, err := store.Get(ctx, running.RunID)
@@ -157,7 +158,7 @@ func runArtifactStoreContract(t *testing.T, store runartifact.Store) {
 	// 模型输出的非法 Unicode 转义（NUL / 孤立代理对）经 RawMessage 透传进入
 	// Artifact 时，不得让整次运行无法入库：持久化边界应替换为 U+FFFD。
 	escape := func(hex string) string { return string(unicodeEscapeProbe) + hex }
-	poisonRecorder := runartifact.New("scenario-artifact-poison", runartifact.Provenance{CodeVersion: "test", DatasetVersion: "toolops-v1"}, runartifact.RunConfig{})
+	poisonRecorder := runartifact.New("scenario-artifact-poison", runmeta.Provenance{CodeVersion: "test", DatasetVersion: "toolops-v1"}, runmeta.Config{})
 	poisonRecorder.BeginAgentRun("investigate", workflow.Snapshot{State: workflow.StateInvestigating})
 	poisonRecorder.RecordToolCall("call-poison", "query_logs", workflow.AgentActionRead,
 		`{"q":"`+escape("0000")+`"}`, `{"data":[{"note":"x`+escape("d83d")+`y"}]}`, time.Now(), nil, false)

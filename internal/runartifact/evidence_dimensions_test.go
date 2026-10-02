@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wen/opentalon/internal/platform"
+	"github.com/wen/opentalon/internal/runmeta"
 	"github.com/wen/opentalon/internal/workflow"
 )
 
@@ -44,7 +45,7 @@ func TestEvidenceDimensionCoverageAcceptsCallIDAndEvidenceRef(t *testing.T) {
 
 func newEvidenceGateRecorder(t *testing.T) *Recorder {
 	t.Helper()
-	recorder := New("gate-scenario", Provenance{CodeVersion: "test", DatasetVersion: "toolops-v1"}, RunConfig{})
+	recorder := New("gate-scenario", runmeta.Provenance{CodeVersion: "test", DatasetVersion: "toolops-v1"}, runmeta.Config{})
 	recorder.BeginAgentRun("investigate", workflow.Snapshot{State: workflow.StateInvestigating})
 	record := func(callID, name string) {
 		recorder.RecordToolCall(callID, name, workflow.AgentActionRead, "{}", "{}", time.Now(), nil, false)
@@ -89,7 +90,7 @@ func TestValidateEscalationEvidenceRequiresEveryConsultedDimension(t *testing.T)
 
 func TestValidateEscalationEvidenceAllowsIncompleteDimensions(t *testing.T) {
 	// 只调查到两个维度时，升级不要求补齐另外两类——查不齐正是升级的理由。
-	recorder := New("gate-scenario", Provenance{CodeVersion: "test", DatasetVersion: "toolops-v1"}, RunConfig{})
+	recorder := New("gate-scenario", runmeta.Provenance{CodeVersion: "test", DatasetVersion: "toolops-v1"}, runmeta.Config{})
 	recorder.BeginAgentRun("investigate", workflow.Snapshot{State: workflow.StateInvestigating})
 	recorder.RecordToolCall("call-logs", "query_logs", workflow.AgentActionRead, "{}", "{}", time.Now(), nil, false)
 	require.NoError(t, recorder.ValidateEscalationEvidence(platform.EscalationReasonCriticalTelemetryMissing, []string{"call-logs"}, nil, platform.ProbeEscalationConditional))
@@ -99,7 +100,7 @@ func recordEscalationGateActions(t *testing.T, recorder *Recorder, resolved ...w
 	t.Helper()
 	// 模拟 Controller 的 Checkpoint 回调：ResolvedActions 在运行中实时同步，
 	// 门禁据此判定"尝试过探测/修复"（含随后被平台拒绝的尝试）。
-	recorder.RecordWorkflowCheckpoint(workflow.Snapshot{ResolvedActions: resolved})
+	recorder.RecordWorkflow(workflow.Snapshot{ResolvedActions: resolved})
 }
 
 func TestValidateEscalationEvidenceRequiresProbeBeforeNoSafeClaim(t *testing.T) {

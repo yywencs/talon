@@ -9,11 +9,12 @@ import (
 	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/wen/opentalon/internal/runmeta"
 	"github.com/wen/opentalon/internal/workflow"
 )
 
 func TestRecorderSummarizesModelsEvidenceAndBlockedCalls(t *testing.T) {
-	recorder := New("incident-001", Provenance{CodeVersion: "test-code", DatasetVersion: "test-data"}, RunConfig{ModelProvider: "test-provider", Model: "test-model", AgentMaxSteps: 24})
+	recorder := New("incident-001", runmeta.Provenance{CodeVersion: "test-code", DatasetVersion: "test-data"}, runmeta.Config{ModelProvider: "test-provider", Model: "test-model", AgentMaxSteps: 24})
 	recorder.BeginAgentRun("investigate", workflow.Snapshot{State: workflow.StateInvestigating})
 	started := time.Now().Add(-time.Millisecond)
 	recorder.RecordModelCallWithContext(started, &schema.Message{ResponseMeta: &schema.ResponseMeta{
@@ -59,7 +60,7 @@ func TestRecorderSummarizesModelsEvidenceAndBlockedCalls(t *testing.T) {
 }
 
 func TestRecorderStoresSealedIncidentContextOnCurrentAgentRun(t *testing.T) {
-	recorder := New("incident-001", Provenance{}, RunConfig{})
+	recorder := New("incident-001", runmeta.Provenance{}, runmeta.Config{})
 	recorder.BeginAgentRun("investigate", workflow.Snapshot{State: workflow.StateInvestigating})
 	require.NoError(t, recorder.RecordContextSnapshot(IncidentContextSnapshot{
 		IncidentID: "incident-001", Objective: "investigate",
@@ -80,7 +81,7 @@ func TestRecorderStoresSealedIncidentContextOnCurrentAgentRun(t *testing.T) {
 }
 
 func TestRecorderGetsEvidenceOnlyByStableReference(t *testing.T) {
-	recorder := New("incident-001", Provenance{}, RunConfig{})
+	recorder := New("incident-001", runmeta.Provenance{}, runmeta.Config{})
 	recorder.BeginAgentRun("investigate", workflow.Snapshot{State: workflow.StateInvestigating})
 	recorder.RecordToolCall("call-logs", "query_logs", workflow.AgentActionRead, `{}`,
 		`{"data":[{"code":"connection_refused"}],"evidence_ids":["log.connection_refused"]}`,
@@ -98,7 +99,7 @@ func TestRecorderGetsEvidenceOnlyByStableReference(t *testing.T) {
 }
 
 func TestRecorderDoesNotCountRepeatedEvidenceAsNewAndAttributesFailure(t *testing.T) {
-	recorder := New("incident-001", Provenance{}, RunConfig{})
+	recorder := New("incident-001", runmeta.Provenance{}, runmeta.Config{})
 	for round := 0; round < 2; round++ {
 		recorder.BeginAgentRun("investigate", workflow.Snapshot{State: workflow.StateInvestigating})
 		recorder.RecordToolCall("", "query_metrics", workflow.AgentActionRead, `{}`, `{"data":{"sample_count":100}}`, time.Now(), nil, false)
@@ -114,7 +115,7 @@ func TestRecorderDoesNotCountRepeatedEvidenceAsNewAndAttributesFailure(t *testin
 }
 
 func TestRecorderPersistsNormalizedStageFailure(t *testing.T) {
-	recorder := New("incident-001", Provenance{}, RunConfig{})
+	recorder := New("incident-001", runmeta.Provenance{}, runmeta.Config{})
 	snapshot := workflow.Snapshot{
 		State: workflow.StateCheckpoint,
 		Failures: []workflow.StageFailure{{
@@ -136,7 +137,7 @@ func TestRecorderPersistsNormalizedStageFailure(t *testing.T) {
 }
 
 func TestRecorderPersistsDynamicStageResolutionAndCheckpointTrail(t *testing.T) {
-	recorder := New("dynamic", Provenance{CodeVersion: "test"}, RunConfig{})
+	recorder := New("dynamic", runmeta.Provenance{CodeVersion: "test"}, runmeta.Config{})
 	snapshot := workflow.Snapshot{
 		State: workflow.StateResolved,
 		ResolvedActions: []workflow.ResolvedAction{{IntentID: "intent", StageID: "probe", ActionID: "probe-action",
@@ -152,7 +153,7 @@ func TestRecorderPersistsDynamicStageResolutionAndCheckpointTrail(t *testing.T) 
 		Checkpoints: []workflow.DecisionCheckpoint{{CheckpointID: "checkpoint", StageID: "probe", Decision: workflow.CheckpointSucceeded,
 			DecisionReason: "healthy", NewEvidenceRefs: []string{"action:refresh:evidence"}}},
 	}
-	recorder.RecordWorkflowCheckpoint(snapshot)
+	recorder.RecordWorkflow(snapshot)
 	running := recorder.Snapshot()
 	require.Len(t, running.ActionResults, 1)
 	require.Len(t, running.Checkpoints, 1)
@@ -169,7 +170,7 @@ func TestRecorderPersistsDynamicStageResolutionAndCheckpointTrail(t *testing.T) 
 }
 
 func TestRecorderNormalizesEmptyCollectionsToJSONArrays(t *testing.T) {
-	recorder := New("incident-001", Provenance{CodeVersion: "code", DatasetVersion: "data"}, RunConfig{})
+	recorder := New("incident-001", runmeta.Provenance{CodeVersion: "code", DatasetVersion: "data"}, runmeta.Config{})
 	artifact := recorder.Finish("escalated", workflow.Snapshot{State: workflow.StateEscalated}, nil)
 	payload, err := json.Marshal(artifact)
 	require.NoError(t, err)
@@ -178,4 +179,21 @@ func TestRecorderNormalizesEmptyCollectionsToJSONArrays(t *testing.T) {
 	assert.NotContains(t, string(payload), `"operations":null`)
 	assert.NotContains(t, string(payload), `"workflow_history":null`)
 	assert.NotContains(t, string(payload), `"experience":{"fields":null`)
+}
+
+func TestRecorderMetadataAndUsageIncludeActiveInvestigation(t *testing.T) {
+	recorder := New("incident", runmeta.Provenance{CodeVersion: "test"}, runmeta.Config{MaxModelCalls: 4})
+	metadata := recorder.Metadata()
+	assert.Equal(t, IncidentContextSchemaVersion, metadata.Config.ContextVersion)
+	assert.Zero(t, recorder.ModelCallsUsed())
+	for i := 0; i < 2; i++ {
+		recorder.BeginAgentRun("investigate", workflow.Snapshot{})
+		recorder.RecordModelCallWithContext(time.Now(), nil, nil, IncidentContextSnapshot{})
+		assert.Equal(t, i+1, recorder.ModelCallsUsed())
+		assert.Equal(t, recorder.Snapshot().Summary.ModelCalls, recorder.ModelCallsUsed())
+		recorder.EndAgentRun(workflow.Snapshot{}, nil)
+	}
+	metadata.Config.MaxModelCalls = 99
+	assert.Equal(t, 4, recorder.Metadata().Config.MaxModelCalls)
+	assert.Equal(t, recorder.Snapshot().RunID, metadata.RunID)
 }

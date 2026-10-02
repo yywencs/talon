@@ -54,7 +54,7 @@ type IncidentRunResult struct {
 	Snapshot workflow.Snapshot `json:"snapshot"`
 }
 
-// IncidentController 根据 Workflow 状态串联 Agent、ExecutionIntent 校验、ActionWorker 和 Checkpoint。
+// IncidentController 根据 Workflow 状态串联 Agent、ExecutionIntent 校验、ActionWorker 和业务阶段判定。
 // 它不替代状态机，也不绕过各阶段既有的 Policy 与持久化边界。
 type IncidentController struct {
 	workflow             *workflow.IncidentWorkflow
@@ -98,7 +98,7 @@ func NewIncidentController(config IncidentControllerConfig) (*IncidentController
 	}, nil
 }
 
-// Run 从当前 checkpoint 持续推进，直到完成、升级人工，或到达需要外部组件接管的阶段。
+// Run 从当前内存 Workflow 状态持续推进，直到完成、升级人工，或到达需要外部组件接管的阶段。
 func (c *IncidentController) Run(ctx context.Context) (IncidentRunResult, error) {
 	if c == nil || c.workflow == nil || c.investigator == nil || c.executionCoordinator == nil ||
 		c.actionWorker == nil {
@@ -127,7 +127,7 @@ func (c *IncidentController) Run(ctx context.Context) (IncidentRunResult, error)
 		case workflow.StateValidating:
 			if _, err := observability.RunCallback(ctx, "toolops.intent.dry_run", before, c.executionCoordinator.DryRun); err != nil {
 				after := c.workflow.Snapshot()
-				if errors.Is(err, ErrActionDryRunFailed) && after.State != workflow.StateValidating {
+				if !errors.Is(err, ErrWorkflowAudit) && errors.Is(err, ErrActionDryRunFailed) && after.State != workflow.StateValidating {
 					continue
 				}
 				return c.result("", advances), fmt.Errorf("dry run incident intent: %w", err)
@@ -145,6 +145,9 @@ func (c *IncidentController) Run(ctx context.Context) (IncidentRunResult, error)
 				return c.workflow.Snapshot(), err
 			})
 			if err != nil {
+				if errors.Is(err, ErrWorkflowAudit) {
+					return c.result("", advances), fmt.Errorf("run intent actions: %w", err)
+				}
 				after := c.workflow.Snapshot()
 				if after.State == workflow.StateInvestigating || after.State == workflow.StateEscalated ||
 					after.State == workflow.StateFailed || after.State == workflow.StateBlocked {
@@ -154,18 +157,18 @@ func (c *IncidentController) Run(ctx context.Context) (IncidentRunResult, error)
 			}
 
 		case workflow.StateAwaitingApproval:
-			if err := c.executionCoordinator.persistCheckpoint(ctx); err != nil {
-				return c.result("", advances), fmt.Errorf("persist awaiting approval checkpoint: %w", err)
+			if err := c.executionCoordinator.persistWorkflowAudit(ctx); err != nil {
+				return c.result("", advances), fmt.Errorf("persist awaiting approval audit: %w", err)
 			}
 			return c.result(StopAwaitingApproval, advances), nil
 		case workflow.StateResolved:
-			if err := c.executionCoordinator.persistCheckpoint(ctx); err != nil {
-				return c.result("", advances), fmt.Errorf("persist resolved checkpoint: %w", err)
+			if err := c.executionCoordinator.persistWorkflowAudit(ctx); err != nil {
+				return c.result("", advances), fmt.Errorf("persist resolved audit: %w", err)
 			}
 			return c.result(StopResolved, advances), nil
 		case workflow.StateEscalated:
-			if err := c.executionCoordinator.persistCheckpoint(ctx); err != nil {
-				return c.result("", advances), fmt.Errorf("persist escalated checkpoint: %w", err)
+			if err := c.executionCoordinator.persistWorkflowAudit(ctx); err != nil {
+				return c.result("", advances), fmt.Errorf("persist escalated audit: %w", err)
 			}
 			return c.result(StopEscalated, advances), nil
 		case workflow.StateCheckpoint:
@@ -173,13 +176,13 @@ func (c *IncidentController) Run(ctx context.Context) (IncidentRunResult, error)
 				return c.result("", advances), fmt.Errorf("evaluate decision checkpoint: %w", err)
 			}
 		case workflow.StateFailed:
-			if err := c.executionCoordinator.persistCheckpoint(ctx); err != nil {
-				return c.result("", advances), fmt.Errorf("persist failed checkpoint: %w", err)
+			if err := c.executionCoordinator.persistWorkflowAudit(ctx); err != nil {
+				return c.result("", advances), fmt.Errorf("persist failed audit: %w", err)
 			}
 			return c.result(StopFailed, advances), nil
 		case workflow.StateBlocked:
-			if err := c.executionCoordinator.persistCheckpoint(ctx); err != nil {
-				return c.result("", advances), fmt.Errorf("persist blocked checkpoint: %w", err)
+			if err := c.executionCoordinator.persistWorkflowAudit(ctx); err != nil {
+				return c.result("", advances), fmt.Errorf("persist blocked audit: %w", err)
 			}
 			return c.result(StopBlocked, advances), nil
 		default:
@@ -187,8 +190,8 @@ func (c *IncidentController) Run(ctx context.Context) (IncidentRunResult, error)
 		}
 
 		after := c.workflow.Snapshot()
-		if err := c.executionCoordinator.persistCheckpoint(ctx); err != nil {
-			return c.result("", advances+1), fmt.Errorf("persist workflow checkpoint: %w", err)
+		if err := c.executionCoordinator.persistWorkflowAudit(ctx); err != nil {
+			return c.result("", advances+1), fmt.Errorf("persist workflow audit: %w", err)
 		}
 		if after.Version == before.Version && after.State == before.State {
 			return c.result("", advances+1), fmt.Errorf("%w in state %q", ErrControllerNoProgress, before.State)

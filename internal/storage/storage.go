@@ -12,6 +12,7 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/wen/opentalon/internal/approval"
+	"github.com/wen/opentalon/internal/checkpoint"
 	"github.com/wen/opentalon/internal/execution"
 	"github.com/wen/opentalon/internal/runartifact"
 	_ "modernc.org/sqlite"
@@ -43,6 +44,7 @@ type Storage struct {
 	approvals    approval.Store
 	executions   execution.Store
 	runArtifacts runartifact.Store
+	checkpoints  checkpoint.Store
 }
 
 // LoadPostgresConfigFromEnv 读取正式运行的 PostgreSQL 配置。
@@ -121,7 +123,16 @@ func Open(ctx context.Context, config Config) (*Storage, error) {
 	store.approvals = newSQLApprovalStore(db, config.Driver)
 	store.executions = newSQLExecutionStore(db, config.Driver)
 	store.runArtifacts = newSQLRunArtifactStore(db, config.Driver)
+	store.checkpoints = &sqlCheckpointStore{db: db, driver: config.Driver}
 	return store, nil
+}
+
+// Checkpoints stores the latest committed save boundary for each run.
+func (s *Storage) Checkpoints() checkpoint.Store {
+	if s == nil {
+		return nil
+	}
+	return s.checkpoints
 }
 
 // RunArtifacts 返回共享连接池上的结构化运行审计 Store。
@@ -178,6 +189,7 @@ func validateSchema(ctx context.Context, db *sql.DB) error {
 		"approval_requests": `SELECT intent_id FROM approval_requests WHERE 1 = 0`,
 		"action_executions": `SELECT intent_id, next_poll_at_unix_ns, operation_deadline_unix_ns FROM action_executions WHERE 1 = 0`,
 		"run_artifacts":     `SELECT run_id, artifact FROM run_artifacts WHERE 1 = 0`,
+		"run_checkpoints":   `SELECT run_id, schema_version, revision, payload, updated_at_unix_ns FROM run_checkpoints WHERE 1 = 0`,
 	}
 	for table, query := range checks {
 		rows, err := db.QueryContext(ctx, query)

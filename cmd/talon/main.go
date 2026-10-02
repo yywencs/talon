@@ -16,7 +16,7 @@ import (
 	"github.com/wen/opentalon/internal/config"
 	"github.com/wen/opentalon/internal/llm"
 	"github.com/wen/opentalon/internal/observability"
-	"github.com/wen/opentalon/internal/runartifact"
+	"github.com/wen/opentalon/internal/runmeta"
 	"github.com/wen/opentalon/internal/scenario"
 	"github.com/wen/opentalon/internal/storage"
 )
@@ -104,8 +104,8 @@ func run(arguments []string) error {
 		Model: chatModel, Storage: database, Output: os.Stdout,
 		AutoApprove: opts.autoApprove, AgentMaxSteps: opts.maxSteps,
 		PromptDirectory: llmConfig.PromptsDir,
-		Provenance:      runartifact.Provenance{CodeVersion: buildinfo.AgentVersion},
-		RunConfig:       runartifact.RunConfig{ModelProvider: llmConfig.Provider, Model: llmConfig.Model},
+		Provenance:      runmeta.Provenance{CodeVersion: buildinfo.AgentVersion},
+		RunConfig:       runmeta.Config{ModelProvider: llmConfig.Provider, Model: llmConfig.Model},
 	})
 	if err != nil {
 		return err

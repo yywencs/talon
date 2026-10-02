@@ -3,26 +3,17 @@ package app
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
-	"runtime/debug"
-	"sort"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/cloudwego/eino/components/model"
-	"github.com/wen/opentalon/internal/agent"
 	"github.com/wen/opentalon/internal/controller"
 	"github.com/wen/opentalon/internal/observability"
 	"github.com/wen/opentalon/internal/platform"
 	"github.com/wen/opentalon/internal/runartifact"
-	"github.com/wen/opentalon/internal/scenario"
+	"github.com/wen/opentalon/internal/runmeta"
 	"github.com/wen/opentalon/internal/simulator"
-	"github.com/wen/opentalon/internal/skill"
 	"github.com/wen/opentalon/internal/storage"
 	"github.com/wen/opentalon/internal/workflow"
 )
@@ -43,8 +34,8 @@ type Config struct {
 	AgentMaxSteps       int
 	ClockPollInterval   time.Duration
 	WorkerRetryInterval time.Duration
-	Provenance          runartifact.Provenance
-	RunConfig           runartifact.RunConfig
+	Provenance          runmeta.Provenance
+	RunConfig           runmeta.Config
 }
 
 // Result 汇总一次场景运行的最终状态与完整机器可读审计轨迹。
@@ -54,538 +45,70 @@ type Result struct {
 	Artifact   runartifact.RunArtifact
 }
 
-// Run 从数据集异常事件开始，运行到 resolved、escalated 或审批门禁。
+// Run prepares a new run, assembles its components, advances it and finalizes audit.
+// Loading and restoring a saved Workflow is deliberately not implemented here.
 func Run(ctx context.Context, cfg Config) (result Result, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if strings.TrimSpace(cfg.DatasetRoot) == "" {
-		return Result{}, fmt.Errorf("dataset root is required")
-	}
-	if cfg.Storage == nil {
-		return Result{}, fmt.Errorf("application storage is required")
-	}
-	if cfg.Output == nil {
-		cfg.Output = io.Discard
-	}
-	if cfg.ScenarioID == "" {
-		cfg.ScenarioID = defaultScenarioID
-	}
-	if cfg.ClockPollInterval <= 0 {
-		cfg.ClockPollInterval = 20 * time.Millisecond
-	}
-	if cfg.WorkerRetryInterval <= 0 {
-		cfg.WorkerRetryInterval = 20 * time.Millisecond
-	}
-
-	dataset, err := scenario.LoadDataset(cfg.DatasetRoot)
+	prepared, err := prepareRun(cfg)
 	if err != nil {
-		return Result{}, fmt.Errorf("load scenario dataset: %w", err)
+		return Result{}, err
 	}
-	item, ok := dataset.Find(strings.TrimSpace(cfg.ScenarioID))
-	if !ok {
-		return Result{}, fmt.Errorf("scenario %q was not found", cfg.ScenarioID)
-	}
-	prompts, err := agent.LoadPromptSet(cfg.PromptDirectory)
-	if err != nil {
-		return Result{}, fmt.Errorf("load Agent prompts: %w", err)
-	}
-	provenance := cfg.Provenance
-	if strings.TrimSpace(provenance.DatasetVersion) == "" {
-		provenance.DatasetVersion = dataset.Version
-	}
-	if strings.TrimSpace(provenance.PromptVersion) == "" {
-		provenance.PromptVersion = prompts.Version
-	}
-	if strings.TrimSpace(provenance.PromptDigest) == "" {
-		provenance.PromptDigest = prompts.Digest
-	}
-	provenance = normalizeProvenance(provenance, cfg.DatasetRoot)
-	runConfig := cfg.RunConfig
-	runConfig.AgentMaxSteps = cfg.AgentMaxSteps
-	if runConfig.AgentMaxSteps == 0 {
-		runConfig.AgentMaxSteps = agent.DefaultMaxSteps
-	}
-	if runConfig.MaxModelCalls == 0 {
-		runConfig.MaxModelCalls = agent.DefaultMaxModelCalls
-	}
-	runConfig.AutoApprove = cfg.AutoApprove
-	recorder := runartifact.New(item.Scenario.Metadata.ID, provenance, runConfig)
+	cfg = prepared.config
+	cfg.RunConfig = prepared.runConfig
+	recorder := runartifact.New(prepared.scenario.Metadata.ID, prepared.provenance, prepared.runConfig)
+	metadata := recorder.Metadata()
 	artifactStore := cfg.Storage.RunArtifacts()
 	printer := &safePrinter{writer: cfg.Output}
 	var flow *workflow.IncidentWorkflow
 	var service *simulator.Simulator
-	defer func() {
-		snapshot := workflow.Snapshot{}
-		if flow != nil {
-			snapshot = flow.Snapshot()
-		}
-		if service != nil {
-			world := service.Snapshot()
-			result.World = world
-			recorder.RecordFinalState(artifactOperations(world), artifactFinalState(snapshot.State, world))
-		}
-		artifact := recorder.Finish(string(result.Controller.Reason), snapshot, err)
-		persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		defer cancelPersist()
-		if persistErr := artifactStore.Upsert(persistCtx, artifact); persistErr != nil {
-			err = errors.Join(err, fmt.Errorf("persist final run artifact: %w", persistErr))
-			artifact = recorder.Finish(string(result.Controller.Reason), snapshot, err)
-		}
-		result.Artifact = artifact
-	}()
+	defer func() { err = finishRunAudit(ctx, artifactStore, recorder, flow, service, &result, err) }()
 	if err := artifactStore.Upsert(ctx, recorder.Snapshot()); err != nil {
 		return Result{}, fmt.Errorf("persist initial run artifact: %w", err)
 	}
-	initialArtifact := recorder.Snapshot()
+	flow, err = workflow.NewIncidentWorkflow(workflow.Config{IncidentID: prepared.scenario.Metadata.ID, IntentIDPrefix: metadata.RunID})
+	if err != nil {
+		return Result{}, fmt.Errorf("create incident workflow: %w", err)
+	}
+	checkpoints := &runCheckpointWriter{store: cfg.Storage.Checkpoints(), metadata: metadata, usage: recorder}
+	if err := checkpoints.saveCreated(ctx, flow.Snapshot()); err != nil {
+		return Result{}, err
+	}
 	printer.printf("[artifact] run_id=%s code_version=%s dataset_version=%s prompt_version=%s prompt_digest=%s schema=%s checkpoint=running\n",
-		initialArtifact.RunID, initialArtifact.Provenance.CodeVersion,
-		initialArtifact.Provenance.DatasetVersion, initialArtifact.Provenance.PromptVersion,
-		initialArtifact.Provenance.PromptDigest, initialArtifact.SchemaVersion)
-	service, err = simulator.New(item.Scenario)
+		metadata.RunID, metadata.Provenance.CodeVersion, metadata.Provenance.DatasetVersion,
+		metadata.Provenance.PromptVersion, metadata.Provenance.PromptDigest, runartifact.SchemaVersion)
+	service, err = simulator.New(prepared.scenario)
 	if err != nil {
 		return Result{}, fmt.Errorf("create scenario simulator: %w", err)
 	}
-	incidentAt, err := agentStartOffset(item.Scenario)
+	incidentAt, err := agentStartOffset(prepared.scenario)
 	if err != nil {
 		return Result{}, err
 	}
 	if err := service.Advance(ctx, incidentAt); err != nil {
 		return Result{}, fmt.Errorf("advance simulator to incident: %w", err)
 	}
-
-	printer.printf("[talon] scenario=%s title=%s\n", item.Scenario.Metadata.ID, item.Scenario.Metadata.Title)
+	printer.printf("[talon] scenario=%s title=%s\n", prepared.scenario.Metadata.ID, prepared.scenario.Metadata.Title)
 	printer.printf("[simulator] advanced_to=%s incident_after=%s\n", service.Snapshot().Now.Format(time.RFC3339), incidentAt)
-
-	flow, err = workflow.NewIncidentWorkflow(workflow.Config{
-		IncidentID: item.Scenario.Metadata.ID, IntentIDPrefix: initialArtifact.RunID,
-	})
-	if err != nil {
-		return Result{}, fmt.Errorf("create incident workflow: %w", err)
-	}
 	ctx, finishTrace := observability.BeginCallback(ctx, "toolops.incident.run", map[string]any{
-		"scenario_id": item.Scenario.Metadata.ID,
-		"title":       item.Scenario.Metadata.Title,
+		"scenario_id": prepared.scenario.Metadata.ID, "title": prepared.scenario.Metadata.Title,
 	})
 	if traceID := observability.TraceIDFromContext(ctx); traceID != "" {
 		printer.printf("[trace] trace_id=%s\n", traceID)
 	}
-	defer func() {
-		finishTrace(result.Controller, err)
-	}()
-
-	var investigator controller.Investigator
-	if cfg.InvestigatorFactory != nil {
-		investigator, err = cfg.InvestigatorFactory(flow, service)
-		if err != nil {
-			return Result{}, fmt.Errorf("create scenario investigator: %w", err)
-		}
-	} else {
-		if cfg.Model == nil {
-			return Result{}, fmt.Errorf("model is required when investigator factory is not provided")
-		}
-		skillDirectory := strings.TrimSpace(cfg.SkillDirectory)
-		if skillDirectory == "" {
-			skillDirectory = skill.DefaultDirectory
-		}
-		registry, registryErr := skill.LoadDirectory(skillDirectory)
-		if registryErr != nil {
-			return Result{}, fmt.Errorf("load Skill Registry: %w", registryErr)
-		}
-		skillSession, sessionErr := skill.NewSession(registry, skill.DefaultMaxActive, recorder.ValidateEvidenceRefs)
-		if sessionErr != nil {
-			return Result{}, fmt.Errorf("create Skill session: %w", sessionErr)
-		}
-		printer.printf("[skill] catalog=%d active=0 max_active=%d\n", registry.Len(), skill.DefaultMaxActive)
-		toolOpsAgent, buildErr := agent.NewToolOpsAgent(ctx, agent.Config{
-			Model: cfg.Model, Platform: service, IncidentID: item.Scenario.Metadata.ID,
-			VirtualTime: func() time.Time { return service.Snapshot().Now },
-			Workflow:    flow, MaxSteps: cfg.AgentMaxSteps, MaxModelCalls: runConfig.MaxModelCalls,
-			Artifact: recorder, Skills: skillSession, Prompts: &prompts,
-		})
-		if buildErr != nil {
-			return Result{}, fmt.Errorf("create ToolOps Agent: %w", buildErr)
-		}
-		investigator = &printingInvestigator{agent: toolOpsAgent, printer: printer}
-	}
-	if investigator.IncidentID() != item.Scenario.Metadata.ID {
-		return Result{}, fmt.Errorf("investigator incident ID does not match scenario")
-	}
-	investigator = &recordingInvestigator{next: investigator, workflow: flow, recorder: recorder, store: artifactStore}
-
-	processor, err := controller.NewExecutionCoordinator(service, flow,
-		controller.WithApprovalStore(cfg.Storage.Approvals()),
-		controller.WithExecutionStore(cfg.Storage.Executions(), initialArtifact.RunID+"-scenario-worker", 5*time.Second),
-		controller.WithAsyncExecution(controller.AsyncExecutionConfig{
-			SubmitTimeout: 5 * time.Second, InitialPollInterval: 20 * time.Millisecond,
-			MaxPollInterval: 100 * time.Millisecond, OperationTimeout: 2 * time.Minute,
-		}),
-		controller.WithWorkflowCheckpoint(func(checkpointCtx context.Context, snapshot workflow.Snapshot) error {
-			recorder.RecordWorkflowCheckpoint(snapshot)
-			return artifactStore.Upsert(checkpointCtx, recorder.Snapshot())
-		}),
-	)
+	defer func() { finishTrace(result.Controller, err) }()
+	investigator, err := buildInvestigator(ctx, cfg, prepared.prompts, flow, service, recorder, printer)
 	if err != nil {
-		return Result{}, fmt.Errorf("create execution coordinator: %w", err)
+		return Result{}, err
 	}
-	orchestrator, err := controller.NewIncidentController(controller.IncidentControllerConfig{
-		Workflow: flow, Investigator: investigator, ExecutionCoordinator: processor,
-		WorkerRetryInterval: cfg.WorkerRetryInterval,
-	})
+	orchestrator, processor, err := assembleController(cfg, service, flow, investigator, checkpoints, recorder)
 	if err != nil {
-		return Result{}, fmt.Errorf("create incident controller: %w", err)
+		return Result{}, err
 	}
-
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	clockErrors := make(chan error, 1)
-	go driveSimulatorClock(runCtx, cancel, service, cfg.ClockPollInterval, printer, clockErrors)
-
-	seenVersion := uint64(0)
-	for {
-		runResult, runErr := orchestrator.Run(runCtx)
-		printTransitions(printer, runResult.Snapshot, &seenVersion)
-		if clockErr := receiveClockError(clockErrors); clockErr != nil {
-			return Result{Controller: runResult, World: service.Snapshot()}, clockErr
-		}
-		if runErr != nil {
-			return Result{Controller: runResult, World: service.Snapshot()}, runErr
-		}
-		if runResult.Reason != controller.StopAwaitingApproval {
-			result := Result{Controller: runResult, World: service.Snapshot()}
-			printSummary(printer, result)
-			return result, nil
-		}
-		if !cfg.AutoApprove {
-			printer.printf("[approval] waiting for human decision; enable automatic approval only for an isolated Simulator run\n")
-			result := Result{Controller: runResult, World: service.Snapshot()}
-			printSummary(printer, result)
-			return result, nil
-		}
-		_, approvalErr := observability.RunCallback(runCtx, "toolops.intent.approval", runResult.Snapshot,
-			func(callbackCtx context.Context) (workflow.Snapshot, error) {
-				err := approvePendingActions(callbackCtx, processor, runResult.Snapshot.IncidentID, printer)
-				return flow.Snapshot(), err
-			})
-		if approvalErr != nil {
-			return Result{Controller: runResult, World: service.Snapshot()}, approvalErr
-		}
+	result, err = advanceRun(ctx, cfg, flow, service, orchestrator, processor, printer)
+	if err == nil {
+		printSummary(printer, result)
 	}
+	return result, err
 }
-
-func firstTimelineEvent(document scenario.Scenario) (time.Duration, error) {
-	if len(document.Timeline) == 0 {
-		return 0, fmt.Errorf("scenario %q has no incident timeline event", document.Metadata.ID)
-	}
-	var selected time.Duration
-	for index, event := range document.Timeline {
-		value, err := time.ParseDuration(event.At)
-		if err != nil {
-			return 0, fmt.Errorf("parse scenario timeline event %d: %w", index, err)
-		}
-		if value < 0 {
-			return 0, fmt.Errorf("scenario timeline event %d must not be negative", index)
-		}
-		if index == 0 || value < selected {
-			selected = value
-		}
-	}
-	return selected, nil
-}
-
-func agentStartOffset(document scenario.Scenario) (time.Duration, error) {
-	if value := strings.TrimSpace(document.Clock.IncidentAt); value != "" {
-		incidentAt, err := time.ParseDuration(value)
-		if err != nil {
-			return 0, fmt.Errorf("parse scenario clock.incident_at: %w", err)
-		}
-		return incidentAt, nil
-	}
-	return firstTimelineEvent(document)
-}
-
-// driveSimulatorClock 只在存在活动异步 Operation 时推进虚拟时间。
-// 这样 LLM 调查和人工审批等待不会消耗场景时间。
-func driveSimulatorClock(ctx context.Context, cancel context.CancelFunc, service *simulator.Simulator, interval time.Duration, printer *safePrinter, errorsOut chan<- error) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			snapshot := service.Snapshot()
-			active := activeOperations(snapshot.Operations)
-			if len(active) == 0 {
-				continue
-			}
-			if err := service.Advance(ctx, snapshot.Tick); err != nil {
-				select {
-				case errorsOut <- fmt.Errorf("advance simulator clock: %w", err):
-				default:
-				}
-				cancel()
-				return
-			}
-			current := service.Snapshot()
-			for _, id := range active {
-				operation := current.Operations[id]
-				printer.printf("[operation] virtual_time=%s id=%s kind=%s status=%s outcome=%s step=%s weight=%s\n",
-					current.Now.Format(time.RFC3339), id, operation.Kind, operation.Status,
-					mapText(operation.Result, "outcome"), mapText(operation.Result, "current_step"), mapText(operation.Result, "route_weight"))
-			}
-		}
-	}
-}
-
-func activeOperations(values map[string]platform.Operation) []string {
-	result := make([]string, 0)
-	for id, operation := range values {
-		if operation.Status == platform.OperationPending || operation.Status == platform.OperationRunning {
-			result = append(result, id)
-		}
-	}
-	sort.Strings(result)
-	return result
-}
-
-func approvePendingActions(ctx context.Context, processor *controller.ExecutionCoordinator, incidentID string, printer *safePrinter) error {
-	requests, err := processor.ListPendingApprovals(ctx)
-	if err != nil {
-		return fmt.Errorf("list scenario approvals: %w", err)
-	}
-	approved := 0
-	for _, request := range requests {
-		if request.IncidentID != incidentID {
-			continue
-		}
-		printer.printf("[approval] SIMULATOR AUTO-APPROVE action=%s tool=%s risk=%s digest=%s\n",
-			request.ActionID, request.ToolName, request.Risk, request.ActionDigest)
-		_, err := processor.Approve(ctx, controller.ApprovalRequest{
-			IntentID: request.IntentID, ActionID: request.ActionID, ActionDigest: request.ActionDigest,
-			Approver: "talon-scenario-runner", Reason: "explicit automatic approval for isolated Simulator execution",
-		})
-		if err != nil {
-			return fmt.Errorf("approve scenario action %q: %w", request.ActionID, err)
-		}
-		approved++
-	}
-	if approved == 0 {
-		return fmt.Errorf("workflow awaits approval but no pending action was found")
-	}
-	return nil
-}
-
-func printTransitions(printer *safePrinter, snapshot workflow.Snapshot, seen *uint64) {
-	for _, transition := range snapshot.History {
-		if transition.Version <= *seen {
-			continue
-		}
-		printer.printf("[workflow] v%d %s -> %s event=%s actor=%s reason=%s\n",
-			transition.Version, transition.From, transition.To, transition.Event, transition.Actor, transition.Reason)
-		*seen = transition.Version
-	}
-}
-
-func printSummary(printer *safePrinter, result Result) {
-	snapshot := result.Controller.Snapshot
-	printer.printf("[result] reason=%s state=%s advances=%d transitions=%d\n",
-		result.Controller.Reason, snapshot.State, result.Controller.Advances, len(snapshot.History))
-	if snapshot.ExecutionIntent != nil {
-		actionCount := 0
-		for _, stage := range snapshot.ExecutionIntent.Stages {
-			actionCount += len(stage.Actions)
-		}
-		printer.printf("[intent] id=%s root_cause=%s stages=%d actions=%d\n",
-			snapshot.ExecutionIntent.ID, snapshot.ExecutionIntent.RootCause, len(snapshot.ExecutionIntent.Stages), actionCount)
-	}
-	routeIDs := make([]string, 0, len(result.World.Routes))
-	for id := range result.World.Routes {
-		routeIDs = append(routeIDs, id)
-	}
-	sort.Strings(routeIDs)
-	for _, id := range routeIDs {
-		route := result.World.Routes[id]
-		printer.printf("[route] id=%s weight=%d baseline=%d enabled=%t\n", id, route.Weight, route.BaselineWeight, route.Enabled)
-	}
-}
-
-func receiveClockError(values <-chan error) error {
-	select {
-	case err := <-values:
-		return err
-	default:
-		return nil
-	}
-}
-
-func mapText(values map[string]any, key string) string {
-	if values == nil || values[key] == nil {
-		return "-"
-	}
-	encoded, err := json.Marshal(values[key])
-	if err != nil {
-		return "?"
-	}
-	return strings.Trim(string(encoded), `"`)
-}
-
-func normalizeProvenance(value runartifact.Provenance, datasetRoot string) runartifact.Provenance {
-	value.CodeVersion = strings.TrimSpace(value.CodeVersion)
-	if value.CodeVersion == "" {
-		value.CodeVersion = detectedCodeVersion()
-	}
-	value.DatasetVersion = strings.TrimSpace(value.DatasetVersion)
-	if value.DatasetVersion == "" {
-		value.DatasetVersion = filepath.Base(filepath.Clean(datasetRoot))
-	}
-	if value.DatasetVersion == "." || value.DatasetVersion == string(filepath.Separator) {
-		value.DatasetVersion = "unknown"
-	}
-	value.PromptVersion = strings.TrimSpace(value.PromptVersion)
-	value.PromptDigest = strings.TrimSpace(value.PromptDigest)
-	return value
-}
-
-func detectedCodeVersion() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "unknown"
-	}
-	revision := ""
-	modified := false
-	for _, setting := range info.Settings {
-		switch setting.Key {
-		case "vcs.revision":
-			revision = strings.TrimSpace(setting.Value)
-		case "vcs.modified":
-			modified = setting.Value == "true"
-		}
-	}
-	if revision == "" && info.Main.Version != "" && info.Main.Version != "(devel)" {
-		revision = info.Main.Version
-	}
-	if revision == "" {
-		return "unknown"
-	}
-	if modified {
-		return revision + "+dirty"
-	}
-	return revision
-}
-
-func artifactOperations(snapshot simulator.Snapshot) []platform.Operation {
-	result := make([]platform.Operation, 0, len(snapshot.Operations))
-	for _, operation := range snapshot.Operations {
-		result = append(result, operation)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
-			return result[i].ID < result[j].ID
-		}
-		return result[i].CreatedAt.Before(result[j].CreatedAt)
-	})
-	return result
-}
-
-func artifactFinalState(state workflow.State, snapshot simulator.Snapshot) runartifact.FinalState {
-	result := runartifact.FinalState{
-		WorkflowState: state,
-		VirtualTime:   snapshot.Now,
-		Routes:        make([]platform.Route, 0, len(snapshot.Routes)),
-		Providers:     make([]runartifact.ProviderState, 0, len(snapshot.Providers)),
-		Configs:       make([]runartifact.ConfigState, 0, len(snapshot.Configs)),
-		Connections:   make([]runartifact.ConnectionState, 0, len(snapshot.Connections)),
-		Tasks:         make([]runartifact.TaskState, 0, len(snapshot.Tasks)),
-		Traffic:       snapshot.Traffic,
-	}
-	for _, route := range snapshot.Routes {
-		result.Routes = append(result.Routes, route)
-	}
-	for _, provider := range snapshot.Providers {
-		result.Providers = append(result.Providers, runartifact.ProviderState{
-			ID: provider.ID, Health: provider.Health, SchemaCompatible: provider.SchemaCompatible,
-		})
-	}
-	for _, config := range snapshot.Configs {
-		result.Configs = append(result.Configs, runartifact.ConfigState{
-			ID: config.ID, Active: config.Active, KnownHealthy: config.KnownHealthy,
-		})
-	}
-	for _, connection := range snapshot.Connections {
-		result.Connections = append(result.Connections, runartifact.ConnectionState{
-			ProviderID: connection.ProviderID, PoolGeneration: connection.PoolGeneration,
-			ResolverCacheGeneration: connection.ResolverCacheGeneration, ResolvedIP: connection.ResolvedIP,
-			ActiveConnections: connection.ActiveConnections, TargetConnections: connection.TargetConnections,
-			ConfigFingerprint: connection.ConfigFingerprint, LastPingAt: connection.LastPingAt,
-		})
-	}
-	for _, task := range snapshot.Tasks {
-		result.Tasks = append(result.Tasks, runartifact.TaskState{
-			ID: task.ID, Type: task.Type, Name: task.Name, Status: task.Status,
-			ProviderID: task.ProviderID, Attempts: task.Attempts, Idempotent: task.Idempotent,
-			LastError: task.LastError,
-		})
-	}
-	sort.Slice(result.Routes, func(i, j int) bool { return result.Routes[i].ID < result.Routes[j].ID })
-	sort.Slice(result.Providers, func(i, j int) bool { return result.Providers[i].ID < result.Providers[j].ID })
-	sort.Slice(result.Configs, func(i, j int) bool { return result.Configs[i].ID < result.Configs[j].ID })
-	sort.Slice(result.Connections, func(i, j int) bool { return result.Connections[i].ProviderID < result.Connections[j].ProviderID })
-	sort.Slice(result.Tasks, func(i, j int) bool { return result.Tasks[i].ID < result.Tasks[j].ID })
-	return result
-}
-
-type printingInvestigator struct {
-	agent   *agent.ToolOpsAgent
-	printer *safePrinter
-}
-
-func (p *printingInvestigator) IncidentID() string { return p.agent.IncidentID() }
-
-func (p *printingInvestigator) Investigate(ctx context.Context, instruction string) error {
-	p.printer.printf("[agent] instruction=%s\n", instruction)
-	message, err := p.agent.Run(ctx, instruction)
-	if err != nil {
-		return err
-	}
-	if message != nil && strings.TrimSpace(message.Content) != "" {
-		p.printer.printf("[agent] response:\n%s\n", message.Content)
-	}
-	return nil
-}
-
-type safePrinter struct {
-	mu     sync.Mutex
-	writer io.Writer
-}
-
-func (p *safePrinter) printf(format string, values ...any) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	_, _ = fmt.Fprintf(p.writer, format, values...)
-}
-
-var _ controller.Investigator = (*printingInvestigator)(nil)
-
-type recordingInvestigator struct {
-	next     controller.Investigator
-	workflow *workflow.IncidentWorkflow
-	recorder *runartifact.Recorder
-	store    runartifact.Store
-}
-
-func (r *recordingInvestigator) IncidentID() string { return r.next.IncidentID() }
-
-func (r *recordingInvestigator) Investigate(ctx context.Context, instruction string) (err error) {
-	r.recorder.BeginAgentRun(instruction, r.workflow.Snapshot())
-	err = r.next.Investigate(ctx, instruction)
-	r.recorder.EndAgentRun(r.workflow.Snapshot(), err)
-	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-	if persistErr := r.store.Upsert(persistCtx, r.recorder.Snapshot()); persistErr != nil {
-		return errors.Join(err, fmt.Errorf("persist Agent run artifact checkpoint: %w", persistErr))
-	}
-	return err
-}
-
-var _ controller.Investigator = (*recordingInvestigator)(nil)

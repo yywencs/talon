@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/wen/opentalon/internal/platform"
 	"github.com/wen/opentalon/internal/runartifact"
+	"github.com/wen/opentalon/internal/runmeta"
 	"github.com/wen/opentalon/internal/workflow"
 )
 
@@ -53,7 +54,7 @@ func TestCredentialTraceProducesCanonical401Evidence(t *testing.T) {
 
 func TestGetEvidenceReturnsSanitizedHistoricalObservationWithoutCreatingEvidence(t *testing.T) {
 	service, item := newTestSimulator(t, "mapping-regression-rollback-001")
-	recorder := runartifact.New(item.Scenario.Metadata.ID, runartifact.Provenance{}, runartifact.RunConfig{})
+	recorder := runartifact.New(item.Scenario.Metadata.ID, runmeta.Provenance{}, runmeta.Config{})
 	recorder.BeginAgentRun("collect evidence", workflow.Snapshot{State: workflow.StateInvestigating})
 	recorder.RecordToolCall(
 		"call-query-logs", "query_logs", workflow.AgentActionRead, `{}`,

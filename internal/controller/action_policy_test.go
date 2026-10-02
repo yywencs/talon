@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -85,7 +86,7 @@ func TestActionPolicyRequiresApprovalAndBindsDecisionToAction(t *testing.T) {
 	_, err = processor.Approve(context.Background(), ApprovalRequest{
 		IntentID: decision.IntentID, ActionID: decision.ActionID, ActionDigest: "tampered-digest", Approver: "oncall@example.com",
 	})
-	require.ErrorContains(t, err, "does not match persisted action")
+	require.ErrorContains(t, err, "does not match a frozen action")
 
 	request := approvalRequest(decision, "oncall@example.com", "rollback scope verified")
 	approval, err := processor.Approve(context.Background(), request)
@@ -100,7 +101,49 @@ func TestActionPolicyRequiresApprovalAndBindsDecisionToAction(t *testing.T) {
 	assert.Equal(t, approval, repeated)
 	request.Approver = "different@example.com"
 	_, err = processor.Approve(context.Background(), request)
-	require.ErrorContains(t, err, "already decided")
+	require.ErrorContains(t, err, "immutable decision")
+}
+
+func TestApprovalRejectsForeignRequestsBeforePersistence(t *testing.T) {
+	for _, foreign := range []string{"intent", "action"} {
+		for _, reject := range []bool{false, true} {
+			t.Run(fmt.Sprintf("foreign=%s/reject=%t", foreign, reject), func(t *testing.T) {
+				ctx := context.Background()
+				processor, instance, _ := processorWithSuccessfulDryRun(t, platform.RemediationCapability{
+					Name: "rollback_mapping", Risk: "medium", RequiresApproval: true,
+				})
+				_, err := processor.EvaluatePolicy(ctx)
+				require.NoError(t, err)
+				pending, err := processor.ListPendingApprovals(ctx)
+				require.NoError(t, err)
+				require.Len(t, pending, 1)
+				other := pending[0]
+				other.ActionID += "-other"
+				other.ID = approval.RequestID(other.ActionID)
+				if foreign == "intent" {
+					other.IntentID += "-other"
+				}
+				other, err = processor.approvalStore.Create(ctx, other)
+				require.NoError(t, err)
+				before := instance.Snapshot()
+				request := ApprovalRequest{IntentID: other.IntentID, ActionID: other.ActionID,
+					ActionDigest: other.ActionDigest, Approver: "oncall", Reason: "reviewed"}
+				if reject {
+					_, err = processor.Reject(ctx, request)
+				} else {
+					_, err = processor.Approve(ctx, request)
+				}
+				require.ErrorContains(t, err, "validate intent approval before persistence")
+				persisted, err := processor.approvalStore.Get(ctx, other.ID)
+				require.NoError(t, err)
+				assert.Equal(t, other, persisted, "a valid stored request belonging elsewhere must not be decided")
+				current, err := processor.approvalStore.Get(ctx, pending[0].ID)
+				require.NoError(t, err)
+				assert.Equal(t, pending[0], current)
+				assert.Equal(t, before, instance.Snapshot(), "preflight must not mutate Workflow")
+			})
+		}
+	}
 }
 
 func TestActionPolicyWaitsForEveryRequiredActionApproval(t *testing.T) {

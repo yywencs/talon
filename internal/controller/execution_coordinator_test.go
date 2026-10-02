@@ -317,13 +317,13 @@ func TestPersistCheckpointSurvivesCanceledRunContext(t *testing.T) {
 	instance, err := workflow.NewIncidentWorkflow(workflow.Config{IncidentID: "persist-after-cancel"})
 	require.NoError(t, err)
 	called := false
-	processor, err := NewExecutionCoordinator(&recordingPlatform{}, instance, WithWorkflowCheckpoint(func(ctx context.Context, _ workflow.Snapshot) error {
+	processor, err := NewExecutionCoordinator(&recordingPlatform{}, instance, WithWorkflowAudit(func(ctx context.Context, _ workflow.Snapshot) error {
 		called = true
 		return ctx.Err()
 	}))
 	require.NoError(t, err)
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	require.NoError(t, processor.persistCheckpoint(canceled))
+	require.NoError(t, processor.persistWorkflowAudit(canceled))
 	assert.True(t, called)
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wen/opentalon/internal/runartifact"
+	"github.com/wen/opentalon/internal/runmeta"
 	"github.com/wen/opentalon/internal/storage"
 	"github.com/wen/opentalon/internal/workflow"
 )
@@ -27,7 +28,7 @@ func TestExportBatchSelectsTerminalRunsByCodeAndDatasetVersion(t *testing.T) {
 	require.NoError(t, database.RunArtifacts().Upsert(ctx, failed))
 	require.NoError(t, database.RunArtifacts().Upsert(ctx, completedArtifact("mapping-regression-rollback-001", "code-b", "toolops-v1")))
 	require.NoError(t, database.RunArtifacts().Upsert(ctx, completedArtifact("mapping-regression-rollback-001", "code-a", "toolops-v2")))
-	running := runartifact.New("mapping-regression-rollback-001", runartifact.Provenance{CodeVersion: "code-a", DatasetVersion: "toolops-v1"}, runartifact.RunConfig{}).Snapshot()
+	running := runartifact.New("mapping-regression-rollback-001", runmeta.Provenance{CodeVersion: "code-a", DatasetVersion: "toolops-v1"}, runmeta.Config{}).Snapshot()
 	require.NoError(t, database.RunArtifacts().Upsert(ctx, running))
 
 	output := filepath.Join(t.TempDir(), "batch")
@@ -77,12 +78,12 @@ func TestExportBatchRejectsMissingCohortAndExistingOutput(t *testing.T) {
 }
 
 func completedArtifact(scenarioID, codeVersion, datasetVersion string) runartifact.RunArtifact {
-	recorder := runartifact.New(scenarioID, runartifact.Provenance{CodeVersion: codeVersion, DatasetVersion: datasetVersion}, runartifact.RunConfig{})
+	recorder := runartifact.New(scenarioID, runmeta.Provenance{CodeVersion: codeVersion, DatasetVersion: datasetVersion}, runmeta.Config{})
 	return recorder.Finish("resolved", workflow.Snapshot{State: workflow.StateResolved}, nil)
 }
 
 func failedArtifact(scenarioID, codeVersion, datasetVersion string) runartifact.RunArtifact {
-	recorder := runartifact.New(scenarioID, runartifact.Provenance{CodeVersion: codeVersion, DatasetVersion: datasetVersion}, runartifact.RunConfig{})
+	recorder := runartifact.New(scenarioID, runmeta.Provenance{CodeVersion: codeVersion, DatasetVersion: datasetVersion}, runmeta.Config{})
 	return recorder.Finish("", workflow.Snapshot{State: workflow.StateInvestigating}, assert.AnError)
 }
 

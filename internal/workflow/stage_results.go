@@ -112,6 +112,11 @@ func matchesOutputType(value any, expected ActionOutputType) bool {
 // 差异导致语义相等的数值不被 DeepEqual 判等。
 func normalizeComparable(value any) any {
 	switch typed := value.(type) {
+	case json.Number:
+		if number, err := typed.Float64(); err == nil {
+			return number
+		}
+		return value
 	case float32:
 		return float64(typed)
 	case int:

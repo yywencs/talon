@@ -13,7 +13,7 @@ var (
 	ErrActorNotAllowed   = errors.New("incident event actor not allowed")
 )
 
-// Config 定义新建或从 checkpoint 恢复的 IncidentWorkflow。
+// Config 定义新建 IncidentWorkflow 的配置；InitialState 不恢复历史或执行数据。
 type Config struct {
 	IncidentID     string
 	IntentIDPrefix string
@@ -38,6 +38,7 @@ type Transition struct {
 // Snapshot 是可用于审计和后续 checkpoint 的 Workflow 只读副本。
 type Snapshot struct {
 	IncidentID         string                 `json:"incident_id"`
+	IntentIDPrefix     string                 `json:"intent_id_prefix"`
 	State              State                  `json:"state"`
 	SuspendedState     State                  `json:"suspended_state,omitempty"`
 	Version            uint64                 `json:"version"`
@@ -260,7 +261,7 @@ func (w *IncidentWorkflow) Snapshot() Snapshot {
 		history[index] = cloneTransition(w.history[index])
 	}
 	return Snapshot{
-		IncidentID: w.incidentID, State: w.state, SuspendedState: w.suspendedState,
+		IncidentID: w.incidentID, IntentIDPrefix: w.intentIDPrefix, State: w.state, SuspendedState: w.suspendedState,
 		Version: w.version, ExecutionIntent: cloneExecutionIntentPointer(w.intent), ExecutionIntents: cloneExecutionIntents(w.executionIntents), ActionDryRuns: cloneActionDryRuns(w.actionDryRuns),
 		ActionPolicies: cloneActionPolicyDecisions(w.actionPolicies), ActionApprovals: cloneActionApprovals(w.actionApprovals),
 		AllActionDryRuns: cloneActionDryRuns(w.allActionDryRuns), AllActionPolicies: cloneActionPolicyDecisions(w.allActionPolicies),

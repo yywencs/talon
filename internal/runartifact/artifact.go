@@ -14,6 +14,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/wen/opentalon/internal/platform"
+	"github.com/wen/opentalon/internal/runmeta"
 	"github.com/wen/opentalon/internal/workflow"
 )
 
@@ -45,25 +46,6 @@ var currentCapabilities = []string{
 	CapabilityTypedActionOutputReferences,
 	CapabilityDecisionCheckpoints,
 	CapabilityExecutionIntents,
-}
-
-// Provenance identifies the code and dataset that produced a run.
-type Provenance struct {
-	CodeVersion    string `json:"code_version"`
-	DatasetVersion string `json:"dataset_version"`
-	PromptVersion  string `json:"prompt_version,omitempty"`
-	PromptDigest   string `json:"prompt_digest,omitempty"`
-}
-
-// RunConfig records the inputs that can materially change Agent behavior.
-// Secrets and endpoints must never be stored here.
-type RunConfig struct {
-	ModelProvider  string `json:"model_provider,omitempty"`
-	Model          string `json:"model,omitempty"`
-	AgentMaxSteps  int    `json:"agent_max_steps"`
-	MaxModelCalls  int    `json:"max_model_calls"`
-	AutoApprove    bool   `json:"auto_approve"`
-	ContextVersion string `json:"context_version,omitempty"`
 }
 
 // ProviderState is the evaluation-safe subset of a Provider. Endpoint details
@@ -239,8 +221,8 @@ type IncidentExperience struct {
 type RunArtifact struct {
 	SchemaVersion    string                          `json:"schema_version"`
 	Capabilities     []string                        `json:"capabilities"`
-	Provenance       Provenance                      `json:"provenance"`
-	RunConfig        RunConfig                       `json:"run_config"`
+	Provenance       runmeta.Provenance              `json:"provenance"`
+	RunConfig        runmeta.Config                  `json:"run_config"`
 	RunID            string                          `json:"run_id"`
 	ScenarioID       string                          `json:"scenario_id"`
 	StartedAt        time.Time                       `json:"started_at"`
@@ -275,7 +257,7 @@ type Recorder struct {
 	now                func() time.Time
 }
 
-func New(scenarioID string, provenance Provenance, config RunConfig) *Recorder {
+func New(scenarioID string, provenance runmeta.Provenance, config runmeta.Config) *Recorder {
 	now := time.Now
 	if strings.TrimSpace(config.ContextVersion) == "" {
 		config.ContextVersion = IncidentContextSchemaVersion
@@ -309,9 +291,9 @@ func (r *Recorder) RecordFinalState(operations []platform.Operation, state Final
 	r.artifact.FinalState = cloneFinalState(state)
 }
 
-// RecordWorkflowCheckpoint 把非 Agent 阶段的最新确定性状态同步进运行中的 Artifact。
-// 调用方随后可用 Snapshot + Store.Upsert 形成可恢复的持久化检查点。
-func (r *Recorder) RecordWorkflowCheckpoint(snapshot workflow.Snapshot) {
+// RecordWorkflow 把非 Agent 阶段的最新确定性状态同步进运行中的 Artifact。
+// 调用方随后用 Snapshot + Store.Upsert 保存审计轨迹；这不是运行恢复检查点。
+func (r *Recorder) RecordWorkflow(snapshot workflow.Snapshot) {
 	if r == nil {
 		return
 	}
@@ -890,4 +872,22 @@ func newRunID() string {
 	value[8] = (value[8] & 0x3f) | 0x80
 	encoded := hex.EncodeToString(value[:])
 	return encoded[:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:]
+}
+
+// Metadata returns immutable run identity and inputs without copying the audit trail.
+func (r *Recorder) Metadata() runmeta.Metadata {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return runmeta.Metadata{RunID: r.artifact.RunID, Provenance: r.artifact.Provenance, Config: r.artifact.RunConfig}
+}
+
+// ModelCallsUsed reads only usage accounting, including the current investigation.
+func (r *Recorder) ModelCallsUsed() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	used := 0
+	for _, run := range r.artifact.AgentRuns {
+		used += len(run.ModelCalls)
+	}
+	return used
 }

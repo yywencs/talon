@@ -14,21 +14,25 @@ import (
 	"github.com/wen/opentalon/internal/workflow"
 )
 
+// ErrWorkflowAudit marks persistence failures that must not be treated as recoverable action failures.
+var ErrWorkflowAudit = errors.New("persist workflow audit failed")
+
 var ErrActionDryRunFailed = errors.New("intent dry run failed")
 
 // ExecutionCoordinator 负责执行已经由 Workflow 冻结的 ExecutionIntent，不让 Agent 直接调用生产写操作。
 type ExecutionCoordinator struct {
-	platform         platform.ToolOpsPlatform
-	workflow         *workflow.IncidentWorkflow
-	approvalStore    approval.Store
-	executionStore   execution.Store
-	workerID         string
-	leaseDuration    time.Duration
-	submitTimeout    time.Duration
-	pollInitial      time.Duration
-	pollMaximum      time.Duration
-	operationTimeout time.Duration
-	checkpoint       func(context.Context, workflow.Snapshot) error
+	platform           platform.ToolOpsPlatform
+	workflow           *workflow.IncidentWorkflow
+	approvalStore      approval.Store
+	executionStore     execution.Store
+	workerID           string
+	leaseDuration      time.Duration
+	submitTimeout      time.Duration
+	pollInitial        time.Duration
+	pollMaximum        time.Duration
+	operationTimeout   time.Duration
+	workflowAudit      func(context.Context, workflow.Snapshot) error
+	approvalCheckpoint func(context.Context, workflow.Snapshot, []approval.Request) error
 }
 
 // AsyncExecutionConfig 配置异步修复提交、轮询退避和 Operation 总超时。
@@ -41,6 +45,18 @@ type AsyncExecutionConfig struct {
 
 // ExecutionCoordinatorOption 配置 ExecutionCoordinator 的可选控制面能力。
 type ExecutionCoordinatorOption func(*ExecutionCoordinator) error
+
+// WithApprovalCheckpoint replaces individual approval inserts with an atomic
+// approval-request + checkpoint transaction supplied by the composition root.
+func WithApprovalCheckpoint(save func(context.Context, workflow.Snapshot, []approval.Request) error) ExecutionCoordinatorOption {
+	return func(p *ExecutionCoordinator) error {
+		if save == nil {
+			return fmt.Errorf("approval checkpoint callback is required")
+		}
+		p.approvalCheckpoint = save
+		return nil
+	}
+}
 
 // WithApprovalStore 接入持久化审批收件箱。
 func WithApprovalStore(store approval.Store) ExecutionCoordinatorOption {
@@ -87,24 +103,27 @@ func WithAsyncExecution(config AsyncExecutionConfig) ExecutionCoordinatorOption 
 	}
 }
 
-// WithWorkflowCheckpoint 在每个确定性执行检查点持久化 Workflow/RunArtifact。
-func WithWorkflowCheckpoint(checkpoint func(context.Context, workflow.Snapshot) error) ExecutionCoordinatorOption {
+// WithWorkflowAudit 在确定性推进边界同步持久化 Workflow 审计；不保存运行检查点。
+func WithWorkflowAudit(persist func(context.Context, workflow.Snapshot) error) ExecutionCoordinatorOption {
 	return func(processor *ExecutionCoordinator) error {
-		if checkpoint == nil {
-			return fmt.Errorf("workflow checkpoint callback is required")
+		if persist == nil {
+			return fmt.Errorf("workflow audit callback is required")
 		}
-		processor.checkpoint = checkpoint
+		processor.workflowAudit = persist
 		return nil
 	}
 }
 
-func (p *ExecutionCoordinator) persistCheckpoint(ctx context.Context) error {
-	if p == nil || p.checkpoint == nil {
+func (p *ExecutionCoordinator) persistWorkflowAudit(ctx context.Context) error {
+	if p == nil || p.workflowAudit == nil {
 		return nil
 	}
 	persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	return p.checkpoint(persistCtx, p.workflow.Snapshot())
+	if err := p.workflowAudit(persistCtx, p.workflow.Snapshot()); err != nil {
+		return errors.Join(ErrWorkflowAudit, err)
+	}
+	return nil
 }
 
 // NewExecutionCoordinator 创建 ExecutionIntent 执行编排器。
@@ -173,8 +192,8 @@ func (p *ExecutionCoordinator) DryRun(ctx context.Context) ([]workflow.ActionDry
 		if recordErr != nil {
 			return p.workflow.Snapshot().ActionDryRuns, fmt.Errorf("record action %q dry run: %w", action.ID, recordErr)
 		}
-		if persistErr := p.persistCheckpoint(ctx); persistErr != nil {
-			return p.workflow.Snapshot().ActionDryRuns, fmt.Errorf("persist action %q dry run checkpoint: %w", action.ID, persistErr)
+		if persistErr := p.persistWorkflowAudit(ctx); persistErr != nil {
+			return p.workflow.Snapshot().ActionDryRuns, fmt.Errorf("persist action %q dry run audit: %w", action.ID, persistErr)
 		}
 		if callErr != nil {
 			if recorded.Status == workflow.ActionDryRunFailed {

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -276,6 +277,7 @@ func incidentControllerForTest(
 	t *testing.T,
 	service *idempotentExecutionPlatform,
 	buildInvestigator func(*workflow.IncidentWorkflow) *scriptedInvestigator,
+	options ...ExecutionCoordinatorOption,
 ) (*IncidentController, *workflow.IncidentWorkflow, *storage.Storage, *scriptedInvestigator) {
 	t.Helper()
 	instance, err := workflow.NewIncidentWorkflow(workflow.Config{IncidentID: "controller-incident"})
@@ -287,6 +289,9 @@ func incidentControllerForTest(
 		WithExecutionStore(database.Executions(), "controller-worker", time.Second),
 		WithAsyncExecution(fastAsyncExecutionConfig()))
 	require.NoError(t, err)
+	for _, option := range options {
+		require.NoError(t, option(processor))
+	}
 	investigator := buildInvestigator(instance)
 	controller, err := NewIncidentController(IncidentControllerConfig{
 		Workflow: instance, Investigator: investigator, ExecutionCoordinator: processor,
@@ -316,3 +321,33 @@ func testExecutionIntentDraft(toolName string) workflow.ExecutionIntentDraft {
 }
 
 var _ Investigator = (*scriptedInvestigator)(nil)
+
+func TestIncidentControllerStopsOnAuditFailureDuringReinvestigation(t *testing.T) {
+	service := executionPlatform("failing_fix")
+	service.executionStatus = platform.OperationFailed
+	auditErr := errors.New("injected audit write failure")
+	failed := false
+	orchestrator, _, database, investigator := incidentControllerForTest(t, service, func(flow *workflow.IncidentWorkflow) *scriptedInvestigator {
+		value := &scriptedInvestigator{incidentID: flow.Snapshot().IncidentID, workflow: flow}
+		value.run = func(run int, _ string) error {
+			if run == 1 {
+				_, err := flow.SubmitExecutionIntent(testExecutionIntentDraft("failing_fix"))
+				return err
+			}
+			_, err := flow.Apply(workflow.Event{Type: workflow.EventEscalated, Actor: workflow.ActorAgent, Reason: "no safe action"})
+			return err
+		}
+		return value
+	}, WithWorkflowAudit(func(_ context.Context, snapshot workflow.Snapshot) error {
+		if snapshot.State == workflow.StateInvestigating && len(snapshot.Failures) > 0 && !failed {
+			failed = true
+			return auditErr
+		}
+		return nil
+	}))
+	defer database.Close()
+	result, err := orchestrator.Run(context.Background())
+	require.ErrorIs(t, err, auditErr)
+	assert.Equal(t, workflow.StateInvestigating, result.Snapshot.State)
+	assert.Len(t, investigator.instructions, 1, "audit failure must stop before another investigation")
+}
