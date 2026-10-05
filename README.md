@@ -106,23 +106,32 @@ go run ./cmd/talon --help
 
 ## 运行检查点（保存与 Workflow 重建）
 
-运行前需按 `docs/sql/README.md` 应用数据库迁移；已有数据库需新增执行 `006_create_run_checkpoints.up.sql`。运行时不会自动建表。
+运行前需按 `docs/sql/README.md` 应用数据库迁移；已有数据库需按顺序补齐 `006_create_run_checkpoints.up.sql` 和 `007_run_leases.up.sql`。运行时不会自动建表。
 
-`run_checkpoints` 按 `run_id` 保存最近一次检查点，包含版本信息、运行配置、Workflow 快照和 Intent ID 前缀。目前接入三个保存位置：
+`run_checkpoints` 按 `run_id` 保存最近一次检查点，包含版本信息、运行配置、Workflow 快照和 Intent ID 前缀。场景测试入口接入三个保存位置，外部环境入口另外保存推进进度：
 
 | 位置 | 保存时机 | 保存失败时 |
 | --- | --- | --- |
 | `created` | Workflow 创建后，调查开始前 | 停止启动 |
 | `intent_accepted` | 调查轮次返回、意图已冻结，预执行开始前 | 不进入预执行 |
 | `awaiting_approval` | 策略要求审批时，与审批请求在同一事务提交 | 回滚审批请求，不继续执行 |
+| `progress` | 外部环境中重新调查前、阶段推进后、执行授权后及结束时 | 停止推进；写入同时校验任务租约 |
 
 检查点使用独立的 `revision` 做条件更新，拒绝旧版本覆盖；使用相同预期版本重试同一份数据时，返回已提交记录。JSON 的 `schema_version` 用于识别数据格式，读取不支持的格式会报错。冻结动作的参数原样保存，读取时保留大整数精度。
 
-这一阶段支持保存、读取和 Workflow 对象重建，尚未实现重启续跑入口或重启后的跨层状态对账；执行层已有租约、Operation 查询与 unknown 处理继续保留。检查点只代表上述最近一次保存位置，执行继续推进后可能落后于实际状态；终态仍查看 RunArtifact。Agent 对话和 Simulator 状态不在该快照中，不能直接把它当作完整进程恢复镜像。
+`app.RunConnected` 对接独立运行的 Simulator/平台，`app.Resume` 按原 `run_id` 手动续跑：取得任务租约 → 重连原环境 → 对账所有历史计划中的操作 → 重新调查 → 正常受控执行。成功和明确失败都会重新调查；运行中、未知结果、取消后未查清的操作，以及不完整的历史保持等待，不重提旧动作。终态任务直接返回。
+
+这两个入口要求注入 `platform.RunConnector`：验证检查点保存的稳定 `EnvironmentID`，并在平台服务端激活递增 epoch、拒绝旧 epoch 的写请求。仓库提供应用编排与接口契约，尚无外部 Simulator 的网络连接器或 Resume CLI；部署适配器必须实现这一契约，不能把普通客户端直接包装成连接器。现有 `app.Run` 是内嵌 Simulator 的场景测试入口；缺少原环境身份的旧检查点不能直接续跑。
+
+`ResumeResult.Waiting` 表示需稍后再次对账，不会自动启动后台轮询。配置 `ConnectedConfig.ApprovalPollInterval > 0` 可在同一进程等待人工审批，审批完成后继续当前方案；中断后的恢复才重新调查。外部环境不会使用 AutoApprove。Agent 对话不重放，Simulator 状态不写入检查点；审计历史、确认结果和模型调用预算保留。详细数据流和接入示例见 [运行生命周期](docs/run-lifecycle.md)。
 
 应用代码可调用 `app.LoadWorkflow(ctx, database.Checkpoints(), runID)`，取得原始检查点（含 revision、运行配置、模型调用计数）和独立的 Workflow 对象。底层 `workflow.Restore(snapshot)` 校验身份、完整转换历史、计数、阶段位置及当前动作/预执行/审批的关联，再复制状态；不会重新生成 ID、重置预算或产生新事件。空切片经过 JSON 的 `omitempty` 后可能变为 nil，序列化状态保持一致。
 
 该入口只读数据库，不创建新运行、不启动 Controller、不执行平台动作，也不自动应用更新的审批结果。必须完成审批和执行记录对账后才能接入实际续跑。
+
+使用 `app.LoadAndReconcileWorkflow(ctx, database, runID, operationReader)` 可在加载后对账当前阶段：逐张读取当前动作的审批单，补入已批准/拒绝的决定；检查执行记录的归属、摘要、幂等键和顺序。已持久化成功的动作通过查询原 Operation 补回输出，全部完成才进入业务阶段判定。查询能力只包含 `GetOperation`，不能提交修复。
+
+结果的 `Reconciliation.Next` 明确区分等待审批、准备执行、阶段判定、失败处理、继续查询、等待 Worker 提交终态和补充历史。执行记录仍为 running/unknown 时，即使平台已返回终态，也必须由持有租约的 Worker 先提交结果；查询失败、Operation ID 缺失或检查点缺少后续阶段事实时不会猜测或重做。对账只修改独立的内存副本，不写检查点、不改变审批单或执行租约；返回结果也不等于取得执行权限。
 
 运行编排与持久化的职责如下（详见 [运行生命周期与持久化边界](docs/run-lifecycle.md)）：
 

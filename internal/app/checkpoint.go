@@ -17,13 +17,14 @@ import (
 // runCheckpointWriter owns the storage revision for one run. A failed save
 // latches the error: this process must not proceed with uncommitted state.
 type runCheckpointWriter struct {
-	mu           sync.Mutex
-	store        checkpoint.Store
-	metadata     runmeta.Metadata
-	usage        modelUsage
-	revision     uint64
-	lastIntentID string
-	failure      error
+	trackProgress bool
+	mu            sync.Mutex
+	store         checkpoint.Store
+	metadata      runmeta.Metadata
+	usage         modelUsage
+	revision      uint64
+	lastIntentID  string
+	failure       error
 }
 
 func (w *runCheckpointWriter) saveIntent(ctx context.Context, snapshot workflow.Snapshot) error {
@@ -74,6 +75,16 @@ func (w *runCheckpointWriter) saveLocked(ctx context.Context, boundary checkpoin
 	}
 	w.revision = record.Revision
 	return nil
+}
+
+func (w *runCheckpointWriter) saveProgress(ctx context.Context, snapshot workflow.Snapshot) error {
+	// Waiting checkpoints are saved atomically when their approval requests are created.
+	if !w.trackProgress || snapshot.State == workflow.StateAwaitingApproval {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.saveLocked(ctx, checkpoint.Progress, snapshot, nil)
 }
 
 // modelUsage exposes accounting without coupling checkpoint writes to audit history.

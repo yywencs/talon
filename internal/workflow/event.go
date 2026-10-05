@@ -4,6 +4,7 @@ package workflow
 type EventType string
 
 const (
+	EventRunResumed EventType = "run_resumed"
 	// EventStartInvestigation 表示控制器已完成保护动作，可以开始调查。
 	EventStartInvestigation EventType = "start_investigation"
 	// EventExecutionIntentSubmitted 表示 Agent 已提交一份结构化 ExecutionIntent。

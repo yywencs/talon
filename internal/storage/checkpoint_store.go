@@ -13,11 +13,19 @@ import (
 
 	"github.com/wen/opentalon/internal/approval"
 	"github.com/wen/opentalon/internal/checkpoint"
+	"github.com/wen/opentalon/internal/runlease"
 )
 
 type sqlCheckpointStore struct {
 	db     *sql.DB
 	driver Driver
+	lease  *runlease.Token
+}
+
+// OwnedCheckpoints fences every checkpoint write with the current run lease.
+func (s *Storage) OwnedCheckpoints(token runlease.Token) checkpoint.Store {
+	base := s.checkpoints.(*sqlCheckpointStore)
+	return &sqlCheckpointStore{db: s.db, driver: base.driver, lease: &token}
 }
 
 var _ checkpoint.Store = (*sqlCheckpointStore)(nil)
@@ -61,6 +69,14 @@ func (s *sqlCheckpointStore) save(ctx context.Context, data checkpoint.Data, exp
 		return checkpoint.Record{}, fmt.Errorf("begin checkpoint transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if s.lease != nil {
+		if data.RunID != s.lease.RunID {
+			return checkpoint.Record{}, runlease.ErrLost
+		}
+		if err := lockRunLease(ctx, tx, s.driver, *s.lease); err != nil {
+			return checkpoint.Record{}, err
+		}
+	}
 	approvalStore := &sqlApprovalStore{db: tx, driver: s.driver, now: time.Now}
 	for _, request := range requests {
 		if _, err := approvalStore.Create(ctx, request); err != nil {

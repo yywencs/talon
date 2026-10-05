@@ -251,6 +251,7 @@ type RunArtifact struct {
 type Recorder struct {
 	mu                 sync.Mutex
 	artifact           RunArtifact
+	modelCallOffset    int
 	currentRun         int
 	currentIntentCount int
 	evidence           map[string]struct{}
@@ -563,7 +564,7 @@ func (r *Recorder) Snapshot() RunArtifact {
 }
 
 func (r *Recorder) rebuildSummaryLocked() {
-	s := Summary{AgentRuns: len(r.artifact.AgentRuns), BlockedAttempts: len(r.artifact.BlockedAttempts)}
+	s := Summary{ModelCalls: r.modelCallOffset, AgentRuns: len(r.artifact.AgentRuns), BlockedAttempts: len(r.artifact.BlockedAttempts)}
 	for _, run := range r.artifact.AgentRuns {
 		s.ModelCalls += len(run.ModelCalls)
 		s.ToolCalls += len(run.ToolCalls)
@@ -885,7 +886,7 @@ func (r *Recorder) Metadata() runmeta.Metadata {
 func (r *Recorder) ModelCallsUsed() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	used := 0
+	used := r.modelCallOffset
 	for _, run := range r.artifact.AgentRuns {
 		used += len(run.ModelCalls)
 	}

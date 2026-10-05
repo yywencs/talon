@@ -18,6 +18,7 @@ const SchemaVersion = "talon.run-checkpoint/v1"
 type Boundary string
 
 const (
+	Progress         Boundary = "progress"
 	Created          Boundary = "created"
 	IntentAccepted   Boundary = "intent_accepted"
 	AwaitingApproval Boundary = "awaiting_approval"

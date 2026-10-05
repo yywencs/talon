@@ -9,11 +9,13 @@ import (
 	"time"
 
 	"github.com/wen/opentalon/internal/execution"
+	"github.com/wen/opentalon/internal/runlease"
 )
 
 type sqlExecutionStore struct {
 	db     *sql.DB
 	driver Driver
+	lease  *runlease.Token
 	now    func() time.Time
 }
 
@@ -33,6 +35,11 @@ func (s *sqlExecutionStore) Prepare(ctx context.Context, specs []execution.Spec)
 		return nil, fmt.Errorf("begin action execution preparation: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if s.lease != nil {
+		if err := lockRunLease(ctx, tx, s.driver, *s.lease); err != nil {
+			return nil, err
+		}
+	}
 	now := s.now().UTC().UnixNano()
 	seen := make(map[string]struct{}, len(specs))
 	for _, spec := range specs {
@@ -94,6 +101,11 @@ func (s *sqlExecutionStore) ClaimNext(ctx context.Context, claim execution.Claim
 		return execution.Record{}, fmt.Errorf("begin action execution claim: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if s.lease != nil {
+		if err := lockRunLease(ctx, tx, s.driver, *s.lease); err != nil {
+			return execution.Record{}, err
+		}
+	}
 	query := selectExecution + ` WHERE current.intent_id = ?
 AND current.status <> 'succeeded'
 AND (current.next_poll_at_unix_ns IS NULL OR current.next_poll_at_unix_ns <= ?)
@@ -159,7 +171,7 @@ func (s *sqlExecutionStore) Renew(ctx context.Context, actionID, ownerID string,
 		return execution.Record{}, fmt.Errorf("positive lease duration is required")
 	}
 	now := s.now().UTC()
-	result, err := s.db.ExecContext(ctx, bindSQL(s.driver, `UPDATE action_executions
+	result, err := guardedExec(ctx, s.db, s.driver, s.lease, bindSQL(s.driver, `UPDATE action_executions
 SET lease_until_unix_ns = ?, updated_at_unix_ns = ?
 WHERE action_id = ? AND owner_id = ? AND status IN ('running', 'unknown')`),
 		now.Add(leaseDuration).UnixNano(), now.UnixNano(), strings.TrimSpace(actionID), strings.TrimSpace(ownerID))
@@ -174,7 +186,7 @@ func (s *sqlExecutionStore) RecordOperation(ctx context.Context, actionID, owner
 		return execution.Record{}, err
 	}
 	now := s.now().UTC().UnixNano()
-	result, err := s.db.ExecContext(ctx, bindSQL(s.driver, `UPDATE action_executions
+	result, err := guardedExec(ctx, s.db, s.driver, s.lease, bindSQL(s.driver, `UPDATE action_executions
 SET status = 'running', operation_id = ?, operation_status = ?, last_error = '',
     owner_id = '', lease_until_unix_ns = NULL, next_poll_at_unix_ns = ?,
     operation_deadline_unix_ns = COALESCE(operation_deadline_unix_ns, ?), updated_at_unix_ns = ?
@@ -193,7 +205,7 @@ func (s *sqlExecutionStore) MarkUnknown(ctx context.Context, actionID, ownerID, 
 		return execution.Record{}, err
 	}
 	now := s.now().UTC().UnixNano()
-	result, err := s.db.ExecContext(ctx, bindSQL(s.driver, `UPDATE action_executions
+	result, err := guardedExec(ctx, s.db, s.driver, s.lease, bindSQL(s.driver, `UPDATE action_executions
 SET status = 'unknown', operation_id = ?, operation_status = ?, last_error = ?,
     owner_id = '', lease_until_unix_ns = NULL, next_poll_at_unix_ns = ?,
     operation_deadline_unix_ns = COALESCE(operation_deadline_unix_ns, ?), updated_at_unix_ns = ?
@@ -212,7 +224,7 @@ func (s *sqlExecutionStore) Complete(ctx context.Context, actionID, ownerID, ope
 		return execution.Record{}, fmt.Errorf("action completion status must be succeeded or failed")
 	}
 	now := s.now().UTC().UnixNano()
-	result, err := s.db.ExecContext(ctx, bindSQL(s.driver, `UPDATE action_executions
+	result, err := guardedExec(ctx, s.db, s.driver, s.lease, bindSQL(s.driver, `UPDATE action_executions
 SET status = ?, operation_id = ?, operation_status = ?, last_error = ?,
     owner_id = '', lease_until_unix_ns = NULL, next_poll_at_unix_ns = NULL,
     updated_at_unix_ns = ?, finished_at_unix_ns = ?

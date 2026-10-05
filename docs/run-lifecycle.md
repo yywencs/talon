@@ -1,6 +1,6 @@
 # 运行生命周期与持久化边界
 
-当前支持保存、读取运行检查点，以及从中重建 Workflow 对象；不包含 Resume CLI、跨层对账或进程重启后自动续跑。`run_checkpoints` 是最近一个已提交保存边界，不能当作当前实时状态或完整进程镜像。
+当前支持保存、重建、只读对账，以及面向独立外部环境的手动续跑 API；不包含网络适配器、Resume CLI 或后台自动接管调度。`run_checkpoints` 是最近一个已提交保存边界，不能当作当前实时状态或完整进程镜像。
 
 ## 主调用链
 
@@ -70,8 +70,92 @@ _ = flow
 
 读取不存在的运行、未知格式、身份不匹配或结构不一致时返回错误，不退回创建新运行。恢复本身不写检查点或审批单。即使审批表中已有批准结果，等待审批快照也仍保持等待审批，留给后续显式对账。
 
-## 后续续跑接入位置
+## 只读对账 API
 
-未来续跑入口可以调用 `LoadWorkflow`，完成审批和执行记录对账后，再复用组件组装与推进路径；不能用 `NewIncidentWorkflow(Config{InitialState: ...})` 代替恢复。需要另外设计 Agent 用量/上下文恢复、平台状态重建或重连、执行租约与 Operation 对账，以及检查点落后于执行状态时的处理。
+`app.LoadAndReconcileWorkflow(ctx, database, runID, operationReader)` 在 `LoadWorkflow` 后调用 `controller.ReconcileWorkflow`。对账使用只读的审批、执行和 Operation 接口，在独立 Workflow 副本上补入事实，错误时不返回半完成对象。审批按当前 Action ID 精确查询，核对 Incident、Intent、Action、digest、工具、DryRun Operation 和风险；保留原审批人、决定、原因和决定时间，不调用审批写接口。
 
-执行层已有租约、Operation 查询和 unknown 处理保持原样；此次不扩大保存边界，不引入终态快照、事件溯源或恢复框架。业务状态机、冻结参数、ID、digest 和幂等键语义未改变。终态与评测继续使用 RunArtifact。
+| Next | 含义 |
+| --- | --- |
+| `investigate` | 尚未开始调查，或审批拒绝后返回调查 |
+| `validate` | 校验阶段未发现执行记录，仍需正常预执行和策略判断 |
+| `await_approval` | 部分或全部审批仍待处理 |
+| `execute` | 当前授权已核对，尚有未开始动作；后续 Worker 仍需正常获取租约 |
+| `evaluate_stage` | 当前阶段的持久化成功记录及 Operation 输出已补回，可做业务判定 |
+| `inspect_failure` | 已将确定失败记录交给 Workflow 的失败规则，需检查其状态出口 |
+| `query_operation` | 执行仍非终态、结果未知、查询失败或缺少原 Operation 信息，不得直接重做 |
+| `commit_execution` | 查到终态，但执行记录尚未终结，必须由租约持有者先写入 |
+| `recover_more_history` | validating 检查点后已有执行，或记录涉及其他阶段，当前快照不足以安全推进 |
+
+执行记录不保存完整输出，因此补回成功动作时查询原 Operation，并核对原 Operation ID、Incident、类型、名称及幂等键。数据冲突返回 `ErrReconcileConflict`；超时、取消和未知失败不能直接当成“动作未发生”。对账不调用 Prepare、Claim、Complete 或平台写接口，也不自动做下一阶段判定。
+
+这是一组观察结果，不是跨数据库与平台的原子快照，更不授予执行权限。这个只读 API 保持当前阶段的语义；实际续跑使用下面的保守流程，不根据 `execute` 直接继续旧计划。
+
+## 独立环境的续跑流程
+
+```text
+app.Resume(run_id)
+  原子获取 run_leases：owner_id + epoch + 到期时间
+  LoadWorkflow，终态任务直接返回
+  Connector.ConnectRun：确认 EnvironmentID，服务端激活 epoch
+  ReconcileForResume：读取所有保留的 Intent 的执行记录
+    尚未提交                 不执行旧计划
+    running / unknown        查询原 Operation，不重新提交
+    平台已明确结束、执行表滞后  任务租约 + 记录条件更新提交结果
+                              活动 Action 租约未过期时不抢占
+    已确认成功或失败          补回结果；不执行旧阶段判定规则
+    缺少 Operation / 历史     返回 Waiting，不猜测
+  ResumeInvestigation：保留原计划、结果、预算，转 investigating
+  保存 progress，保留原 run_id 并从原 revision 继续 CAS
+  恢复审计和用量，构建新 Agent，要求读取当前证据
+  原 Controller：新方案 → DryRun → 策略/审批 → 修复—探测—恢复
+  保存进度，停止续租并释放当前任务所有权
+```
+
+重新调查会携带旧诊断、旧方案和确认结果，并要求区分“原故障仍在”“原故障已解决”和“发生新故障”。旧审批不会授权新 Intent。对账会查询失败动作的原 Operation；`cancelled`、查询不到、缺少原 Operation ID 或不一致的记录均不作为可安全继续的证据。查询异常返回等待，身份/结果冲突返回错误。
+
+完整成功的当前 Stage 仍计入原阶段预算；恢复调查计入 `MaxAgentResumes`，耗尽则升级人工，不重置预算。已经 resolved/failed/blocked/escalated 的任务不自动重开。重复中断可以继续读取最新 progress；历史操作结果留在 Workflow，调查审计追加到原 RunArtifact。
+
+`progress` 是外部环境入口新增的保存边界：包括调查开始、执行授权（提交动作之前）、阶段推进、终态和错误收尾。等待审批仍通过原有原子事务保存，不用普通 progress 绕过审批约束。旧三边界检查点如果已经落后到缺少冻结参数/授权历史，续跑返回等待补充历史，不能用当前环境重新计算旧参数再假装完成对账。
+
+### 接入方式
+
+调用方先实现 `platform.RunConnector`，把请求接到原来的独立 Simulator：
+
+- `EnvironmentID` 是环境实例的稳定标识，不能只用可重复的场景名；服务端必须核对实例身份。
+- `ConnectRun` 在平台端原子激活对应 run 的 epoch，返回绑定该 epoch 的客户端。所有写接口在服务端检查 epoch；更旧 epoch 被拒绝。已接受的异步操作继续运行、仍可查询。
+- 服务端需持久化 epoch 和操作记录。只在客户端查一次数据库租约不足以实现该接口契约。本仓库没有外部 Simulator 的传输协议实现，不提供静默退回普通客户端的路径。
+
+```go
+connected := app.ConnectedConfig{
+    Config: app.Config{
+        Storage: database,
+        ScenarioID: incidentID,
+        Model: chatModel,
+        Provenance: deploymentProvenance,
+        RunConfig: runmeta.Config{EnvironmentID: environmentInstanceID},
+    },
+    Connector: simulatorConnector, // 部署侧实现 platform.RunConnector
+    ApprovalPollInterval: time.Second,
+}
+// 新建时使用 RunConnected；中断后使用保存的 run_id。
+result, err := app.Resume(ctx, app.ResumeConfig{
+    ConnectedConfig: connected,
+    RunID: runID,
+})
+if err != nil { return err }
+if result.Waiting {
+    // 展示 result.Reason，由调用方稍后重试 Resume 或交人工处理。
+}
+```
+
+设置正的 `ApprovalPollInterval`，同一进程会等待外部审批决定，随后推进当前计划；不会替人审批，也不会重新调查。设为零则在等待审批处返回。若选择退出再 Resume，将按恢复规则重新调查并产生新的审批需求；需要持续处理审批的部署应启用轮询，避免“每次审批后重启、每次重启又重新审批”。Simulator 的虚拟时钟始终由独立服务维护，应用入口不创建或重置它。
+
+模型用量从原审计和检查点恢复，以两者可确认的最大值为下限；新模型包装器从该值继续计数。进程在模型请求期间被杀死仍可能丢失未记账调用，这是现有尽力记账的边界，不是严格的跨进程调用额度预留。Prompt digest 存在时必须匹配当前加载内容。
+
+### 并发与持久化边界
+
+`run_leases` 使用数据库时间，默认租期 30 秒，每 10 秒续租；续租失败取消当前运行。每次接管（包括主动释放后的接管）递增 epoch。检查点、执行记录与审计的写入通过 `Storage.OwnedRun` 在事务中锁定并验证租约行，失去所有权的进程不能覆盖新进度。平台写入还必须由上述服务端 fencing 阻止。所有参与同一任务的执行进程都必须使用这条受控路径。
+
+任务租约按 run_id 隔离，不是不同任务对同一资源的互斥锁。资源级冲突控制仍由平台承担。动作终态写回不会抢占仍有效的动作租约，也不会为了找回结果提交旧动作。
+
+需要执行数据库迁移 `007_run_leases`；代码不会替生产环境执行迁移。没有环境实例身份的旧检查点拒绝续跑，避免连接到重建的初始场景。最终世界快照仍属于外部服务，此入口不生成 Simulator 全量世界快照。

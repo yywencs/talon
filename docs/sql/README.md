@@ -1,6 +1,6 @@
 # Talon 数据库脚本
 
-这里保存 Talon 控制面数据库的建表和回滚脚本。目前包含 Action 审批、Action Execution、结构化 RunArtifact 和运行检查点。RunArtifact 的常用筛选字段独立成列，完整调查轮次、工具调用、Execution Intent、证据与 Workflow 历史保存在 PostgreSQL `JSONB` 中；SQLite 测试环境使用等价的 JSON `TEXT`。
+这里保存 Talon 控制面数据库的建表和回滚脚本。目前包含 Action 审批、Action Execution、结构化 RunArtifact、运行检查点和任务租约。RunArtifact 的常用筛选字段独立成列，完整调查轮次、工具调用、Execution Intent、证据与 Workflow 历史保存在 PostgreSQL `JSONB` 中；SQLite 测试环境使用等价的 JSON `TEXT`。
 
 Action Execution 使用数据库租约决定 Worker 所有权，状态为 `pending/running/unknown/succeeded/failed`。同一 Execution Intent 通过序号和活动状态唯一索引严格串行；租约过期后可以由其他 Worker 接管，但必须复用原 `idempotency_key`。
 异步 Operation 会持久化下次轮询时间和总截止时间；Worker 重启后可以继续查询原 Operation。
@@ -20,11 +20,15 @@ psql "$DATABASE_DSN" -v ON_ERROR_STOP=1 \
   -f docs/sql/postgresql/005_rename_plan_to_execution_intent.up.sql
 psql "$DATABASE_DSN" -v ON_ERROR_STOP=1 \
   -f docs/sql/postgresql/006_create_run_checkpoints.up.sql
+psql "$DATABASE_DSN" -v ON_ERROR_STOP=1 \
+  -f docs/sql/postgresql/007_run_leases.up.sql
 ```
 
 需要回滚本次建表时：
 
 ```bash
+psql "$DATABASE_DSN" -v ON_ERROR_STOP=1 \
+  -f docs/sql/postgresql/007_run_leases.down.sql
 psql "$DATABASE_DSN" -v ON_ERROR_STOP=1 \
   -f docs/sql/postgresql/006_create_run_checkpoints.down.sql
 psql "$DATABASE_DSN" -v ON_ERROR_STOP=1 \
@@ -60,7 +64,7 @@ FROM run_artifacts
 WHERE run_id = '00000000-0000-4000-8000-000000000000';
 ```
 
-`run_checkpoints` 每个运行保存一条最新检查点，`revision` 用于条件更新，`updated_at_unix_ns` 是 UTC Unix 纳秒时间。等待审批的检查点与审批请求原子提交。检查点目前只覆盖创建、意图接受和等待审批，不代表运行最终状态，也尚不支持直接续跑。
+`run_checkpoints` 每个运行保存一条最新检查点，`revision` 用于条件更新，`updated_at_unix_ns` 是 UTC Unix 纳秒时间。等待审批的检查点与审批请求原子提交。内嵌场景入口覆盖创建、意图接受和等待审批；外部环境入口还保存 progress，并通过 app.Resume 对账后重新调查。run_leases 保存 owner_id、递增 epoch 和租期；使用数据库时间判定过期，写入检查点、执行记录和审计时在同一事务验证所有权。运行身份中的 EnvironmentID 必须指向原来的独立环境。
 
 ```sql
 SELECT run_id, revision, schema_version,

@@ -152,6 +152,19 @@ func (w *IncidentWorkflow) RecordActionPolicyDecisions(decisions []ActionPolicyD
 // RecordActionApproval 保存一个 Action 的人工审批。只有全部待审批 Action 都通过后，
 // Workflow 才会从 awaiting_approval 进入 executing。
 func (w *IncidentWorkflow) RecordActionApproval(approval ActionApproval) (ActionApproval, error) {
+	return w.recordActionApproval(approval, time.Time{})
+}
+
+// RecordPersistedActionApproval applies an existing durable decision without
+// replacing its original decision time. The caller must verify its store binding.
+func (w *IncidentWorkflow) RecordPersistedActionApproval(approval ActionApproval) (ActionApproval, error) {
+	if approval.DecidedAt.IsZero() {
+		return ActionApproval{}, fmt.Errorf("persisted approval decision time is required")
+	}
+	return w.recordActionApproval(approval, approval.DecidedAt)
+}
+
+func (w *IncidentWorkflow) recordActionApproval(approval ActionApproval, decidedAt time.Time) (ActionApproval, error) {
 	if w == nil {
 		return ActionApproval{}, fmt.Errorf("workflow is not initialized")
 	}
@@ -169,7 +182,10 @@ func (w *IncidentWorkflow) RecordActionApproval(approval ActionApproval) (Action
 		return *cloneActionApprovalPointer(existing), nil
 	}
 
-	approval.DecidedAt = w.now()
+	approval.DecidedAt = decidedAt
+	if approval.DecidedAt.IsZero() {
+		approval.DecidedAt = w.now()
+	}
 	w.actionApprovals = append(w.actionApprovals, *cloneActionApprovalPointer(&approval))
 	w.allActionApprovals = append(w.allActionApprovals, *cloneActionApprovalPointer(&approval))
 	metadata := map[string]string{

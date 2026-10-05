@@ -384,14 +384,7 @@ func (w *IncidentWorkflow) RecordActionResult(value ActionResult) (ActionResult,
 	if resolved == nil || resolved.Digest != value.ActionDigest {
 		return ActionResult{}, fmt.Errorf("action result does not match a resolved action")
 	}
-	value.OperationID = strings.TrimSpace(value.OperationID)
-	value.OperationStatus = strings.TrimSpace(value.OperationStatus)
-	value.Output = cloneAnyMap(value.Output)
-	value.RecordedAt = w.now()
-	value.ResultID = value.ActionID + ":result"
-	payload, _ := json.Marshal(value.Output)
-	sum := sha256.Sum256(append([]byte(value.ActionID+"\x00"), payload...))
-	value.EvidenceRef = "action:" + value.ActionID + ":" + hex.EncodeToString(sum[:8])
+	value = w.sealActionResult(value)
 	w.actionResults = append(w.actionResults, cloneActionResult(value))
 	return cloneActionResult(value), nil
 }
@@ -562,4 +555,16 @@ func (w *IncidentWorkflow) newCheckpointLocked(stageID, trigger string, decision
 		Trigger: trigger, LatestResults: results, NewEvidenceRefs: evidence,
 		Decision: decision, DecisionReason: reason, NextStageID: nextStageID, CreatedAt: w.now(),
 	}
+}
+
+func (w *IncidentWorkflow) sealActionResult(value ActionResult) ActionResult {
+	value.OperationID = strings.TrimSpace(value.OperationID)
+	value.OperationStatus = strings.TrimSpace(value.OperationStatus)
+	value.Output = cloneAnyMap(value.Output)
+	value.RecordedAt = w.now()
+	value.ResultID = value.ActionID + ":result"
+	payload, _ := json.Marshal(value.Output)
+	sum := sha256.Sum256(append([]byte(value.ActionID+"\x00"), payload...))
+	value.EvidenceRef = "action:" + value.ActionID + ":" + hex.EncodeToString(sum[:8])
+	return value
 }

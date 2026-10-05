@@ -126,3 +126,11 @@ func (m *recordingModel) Stream(ctx context.Context, input []*schema.Message, op
 	}()
 	return result, nil
 }
+
+func initialModelCallCounter(recorder *runartifact.Recorder) *modelCallCounter {
+	counter := &modelCallCounter{}
+	if recorder != nil {
+		counter.value.Store(int64(recorder.ModelCallsUsed()))
+	}
+	return counter
+}

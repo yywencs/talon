@@ -9,10 +9,12 @@ import (
 	"strings"
 
 	"github.com/wen/opentalon/internal/runartifact"
+	"github.com/wen/opentalon/internal/runlease"
 )
 
 type sqlRunArtifactStore struct {
 	db     *sql.DB
+	lease  *runlease.Token
 	driver Driver
 }
 
@@ -68,7 +70,7 @@ ON CONFLICT(run_id) DO UPDATE SET
 		artifactPlaceholder = "CAST(? AS JSONB)"
 	}
 	query = strings.Replace(query, "__ARTIFACT__", artifactPlaceholder, 1)
-	_, err = s.db.ExecContext(ctx, bindSQL(s.driver, query), artifact.RunID, artifact.ScenarioID, artifact.SchemaVersion,
+	_, err = guardedExec(ctx, s.db, s.driver, s.lease, bindSQL(s.driver, query), artifact.RunID, artifact.ScenarioID, artifact.SchemaVersion,
 		artifact.Outcome, artifact.StopReason, artifact.StartedAt.UTC(), finishedAt,
 		artifact.Duration.Milliseconds(), artifact.Summary.TotalTokens, failureStage, string(payload))
 	if err != nil {

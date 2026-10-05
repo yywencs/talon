@@ -17,6 +17,10 @@ import (
 
 // buildInvestigator can be reused with an existing Workflow and platform; it does not start a run.
 func buildInvestigator(ctx context.Context, cfg Config, prompts agent.PromptSet, flow *workflow.IncidentWorkflow, service *simulator.Simulator, recorder *runartifact.Recorder, printer *safePrinter) (controller.Investigator, error) {
+	return buildPlatformInvestigator(ctx, cfg, prompts, flow, service, func() time.Time { return service.Snapshot().Now }, recorder, printer)
+}
+
+func buildPlatformInvestigator(ctx context.Context, cfg Config, prompts agent.PromptSet, flow *workflow.IncidentWorkflow, service platform.ToolOpsPlatform, clock func() time.Time, recorder *runartifact.Recorder, printer *safePrinter) (controller.Investigator, error) {
 	var investigator controller.Investigator
 	var err error
 	if cfg.InvestigatorFactory != nil {
@@ -43,7 +47,7 @@ func buildInvestigator(ctx context.Context, cfg Config, prompts agent.PromptSet,
 		printer.printf("[skill] catalog=%d active=0 max_active=%d\n", registry.Len(), skill.DefaultMaxActive)
 		toolOpsAgent, buildErr := agent.NewToolOpsAgent(ctx, agent.Config{
 			Model: cfg.Model, Platform: service, IncidentID: flow.Snapshot().IncidentID,
-			VirtualTime: func() time.Time { return service.Snapshot().Now },
+			VirtualTime: clock,
 			Workflow:    flow, MaxSteps: cfg.AgentMaxSteps, MaxModelCalls: cfg.RunConfig.MaxModelCalls,
 			Artifact: recorder, Skills: skillSession, Prompts: &prompts,
 		})
@@ -73,6 +77,9 @@ func assembleController(cfg Config, service platform.ToolOpsPlatform, flow *work
 			MaxPollInterval: 100 * time.Millisecond, OperationTimeout: 2 * time.Minute,
 		}),
 		controller.WithWorkflowAudit(func(auditCtx context.Context, snapshot workflow.Snapshot) error {
+			if err := checkpoints.saveProgress(auditCtx, snapshot); err != nil {
+				return err
+			}
 			recorder.RecordWorkflow(snapshot)
 			return artifactStore.Upsert(auditCtx, recorder.Snapshot())
 		}),

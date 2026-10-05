@@ -113,6 +113,7 @@ var transitionRules = map[State]map[EventType]transitionRule{
 	// investigating（调查中）：Agent 提交 ExecutionIntent 后转校验；
 	// 加载/卸载 Skill 是自环事件，只留审计记录，不改变状态。
 	StateInvestigating: {
+		EventRunResumed:               {to: StateInvestigating, actors: actors(ActorController)},
 		EventExecutionIntentSubmitted: {to: StateValidating, actors: actors(ActorAgent)},
 		EventSkillLoaded:              {to: StateInvestigating, actors: actors(ActorAgent)},
 		EventSkillUnloaded:            {to: StateInvestigating, actors: actors(ActorAgent)},
@@ -121,6 +122,7 @@ var transitionRules = map[State]map[EventType]transitionRule{
 	// 存在需审批动作→awaiting_approval；被拒→回 investigating 重新决策；
 	// 确定性失败按 needs_agent/failed/escalated/blocked 四路分流。
 	StateValidating: {
+		EventRunResumed:              {to: StateInvestigating, actors: actors(ActorController)},
 		EventExecutionAuthorized:     {to: StateExecuting, actors: actors(ActorWorkflow)},
 		EventApprovalRequired:        {to: StateAwaitingApproval, actors: actors(ActorWorkflow)},
 		EventExecutionIntentRejected: {to: StateInvestigating, actors: actors(ActorWorkflow, ActorHuman)},
@@ -131,12 +133,14 @@ var transitionRules = map[State]map[EventType]transitionRule{
 	},
 	// awaiting_approval（等待审批）：只有人工能解锁——批准→executing，拒绝→investigating。
 	StateAwaitingApproval: {
+		EventRunResumed:              {to: StateInvestigating, actors: actors(ActorController)},
 		EventExecutionAuthorized:     {to: StateExecuting, actors: actors(ActorHuman)},
 		EventExecutionIntentRejected: {to: StateInvestigating, actors: actors(ActorHuman)},
 	},
 	// executing（受控执行中）：当前 Stage 执行完成必须先进 checkpoint 判定，
 	// 不允许直接跳到下一 Stage；执行期失败同样按四路分流。
 	StateExecuting: {
+		EventRunResumed:           {to: StateInvestigating, actors: actors(ActorController)},
 		EventStageCheckpoint:      {to: StateCheckpoint, actors: actors(ActorWorkflow)},
 		EventCheckpointNeedsAgent: {to: StateInvestigating, actors: actors(ActorWorkflow)},
 		EventCheckpointFailed:     {to: StateFailed, actors: actors(ActorWorkflow)},
@@ -147,6 +151,7 @@ var transitionRules = map[State]map[EventType]transitionRule{
 	//（下一 Stage 的 Action 要重新 Dry Run + 策略评估）；needs_agent→回 investigating；
 	// succeeded→resolved；failed/escalated/blocked→对应终态。
 	StateCheckpoint: {
+		EventRunResumed:           {to: StateInvestigating, actors: actors(ActorController)},
 		EventCheckpointContinue:   {to: StateValidating, actors: actors(ActorWorkflow)},
 		EventCheckpointNeedsAgent: {to: StateInvestigating, actors: actors(ActorWorkflow)},
 		EventCheckpointSucceeded:  {to: StateResolved, actors: actors(ActorWorkflow)},
@@ -239,7 +244,7 @@ func (w *IncidentWorkflow) applyLocked(event Event) (Transition, error) {
 		Failure: cloneStageFailurePointer(failure), At: w.now(),
 	}
 	w.state = to
-	if event.Type == EventCheckpointNeedsAgent {
+	if event.Type == EventCheckpointNeedsAgent || event.Type == EventRunResumed {
 		w.agentResumesUsed++
 	}
 	if failure != nil {

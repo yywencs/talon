@@ -8,6 +8,12 @@ import (
 )
 
 var sqliteSchema = []string{
+	`CREATE TABLE IF NOT EXISTS run_leases (
+ run_id TEXT PRIMARY KEY,
+ owner_id TEXT NOT NULL,
+ epoch INTEGER NOT NULL CHECK (epoch > 0),
+ lease_until_unix_ns INTEGER NOT NULL
+)`,
 	`CREATE TABLE IF NOT EXISTS run_checkpoints (
     run_id TEXT PRIMARY KEY,
     schema_version TEXT NOT NULL,
@@ -88,6 +94,12 @@ var sqliteSchema = []string{
 }
 
 var postgresSchema = []string{
+	`CREATE TABLE IF NOT EXISTS run_leases (
+ run_id TEXT PRIMARY KEY,
+ owner_id TEXT NOT NULL,
+ epoch BIGINT NOT NULL CHECK (epoch > 0),
+ lease_until_unix_ns BIGINT NOT NULL
+)`,
 	`CREATE TABLE IF NOT EXISTS run_checkpoints (
     run_id TEXT PRIMARY KEY,
     schema_version TEXT NOT NULL,

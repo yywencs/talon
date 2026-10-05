@@ -148,7 +148,7 @@ func NewToolOpsAgent(ctx context.Context, config Config) (*ToolOpsAgent, error) 
 	}
 	trackedModel := model.ToolCallingChatModel(&recordingModel{
 		next: config.Model, recorder: config.Artifact, prepare: agent.prepareModelInput,
-		maxCalls: maxModelCalls, calls: &modelCallCounter{},
+		maxCalls: maxModelCalls, calls: initialModelCallCounter(config.Artifact),
 	})
 	runner, err := react.NewAgent(ctx, &react.AgentConfig{
 		ToolCallingModel: trackedModel,

@@ -20,6 +20,13 @@ func (data Data) Validate() error {
 		return fmt.Errorf("checkpoint requires run identity, intent prefix and nonnegative usage")
 	}
 	switch data.Boundary {
+	case Progress:
+		if data.Workflow.State == workflow.StateAwaitingApproval {
+			return fmt.Errorf("waiting approvals require atomic approval checkpoint")
+		}
+		if _, err := workflow.Restore(data.Workflow); err != nil {
+			return err
+		}
 	case Created:
 		if data.Workflow.State != workflow.StateProtected || data.Workflow.ExecutionIntent != nil {
 			return fmt.Errorf("created checkpoint requires a protected workflow without an intent")

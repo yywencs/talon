@@ -88,7 +88,7 @@ func validateRestoreSnapshot(s Snapshot) error {
 			submissions = append(submissions, id)
 		case EventStageCheckpoint:
 			stages++
-		case EventCheckpointNeedsAgent:
+		case EventCheckpointNeedsAgent, EventRunResumed:
 			resumes++
 		case EventCheckpointContinue:
 			activeStage++
