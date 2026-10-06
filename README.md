@@ -218,3 +218,5 @@ make eval-baseline EVAL_JUDGE=1
 默认关闭 CozeLoop 上报，但可以显式传入 `COZELOOP_ENABLED=true`。产物写入
 `evaluation-data/<eval-version>-<dataset>-r<repeat>`，完整报告追加
 `-full-result.json`。输出路径必须不存在，流水线不会覆盖已有评测结果。
+
+独立 Simulator 服务、外部 Agent 启动与手动续跑：[本地 HTTP 使用与验收](docs/simulator-http.md)。

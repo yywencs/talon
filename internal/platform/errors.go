@@ -3,6 +3,9 @@ package platform
 import "errors"
 
 var (
+	ErrStaleEpoch          = errors.New("superseded run epoch")
+	ErrEnvironmentMismatch = errors.New("environment identity mismatch")
+	ErrOutcomeUnknown      = errors.New("request outcome unknown")
 	// ErrNotFound 表示请求的资源不存在。
 	ErrNotFound = errors.New("toolops resource not found")
 	// ErrUnauthorized 表示调用方没有执行该动作的权限。

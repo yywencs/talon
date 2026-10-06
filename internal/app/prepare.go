@@ -77,6 +77,8 @@ func prepareRun(cfg Config) (preparedRun, error) {
 	return preparedRun{config: cfg, scenario: item.Scenario, prompts: prompts, provenance: provenance, runConfig: runConfig}, nil
 }
 
+// normalizeProvenance uses a directory fallback for the embedded scenario path.
+// External entry points must supply and validate the authoritative dataset version first.
 func normalizeProvenance(value runmeta.Provenance, datasetRoot string) runmeta.Provenance {
 	value.CodeVersion = strings.TrimSpace(value.CodeVersion)
 	if value.CodeVersion == "" {

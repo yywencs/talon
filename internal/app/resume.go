@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/wen/opentalon/internal/agent"
@@ -76,27 +77,42 @@ func Resume(ctx context.Context, cfg ResumeConfig) (out ResumeResult, err error)
 	if service == nil {
 		return out, fmt.Errorf("connector returned no platform")
 	}
+	if reader, ok := cfg.Connector.(platform.EnvironmentMetadataReader); ok {
+		metadata, e := reader.EnvironmentMetadata(ctx)
+		if e != nil {
+			return out, e
+		}
+		if e = validateEnvironmentMetadata(metadata, saved.RunConfig.EnvironmentID, saved.Workflow.IncidentID, saved.Provenance.DatasetVersion); e != nil {
+			return out, e
+		}
+	}
 	reconcileCfg := controller.ReconcileConfig{Approvals: cfg.Storage.Approvals(), Executions: cfg.Storage.Executions(), Operations: service}
 	// Each successful pass commits one terminal operation; the finite action
 	// budget bounds this loop. No old action can be submitted by this path.
-	for pass := 0; pass <= saved.Workflow.ActionsAccepted; pass++ {
+	for pass := 0; pass <= 2*saved.Workflow.ActionsAccepted; pass++ {
 		r, reconcileErr := controller.ReconcileForResume(ctx, saved.Workflow, reconcileCfg)
 		if reconcileErr != nil {
 			return out, reconcileErr
 		}
 		out.Reconciliation = r
-		if r.Next != controller.ReconcileCommitExecution {
+		if r.Next != controller.ReconcileCommitExecution && r.Next != controller.ReconcileBindOperation {
 			break
 		}
 		op := r.Operations[len(r.Operations)-1]
 		var observed execution.Record
 		for _, record := range r.Executions {
-			if record.OperationID == op.ID {
+			if record.OperationID == op.ID || (r.Next == controller.ReconcileBindOperation && record.OperationID == "" && record.IdempotencyKey == op.IdempotencyKey) {
 				observed = record
 				break
 			}
 		}
-		if err := cfg.Storage.CommitObservedExecution(ctx, session.token, observed, op); err != nil {
+		var commitErr error
+		if r.Next == controller.ReconcileBindOperation {
+			commitErr = cfg.Storage.BindObservedOperation(ctx, session.token, observed, op)
+		} else {
+			commitErr = cfg.Storage.CommitObservedExecution(ctx, session.token, observed, op)
+		}
+		if err := commitErr; err != nil {
 			if errors.Is(err, execution.ErrNoClaimable) {
 				out.Waiting = true
 				out.Reason = "action observation changed or its lease is still active; retry reconciliation later"
@@ -145,12 +161,27 @@ func Resume(ctx context.Context, cfg ResumeConfig) (out ResumeResult, err error)
 
 // RunConnected starts a new resumable run against an existing environment. The
 // caller supplies its stable EnvironmentID in RunConfig and incident in ScenarioID.
+// Dataset provenance comes from EnvironmentMetadataReader when available; other
+// connectors must supply an explicit version. Local dataset paths never supply it.
 func RunConnected(ctx context.Context, cfg ConnectedConfig) (controller.IncidentRunResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if cfg.Storage == nil || cfg.Connector == nil || cfg.RunConfig.EnvironmentID == "" || cfg.ScenarioID == "" {
 		return controller.IncidentRunResult{}, fmt.Errorf("storage, connector, incident and environment identity required")
+	}
+	if reader, ok := cfg.Connector.(platform.EnvironmentMetadataReader); ok {
+		metadata, e := reader.EnvironmentMetadata(ctx)
+		if e != nil {
+			return controller.IncidentRunResult{}, e
+		}
+		if e = validateEnvironmentMetadata(metadata, cfg.RunConfig.EnvironmentID, cfg.ScenarioID, cfg.Provenance.DatasetVersion); e != nil {
+			return controller.IncidentRunResult{}, e
+		}
+		cfg.Provenance.DatasetVersion = metadata.DatasetVersion
+	}
+	if strings.TrimSpace(cfg.Provenance.DatasetVersion) == "" {
+		return controller.IncidentRunResult{}, fmt.Errorf("external environment dataset version required; local dataset path is not authoritative")
 	}
 	cfg.RunConfig.AgentMaxSteps = cfg.AgentMaxSteps
 	if cfg.RunConfig.AgentMaxSteps == 0 {
@@ -169,8 +200,13 @@ func RunConnected(ctx context.Context, cfg ConnectedConfig) (controller.Incident
 	}
 	cfg.Provenance.PromptDigest = prompts.Digest
 	cfg.Provenance.PromptVersion = prompts.Version
+	cfg.Provenance = normalizeProvenance(cfg.Provenance, cfg.DatasetRoot)
+	cfg.RunConfig.AutoApprove = false
 	recorder := runartifact.New(cfg.ScenarioID, cfg.Provenance, cfg.RunConfig)
 	cfg.RunConfig = recorder.Metadata().Config
+	if cfg.Output != nil {
+		fmt.Fprintf(cfg.Output, "[run] run_id=%s environment_id=%s\n", recorder.Metadata().RunID, cfg.RunConfig.EnvironmentID)
+	}
 	session, err := acquireRun(ctx, cfg.Storage, recorder.Metadata().RunID)
 	if err != nil {
 		return controller.IncidentRunResult{}, err
@@ -243,6 +279,7 @@ func runConnectedController(ctx context.Context, cfg ConnectedConfig, service pl
 		if err != nil || result.Reason != controller.StopAwaitingApproval || cfg.ApprovalPollInterval <= 0 {
 			return result, err
 		}
+		fmt.Fprintf(cfg.Output, "[waiting] run_id=%s environment_id=%s state=%s reason=%s\n", recorder.Metadata().RunID, cfg.RunConfig.EnvironmentID, flow.Snapshot().State, result.Reason)
 		for flow.Snapshot().State == workflow.StateAwaitingApproval {
 			timer := time.NewTimer(cfg.ApprovalPollInterval)
 			select {
@@ -269,4 +306,20 @@ func terminalReason(state workflow.State) (controller.StopReason, bool) {
 		return controller.StopEscalated, true
 	}
 	return "", false
+}
+
+func validateEnvironmentMetadata(m platform.EnvironmentMetadata, environment, incident, version string) error {
+	if m.EnvironmentID != environment {
+		return platform.ErrEnvironmentMismatch
+	}
+	if m.IncidentID != incident {
+		return platform.ErrConflict
+	}
+	if strings.TrimSpace(m.DatasetVersion) == "" {
+		return fmt.Errorf("external dataset version missing")
+	}
+	if version != "" && version != m.DatasetVersion {
+		return fmt.Errorf("%w: external dataset version %q disagrees with provenance %q", platform.ErrConflict, m.DatasetVersion, version)
+	}
+	return nil
 }

@@ -7,6 +7,7 @@
 /evaluation-data/
 /docs/*
 !/docs/sql/
+!/docs/simulator-http.md
 !/docs/issues/
 
 .DS_Store

@@ -353,7 +353,11 @@ func (w *World) validateRemediationArgumentsLocked(tool scenario.ToolDefinition,
 	if request.ExpectedVersion != "" && request.ExpectedVersion != w.activeConfigVersionLocked() {
 		return fmt.Errorf("%w: active config version changed", platform.ErrConflict)
 	}
-	if expected, ok := asInt(request.Arguments["expected_pool_generation"]); ok {
+	if raw, present := request.Arguments["expected_pool_generation"]; present {
+		expected, ok := asInt(raw)
+		if !ok {
+			return fmt.Errorf("%w: expected_pool_generation must be an in-range integer", platform.ErrPreconditionFailed)
+		}
 		providerID := asString(request.Arguments["provider_id"])
 		if connection, exists := w.connections[providerID]; !exists || connection.PoolGeneration != expected {
 			return fmt.Errorf("%w: connection pool generation changed", platform.ErrConflict)

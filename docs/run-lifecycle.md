@@ -1,6 +1,6 @@
 # 运行生命周期与持久化边界
 
-当前支持保存、重建、只读对账，以及面向独立外部环境的手动续跑 API；不包含网络适配器、Resume CLI 或后台自动接管调度。`run_checkpoints` 是最近一个已提交保存边界，不能当作当前实时状态或完整进程镜像。
+当前支持保存、重建、只读对账，以及面向独立外部环境的手动续跑 API；包含本地独立 Simulator HTTP 适配器和 run/resume CLI；不包含后台自动接管调度。`run_checkpoints` 是最近一个已提交保存边界，不能当作当前实时状态或完整进程镜像。
 
 ## 主调用链
 
@@ -103,7 +103,8 @@ app.Resume(run_id)
     平台已明确结束、执行表滞后  任务租约 + 记录条件更新提交结果
                               活动 Action 租约未过期时不抢占
     已确认成功或失败          补回结果；不执行旧阶段判定规则
-    缺少 Operation / 历史     返回 Waiting，不猜测
+    缺少 Operation ID         只读按原键找回；先按租约条件写入 ID
+    查不到 Operation / 缺历史 返回 Waiting，不猜测
   ResumeInvestigation：保留原计划、结果、预算，转 investigating
   保存 progress，保留原 run_id 并从原 revision 继续 CAS
   恢复审计和用量，构建新 Agent，要求读取当前证据
@@ -119,11 +120,11 @@ app.Resume(run_id)
 
 ### 接入方式
 
-调用方先实现 `platform.RunConnector`，把请求接到原来的独立 Simulator：
+独立 Simulator 已提供 `simulatorhttp.Client` 实现 `platform.RunConnector`，详见 [HTTP 服务与跨进程验收](simulator-http.md)：
 
 - `EnvironmentID` 是环境实例的稳定标识，不能只用可重复的场景名；服务端必须核对实例身份。
 - `ConnectRun` 在平台端原子激活对应 run 的 epoch，返回绑定该 epoch 的客户端。所有写接口在服务端检查 epoch；更旧 epoch 被拒绝。已接受的异步操作继续运行、仍可查询。
-- 服务端需持久化 epoch 和操作记录。只在客户端查一次数据库租约不足以实现该接口契约。本仓库没有外部 Simulator 的传输协议实现，不提供静默退回普通客户端的路径。
+- 服务端在当前环境实例内保存 epoch 和操作记录。第一版不恢复服务世界；每次服务重启更换 EnvironmentID 并拒绝旧身份。只在客户端查一次数据库租约不足以实现该接口契约，不提供静默退回普通客户端的路径。
 
 ```go
 connected := app.ConnectedConfig{
@@ -148,7 +149,7 @@ if result.Waiting {
 }
 ```
 
-设置正的 `ApprovalPollInterval`，同一进程会等待外部审批决定，随后推进当前计划；不会替人审批，也不会重新调查。设为零则在等待审批处返回。若选择退出再 Resume，将按恢复规则重新调查并产生新的审批需求；需要持续处理审批的部署应启用轮询，避免“每次审批后重启、每次重启又重新审批”。Simulator 的虚拟时钟始终由独立服务维护，应用入口不创建或重置它。
+设置正的 `ApprovalPollInterval`，同一进程会等待外部审批决定，随后推进当前计划；不会替人审批，也不会重新调查。设为零则在等待审批处返回。若选择退出再 Resume，将按恢复规则重新调查并产生新的审批需求；需要持续处理审批的部署应启用轮询，避免“每次审批后重启、每次重启又重新审批”。Simulator 的虚拟时钟始终由独立服务维护，应用入口不创建或重置它。外部新运行的数据集版本来自服务加载后的 Dataset.Version，保存到检查点及审计；本地 --dataset 不提供外部版本。Resume 保留原版本和身份，并核对服务元信息，缺失或冲突时拒绝续跑。
 
 模型用量从原审计和检查点恢复，以两者可确认的最大值为下限；新模型包装器从该值继续计数。进程在模型请求期间被杀死仍可能丢失未记账调用，这是现有尽力记账的边界，不是严格的跨进程调用额度预留。Prompt digest 存在时必须匹配当前加载内容。
 

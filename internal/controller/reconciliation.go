@@ -42,6 +42,7 @@ const (
 	ReconcileInspectFailure  ReconcileNext = "inspect_failure"
 	ReconcileQueryOperation  ReconcileNext = "query_operation"
 	ReconcileCommitExecution ReconcileNext = "commit_execution"
+	ReconcileBindOperation   ReconcileNext = "bind_operation"
 	ReconcileMoreHistory     ReconcileNext = "recover_more_history"
 )
 

@@ -1,7 +1,10 @@
 package simulator
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
 	"time"
 
 	"github.com/wen/opentalon/internal/platform"
@@ -390,45 +393,90 @@ func asString(value any) string {
 	return result
 }
 
+// asFloat is for continuous metrics only; integer preconditions use asInt64.
 func asFloat(value any) (float64, bool) {
-	switch typed := value.(type) {
+	var result float64
+	switch v := value.(type) {
+	case json.Number:
+		f, err := v.Float64()
+		if err != nil {
+			return 0, false
+		}
+		result = f
 	case float64:
-		return typed, true
+		result = v
 	case float32:
-		return float64(typed), true
+		result = float64(v)
+	default:
+		i, ok := asInt64(value)
+		if ok {
+			return float64(i), true
+		}
+		switch v := value.(type) {
+		case uint:
+			result = float64(v)
+		case uint64:
+			result = float64(v)
+		default:
+			return 0, false
+		}
+	}
+	return result, !math.IsNaN(result) && !math.IsInf(result, 0)
+}
+func asInt(value any) (int, bool) {
+	v, ok := asInt64(value)
+	if !ok {
+		return 0, false
+	}
+	if strconv.IntSize == 32 && (v < math.MinInt32 || v > math.MaxInt32) {
+		return 0, false
+	}
+	return int(v), true
+}
+
+// Integer literals are parsed directly, never through float64. Floats must
+// already be finite, integral and within the signed range; no truncation.
+func asInt64(value any) (int64, bool) {
+	switch v := value.(type) {
+	case json.Number:
+		i, err := v.Int64()
+		return i, err == nil
 	case int:
-		return float64(typed), true
+		return int64(v), true
 	case int8:
-		return float64(typed), true
+		return int64(v), true
 	case int16:
-		return float64(typed), true
+		return int64(v), true
 	case int32:
-		return float64(typed), true
+		return int64(v), true
 	case int64:
-		return float64(typed), true
+		return v, true
 	case uint:
-		return float64(typed), true
+		if uint64(v) > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(v), true
 	case uint8:
-		return float64(typed), true
+		return int64(v), true
 	case uint16:
-		return float64(typed), true
+		return int64(v), true
 	case uint32:
-		return float64(typed), true
+		return int64(v), true
 	case uint64:
-		return float64(typed), true
+		if v > math.MaxInt64 {
+			return 0, false
+		}
+		return int64(v), true
+	case float32:
+		return asInt64(float64(v))
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) || math.Trunc(v) != v || v < -0x1p63 || v >= 0x1p63 {
+			return 0, false
+		}
+		return int64(v), true
 	default:
 		return 0, false
 	}
-}
-
-func asInt(value any) (int, bool) {
-	result, ok := asFloat(value)
-	return int(result), ok
-}
-
-func asInt64(value any) (int64, bool) {
-	result, ok := asFloat(value)
-	return int64(result), ok
 }
 
 func asBool(value any) (bool, bool) {

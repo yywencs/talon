@@ -352,3 +352,72 @@ func TestConnectedRunWaitsForHumanApprovalWithoutReinvestigating(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, workflow.StateResolved, loaded.Workflow.Snapshot().State)
 }
+
+type keyResumePlatform struct {
+	resumePlatform
+	lookupErr error
+	keys      int
+}
+
+func (p *keyResumePlatform) GetOperationByKey(_ context.Context, q platform.OperationKeyQuery) (platform.Operation, error) {
+	p.keys++
+	if p.lookupErr != nil {
+		return platform.Operation{}, p.lookupErr
+	}
+	return p.operation, nil
+}
+func TestResumeRecoversMissingOperationIDWithLeaseProtection(t *testing.T) {
+	for _, mode := range []string{"running", "succeeded", "failed", "missing", "live", "mismatch"} {
+		t.Run(mode, func(t *testing.T) {
+			db, saved := externalResumeFixture(t)
+			op := submittedResumeAction(t, db, saved, platform.OperationSucceeded, true)
+			ctx := context.Background()
+			if mode != "live" {
+				_, err := db.Executions().MarkUnknown(ctx, workflow.ExecutableActions(saved.Workflow)[0].ID, "old-worker", "", "", "response lost", execution.PollSchedule{NextPollAt: time.Now(), OperationDeadline: time.Now().Add(time.Hour)})
+				require.NoError(t, err)
+			}
+			p := &keyResumePlatform{resumePlatform: resumePlatform{operation: op}}
+			if mode == "running" {
+				p.operation.Status = platform.OperationRunning
+			}
+			if mode == "failed" {
+				p.operation.Status = platform.OperationFailed
+			}
+			if mode == "missing" {
+				p.lookupErr = platform.ErrNotFound
+			}
+			if mode == "mismatch" {
+				p.operation.Name = "wrong"
+			}
+			calls := 0
+			cfg := resumeConfigFor(t, db, saved, p, func(flow *workflow.IncidentWorkflow, _ string) error {
+				calls++
+				require.Len(t, flow.Snapshot().ActionResults, 1)
+				_, err := flow.Apply(workflow.Event{Type: workflow.EventEscalated, Actor: workflow.ActorAgent, Reason: "fresh investigation"})
+				return err
+			})
+			out, err := Resume(ctx, cfg)
+			if mode == "mismatch" {
+				require.ErrorIs(t, err, controller.ErrReconcileConflict)
+				return
+			}
+			require.NoError(t, err)
+			require.Positive(t, p.keys)
+			records, err := db.Executions().ListIntent(ctx, saved.Workflow.ExecutionIntent.ID)
+			require.NoError(t, err)
+			if mode == "succeeded" || mode == "failed" {
+				require.False(t, out.Waiting)
+				require.Equal(t, 1, calls)
+				require.Equal(t, op.ID, records[0].OperationID)
+			} else {
+				require.True(t, out.Waiting)
+				require.Zero(t, calls)
+				if mode == "live" || mode == "missing" {
+					require.Empty(t, records[0].OperationID)
+				} else {
+					require.Equal(t, op.ID, records[0].OperationID)
+				}
+			}
+		})
+	}
+}

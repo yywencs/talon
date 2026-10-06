@@ -110,11 +110,36 @@ func ReconcileForResume(ctx context.Context, s workflow.Snapshot, cfg ReconcileC
 			default:
 				return nil, fmt.Errorf("%w: execution status", ErrReconcileConflict)
 			}
-			if record.OperationID == "" || cfg.Operations == nil {
+			if record.OperationID == "" {
+				reader, ok := cfg.Operations.(platform.OperationKeyReader)
+				if ok {
+					queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					op, lookupErr := reader.GetOperationByKey(queryCtx, platform.OperationKeyQuery{IncidentID: s.IncidentID, IdempotencyKey: record.IdempotencyKey})
+					cancel()
+					if lookupErr == nil {
+						intended := workflow.IntendedAction{ID: action.ActionID, Digest: action.Digest, ToolName: action.ToolName, Kind: action.Kind, Arguments: action.Arguments}
+						if op.ID == "" || validatePlatformOperation(op, s.IncidentID, intended, record.IdempotencyKey) != nil {
+							return nil, fmt.Errorf("%w: recovered operation identity", ErrReconcileConflict)
+						}
+						r.Operations = append(r.Operations, op)
+						r.Next = ReconcileBindOperation
+						r.Reason = "persist recovered operation ID before terminal reconciliation"
+						return r, nil
+					}
+					if ctx.Err() != nil {
+						return nil, ctx.Err()
+					}
+				}
 				r.Next = ReconcileQueryOperation
-				r.Reason = "original operation unavailable; do not resubmit"
+				r.Reason = "original operation not yet discoverable; request may remain in flight; do not resubmit"
 				return r, nil
 			}
+			if cfg.Operations == nil {
+				r.Next = ReconcileQueryOperation
+				r.Reason = "operation reader unavailable"
+				return r, nil
+			}
+
 			queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			op, err := cfg.Operations.GetOperation(queryCtx, platform.OperationQuery{IncidentID: s.IncidentID, OperationID: record.OperationID})
 			cancel()

@@ -64,9 +64,18 @@ func (p *ExecutionCoordinator) ExecuteNext(ctx context.Context) (execution.Recor
 		return claimed, fmt.Errorf("%w: claimed execution does not match frozen action", execution.ErrConflict)
 	}
 	if claimed.OperationDeadline != nil && !time.Now().UTC().Before(*claimed.OperationDeadline) {
-		return p.finishTimedOutAction(ctx, snapshot, claimed)
+		// A remote polling deadline cannot prove that the service operation stopped.
+		if _, remote := p.platform.(platform.OperationKeyReader); !remote {
+			return p.finishTimedOutAction(ctx, snapshot, claimed)
+		}
 	}
 
+	previouslySubmitted := false
+	for _, record := range records {
+		if record.ActionID == claimed.ActionID && (record.Status == execution.StatusRunning || record.Status == execution.StatusUnknown) {
+			previouslySubmitted = true
+		}
+	}
 	var operation platform.Operation
 	var callErr error
 	// 已记录 OperationID 时优先查询原操作，避免恢复或重试时重复提交平台请求。
@@ -76,14 +85,21 @@ func (p *ExecutionCoordinator) ExecuteNext(ctx context.Context) (execution.Recor
 			IncidentID: snapshot.IncidentID, OperationID: claimed.OperationID,
 		})
 		cancelQuery()
-		// Operation 索引暂时不可见时，使用原幂等键重新提交比生成新请求更安全。
-		// 符合 Platform 契约的实现会返回原 Operation，而不会再次产生副作用。
+		// For remote resumable platforms a missing read result is not evidence
+		// that acceptance never occurred. Never replay a write during polling.
 		if errors.Is(callErr, platform.ErrNotFound) {
-			operation, callErr = p.executeActionWithLease(ctx, snapshot.IncidentID, *action, claimed)
+			if reader, ok := p.platform.(platform.OperationKeyReader); ok {
+				operation, callErr = reader.GetOperationByKey(ctx, platform.OperationKeyQuery{IncidentID: snapshot.IncidentID, IdempotencyKey: claimed.IdempotencyKey})
+			} else {
+				operation, callErr = p.executeActionWithLease(ctx, snapshot.IncidentID, *action, claimed)
+			}
 		}
+	} else if reader, ok := p.platform.(platform.OperationKeyReader); ok && previouslySubmitted {
+		operation, callErr = reader.GetOperationByKey(ctx, platform.OperationKeyQuery{IncidentID: snapshot.IncidentID, IdempotencyKey: claimed.IdempotencyKey})
 	} else {
 		operation, callErr = p.executeActionWithLease(ctx, snapshot.IncidentID, *action, claimed)
 	}
+
 	// 即使上游请求已取消，也尽力把平台调用结果写回，避免副作用已发生而本地仍显示 running。
 	persistCtx, cancelPersist := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancelPersist()
@@ -246,6 +262,10 @@ func (p *ExecutionCoordinator) pollSchedule(claimed execution.Record) execution.
 	deadline := now.Add(p.operationTimeout)
 	if claimed.OperationDeadline != nil {
 		deadline = claimed.OperationDeadline.UTC()
+	}
+	// Continue read-only polling after the local deadline for independent services.
+	if _, remote := p.platform.(platform.OperationKeyReader); remote && !deadline.After(now) {
+		deadline = now.Add(p.pollMaximum)
 	}
 	interval := p.pollInitial
 	for attempt := 1; attempt < claimed.Attempt && interval < p.pollMaximum; attempt++ {

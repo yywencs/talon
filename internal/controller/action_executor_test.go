@@ -271,3 +271,36 @@ func fastAsyncExecutionConfig() AsyncExecutionConfig {
 		MaxPollInterval: 4 * time.Millisecond, OperationTimeout: time.Minute,
 	}
 }
+
+type lookupExecutionPlatform struct{ *idempotentExecutionPlatform }
+
+func (p *lookupExecutionPlatform) GetOperationByKey(ctx context.Context, q platform.OperationKeyQuery) (platform.Operation, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	op, ok := p.operations[q.IdempotencyKey]
+	if !ok {
+		return platform.Operation{}, platform.ErrNotFound
+	}
+	return op, nil
+}
+func TestRemoteOperationDeadlineDoesNotPermitReinvestigation(t *testing.T) {
+	service := executionPlatform("stuck_fix")
+	service.async = true
+	service.stayPending = true
+	processor, flow, db := executingProcessor(t, service, "worker", time.Second, []workflow.IntendedAction{{ToolName: "stuck_fix"}})
+	defer db.Close()
+	processor.platform = &lookupExecutionPlatform{service}
+	processor.operationTimeout = time.Millisecond
+	processor.pollMaximum = 5 * time.Millisecond
+	worker, e := NewActionWorker(processor, time.Millisecond)
+	require.NoError(t, e)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	e = worker.Run(ctx)
+	require.ErrorIs(t, e, context.DeadlineExceeded)
+	require.Equal(t, workflow.StateExecuting, flow.Snapshot().State)
+	require.Equal(t, 1, service.executeCalls)
+	records, e := db.Executions().ListIntent(context.Background(), flow.Snapshot().ExecutionIntent.ID)
+	require.NoError(t, e)
+	require.Equal(t, execution.StatusRunning, records[0].Status)
+}
