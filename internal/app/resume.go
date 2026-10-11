@@ -146,6 +146,9 @@ func Resume(ctx context.Context, cfg ResumeConfig) (out ResumeResult, err error)
 		return out, err
 	}
 	cfg.RunConfig = saved.RunConfig
+	if err := pinExperience(ctx, &cfg.Config, false); err != nil {
+		return out, err
+	}
 	cfg.Provenance = saved.Provenance
 	cfg.AgentMaxSteps = saved.RunConfig.AgentMaxSteps
 	checkpoints := &runCheckpointWriter{trackProgress: true, store: cfg.Storage.Checkpoints(), metadata: recorder.Metadata(), usage: recorder, revision: saved.Revision}
@@ -166,6 +169,9 @@ func Resume(ctx context.Context, cfg ResumeConfig) (out ResumeResult, err error)
 func RunConnected(ctx context.Context, cfg ConnectedConfig) (controller.IncidentRunResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if e := pinExperience(ctx, &cfg.Config, true); e != nil {
+		return controller.IncidentRunResult{}, e
 	}
 	if cfg.Storage == nil || cfg.Connector == nil || cfg.RunConfig.EnvironmentID == "" || cfg.ScenarioID == "" {
 		return controller.IncidentRunResult{}, fmt.Errorf("storage, connector, incident and environment identity required")

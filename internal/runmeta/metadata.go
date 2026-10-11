@@ -12,13 +12,15 @@ type Provenance struct {
 // Config records the inputs that can materially change Agent behavior.
 // Secrets and endpoints must never be stored here.
 type Config struct {
-	EnvironmentID  string `json:"environment_id,omitempty"`
-	ModelProvider  string `json:"model_provider,omitempty"`
-	Model          string `json:"model,omitempty"`
-	AgentMaxSteps  int    `json:"agent_max_steps"`
-	MaxModelCalls  int    `json:"max_model_calls"`
-	AutoApprove    bool   `json:"auto_approve"`
-	ContextVersion string `json:"context_version,omitempty"`
+	ExperienceRelease string `json:"experience_release,omitempty"`
+	ExperienceProfile string `json:"experience_profile,omitempty"`
+	EnvironmentID     string `json:"environment_id,omitempty"`
+	ModelProvider     string `json:"model_provider,omitempty"`
+	Model             string `json:"model,omitempty"`
+	AgentMaxSteps     int    `json:"agent_max_steps"`
+	MaxModelCalls     int    `json:"max_model_calls"`
+	AutoApprove       bool   `json:"auto_approve"`
+	ContextVersion    string `json:"context_version,omitempty"`
 }
 
 // Metadata is captured once after run initialization; it contains no audit history.

@@ -1,0 +1,208 @@
+{
+  "reviewed_by": "repository toolops-v2 mechanism matrix review (2026-10-09); development/regression only",
+  "cases": [
+    {
+      "id": "mapping-regression-rollback",
+      "dataset_root": "data/toolops-v2",
+      "scenario_id": "mapping-regression-rollback-001",
+      "lineage": "mapping-regression-rollback",
+      "symptoms": [
+        "error_rate"
+      ],
+      "context_tags": [
+        "config_changed"
+      ],
+      "cause_family": "mapping_regression",
+      "regression": true
+    },
+    {
+      "id": "credential-revoked-escalation",
+      "dataset_root": "data/toolops-v2",
+      "scenario_id": "credential-revoked-escalation-001",
+      "lineage": "credential-revoked-escalation",
+      "symptoms": [
+        "auth_error"
+      ],
+      "context_tags": [],
+      "cause_family": "credential_unavailable",
+      "regression": true
+    },
+    {
+      "id": "connection-recovery-two-cycles",
+      "dataset_root": "data/toolops-v2",
+      "scenario_id": "connection-recovery-two-cycles-001",
+      "lineage": "connection-recovery-two-cycles",
+      "symptoms": [
+        "timeout",
+        "connection_error"
+      ],
+      "context_tags": [],
+      "cause_family": "connection_staleness",
+      "regression": true
+    },
+    {
+      "id": "mapping-pool-rebuild",
+      "dataset_root": "data/toolops-v2",
+      "scenario_id": "mapping-pool-rebuild-001",
+      "lineage": "mapping-pool-rebuild",
+      "symptoms": [
+        "error_rate",
+        "connection_error"
+      ],
+      "context_tags": [
+        "config_changed"
+      ],
+      "cause_family": "mapping_regression",
+      "regression": false
+    },
+    {
+      "id": "credential-fallback-available",
+      "dataset_root": "data/toolops-v2",
+      "scenario_id": "credential-fallback-available-001",
+      "lineage": "credential-fallback-available",
+      "symptoms": [
+        "auth_error"
+      ],
+      "context_tags": [
+        "fallback_available"
+      ],
+      "cause_family": "credential_unavailable",
+      "regression": false
+    },
+    {
+      "id": "telemetry-missing-escalation",
+      "dataset_root": "data/toolops-v2",
+      "scenario_id": "telemetry-missing-escalation-001",
+      "lineage": "telemetry-missing-escalation",
+      "symptoms": [
+        "error_rate",
+        "missing_telemetry"
+      ],
+      "context_tags": [],
+      "cause_family": "telemetry_gap",
+      "regression": true
+    },
+    {
+      "id": "transient-timeout-recovery",
+      "dataset_root": "data/toolops-v2",
+      "scenario_id": "transient-timeout-recovery-001",
+      "lineage": "transient-timeout-recovery",
+      "symptoms": [
+        "timeout"
+      ],
+      "context_tags": [],
+      "cause_family": "transient_recovered",
+      "regression": true
+    },
+    {
+      "id": "auth-negative-cache-window",
+      "dataset_root": "data/toolops-v2",
+      "scenario_id": "auth-negative-cache-window-001",
+      "lineage": "auth-negative-cache-window",
+      "symptoms": [
+        "auth_error"
+      ],
+      "context_tags": [
+        "credential_rotated"
+      ],
+      "cause_family": "auth_cache_staleness",
+      "regression": false
+    },
+    {
+      "id": "misleading-auth-symptom",
+      "dataset_root": "data/toolops-v2",
+      "scenario_id": "misleading-auth-symptom-001",
+      "lineage": "misleading-auth-symptom",
+      "symptoms": [
+        "auth_error",
+        "error_rate"
+      ],
+      "context_tags": [
+        "config_changed"
+      ],
+      "cause_family": "mapping_regression",
+      "regression": false
+    },
+    {
+      "id": "connection-stale-sessions",
+      "dataset_root": "data/toolops-v2",
+      "scenario_id": "connection-stale-sessions-001",
+      "lineage": "connection-stale-sessions",
+      "symptoms": [
+        "timeout",
+        "connection_error"
+      ],
+      "context_tags": [],
+      "cause_family": "connection_staleness",
+      "regression": false
+    },
+    {
+      "id": "approval-gate-medium-risk",
+      "dataset_root": "data/toolops-v2",
+      "scenario_id": "approval-gate-medium-risk-001",
+      "lineage": "approval-gate-medium-risk",
+      "symptoms": [
+        "error_rate"
+      ],
+      "context_tags": [
+        "config_changed"
+      ],
+      "cause_family": "mapping_regression",
+      "regression": true
+    },
+    {
+      "id": "quota-exhausted-escalation",
+      "dataset_root": "data/toolops-v2",
+      "scenario_id": "quota-exhausted-escalation-001",
+      "lineage": "quota-exhausted-escalation",
+      "symptoms": [
+        "quota_error",
+        "error_rate"
+      ],
+      "context_tags": [],
+      "cause_family": "quota_exhausted",
+      "regression": true
+    },
+    {
+      "id": "stuck-operation-switch",
+      "dataset_root": "data/toolops-v2",
+      "scenario_id": "stuck-operation-switch-001",
+      "lineage": "stuck-operation-switch",
+      "symptoms": [
+        "connection_error",
+        "operation_timeout"
+      ],
+      "context_tags": [],
+      "cause_family": "operation_stall",
+      "regression": false
+    },
+    {
+      "id": "budget-exhausted-escalation",
+      "dataset_root": "data/toolops-v2",
+      "scenario_id": "budget-exhausted-escalation-001",
+      "lineage": "budget-exhausted-escalation",
+      "symptoms": [
+        "timeout",
+        "connection_error"
+      ],
+      "context_tags": [],
+      "cause_family": "persistent_connection_failure",
+      "regression": true
+    },
+    {
+      "id": "compound-mapping-connection",
+      "dataset_root": "data/toolops-v2",
+      "scenario_id": "compound-mapping-connection-001",
+      "lineage": "compound-mapping-connection",
+      "symptoms": [
+        "error_rate",
+        "connection_error"
+      ],
+      "context_tags": [
+        "config_changed"
+      ],
+      "cause_family": "compound_fault",
+      "regression": false
+    }
+  ]
+}

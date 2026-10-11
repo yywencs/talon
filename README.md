@@ -220,3 +220,10 @@ make eval-baseline EVAL_JUDGE=1
 `-full-result.json`。输出路径必须不存在，流水线不会覆盖已有评测结果。
 
 独立 Simulator 服务、外部 Agent 启动与手动续跑：[本地 HTTP 使用与验收](docs/simulator-http.md)。
+
+## 版本化诊断经验
+
+经验闭环支持离线候选提炼、证据审核、隔离 Simulator 批量验证、版本发布/回滚，
+以及 Qdrant 混合检索和 Agent 按需读取。配置、迁移、命令和验证边界见
+[经验系统操作说明](docs/experience/README.md)。入口为 `go run ./cmd/talon-experience`；
+在线通过 `EXPERIENCE_ENABLED=true` 启用，默认不改变已有运行。

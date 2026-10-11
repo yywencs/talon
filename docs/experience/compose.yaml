@@ -1,0 +1,10 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.17.0
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - talon-experience-qdrant:/qdrant/storage
+    restart: unless-stopped
+volumes:
+  talon-experience-qdrant:

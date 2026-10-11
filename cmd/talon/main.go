@@ -14,6 +14,7 @@ import (
 	"github.com/wen/opentalon/internal/app"
 	"github.com/wen/opentalon/internal/buildinfo"
 	"github.com/wen/opentalon/internal/config"
+	"github.com/wen/opentalon/internal/experience"
 	"github.com/wen/opentalon/internal/llm"
 	"github.com/wen/opentalon/internal/observability"
 	"github.com/wen/opentalon/internal/runmeta"
@@ -114,6 +115,12 @@ func run(arguments []string) error {
 		PromptDirectory: llmConfig.PromptsDir,
 		Provenance:      runmeta.Provenance{CodeVersion: buildinfo.AgentVersion},
 		RunConfig:       runmeta.Config{ModelProvider: llmConfig.Provider, Model: llmConfig.Model},
+	}
+	if os.Getenv("EXPERIENCE_ENABLED") == "true" {
+		cfg.Experiences, err = experience.ServiceFromEnv(database.Experiences())
+		if err != nil {
+			return err
+		}
 	}
 	if opts.simulatorURL != "" {
 		client, e := simulatorhttp.NewClient(opts.simulatorURL, opts.httpTimeout)

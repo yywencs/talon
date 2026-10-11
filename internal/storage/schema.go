@@ -205,10 +205,11 @@ END $$`,
 }
 
 func migrate(ctx context.Context, db *sql.DB, driver Driver) error {
-	statements := sqliteSchema
+	statements := append([]string(nil), sqliteSchema...)
 	if driver == DriverPostgres {
-		statements = postgresSchema
+		statements = append([]string(nil), postgresSchema...)
 	}
+	statements = append(statements, `CREATE TABLE IF NOT EXISTS experience_objects (kind TEXT NOT NULL, object_key TEXT NOT NULL, revision BIGINT NOT NULL CHECK(revision > 0), payload TEXT NOT NULL, PRIMARY KEY(kind, object_key))`)
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin storage migration: %w", err)

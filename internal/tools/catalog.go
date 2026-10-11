@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	einotool "github.com/cloudwego/eino/components/tool"
+	"github.com/wen/opentalon/internal/experience"
 	"github.com/wen/opentalon/internal/platform"
 	"github.com/wen/opentalon/internal/skill"
 	"github.com/wen/opentalon/internal/workflow"
@@ -22,6 +23,7 @@ type Set struct {
 }
 
 type options struct {
+	experiences  experience.Reader
 	workflow     *workflow.IncidentWorkflow
 	skillSession *skill.Session
 	evidence     EvidenceReader
@@ -148,6 +150,17 @@ func New(ctx context.Context, service platform.ToolOpsPlatform, incidentID strin
 	for _, item := range staticTools {
 		if err := set.add(ctx, item); err != nil {
 			return nil, err
+		}
+	}
+	if config.experiences != nil {
+		items, e := buildExperienceTools(config.experiences)
+		if e != nil {
+			return nil, e
+		}
+		for _, item := range items {
+			if e = set.add(ctx, item); e != nil {
+				return nil, e
+			}
 		}
 	}
 	if config.skillSession != nil {
@@ -332,7 +345,7 @@ func platformResponse[T any](data T, err error) response[T] {
 
 func agentActionForTool(name string) (workflow.AgentAction, bool) {
 	switch name {
-	case "get_evidence":
+	case "get_evidence", "search_experiences", "get_experience", "get_experience_evidence":
 		return workflow.AgentActionRecallEvidence, true
 	case "query_metrics", "query_logs", "query_traces", "get_services", "get_routes", "get_providers",
 		"get_config_versions", "get_change_records", "get_credential_metadata", "get_connection_metadata",

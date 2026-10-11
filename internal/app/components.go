@@ -45,7 +45,12 @@ func buildPlatformInvestigator(ctx context.Context, cfg Config, prompts agent.Pr
 			return nil, fmt.Errorf("create Skill session: %w", sessionErr)
 		}
 		printer.printf("[skill] catalog=%d active=0 max_active=%d\n", registry.Len(), skill.DefaultMaxActive)
+		reader, readErr := experienceReader(ctx, cfg)
+		if readErr != nil {
+			return nil, readErr
+		}
 		toolOpsAgent, buildErr := agent.NewToolOpsAgent(ctx, agent.Config{
+			Experiences: reader, ExperienceContext: cfg.DirectExperienceContext,
 			Model: cfg.Model, Platform: service, IncidentID: flow.Snapshot().IncidentID,
 			VirtualTime: clock,
 			Workflow:    flow, MaxSteps: cfg.AgentMaxSteps, MaxModelCalls: cfg.RunConfig.MaxModelCalls,

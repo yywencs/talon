@@ -9,6 +9,7 @@ import (
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/wen/opentalon/internal/controller"
+	"github.com/wen/opentalon/internal/experience"
 	"github.com/wen/opentalon/internal/observability"
 	"github.com/wen/opentalon/internal/platform"
 	"github.com/wen/opentalon/internal/runartifact"
@@ -22,20 +23,23 @@ const defaultScenarioID = "mapping-regression-rollback-001"
 
 // Config 定义一次独立、完整的 ToolOps 场景运行。
 type Config struct {
-	DatasetRoot         string
-	SkillDirectory      string
-	PromptDirectory     string
-	ScenarioID          string
-	Model               model.ToolCallingChatModel
-	InvestigatorFactory func(*workflow.IncidentWorkflow, platform.ToolOpsPlatform) (controller.Investigator, error)
-	Storage             *storage.Storage
-	Output              io.Writer
-	AutoApprove         bool
-	AgentMaxSteps       int
-	ClockPollInterval   time.Duration
-	WorkerRetryInterval time.Duration
-	Provenance          runmeta.Provenance
-	RunConfig           runmeta.Config
+	Experiences             *experience.Service
+	ExperienceValidation    bool
+	DirectExperienceContext string
+	DatasetRoot             string
+	SkillDirectory          string
+	PromptDirectory         string
+	ScenarioID              string
+	Model                   model.ToolCallingChatModel
+	InvestigatorFactory     func(*workflow.IncidentWorkflow, platform.ToolOpsPlatform) (controller.Investigator, error)
+	Storage                 *storage.Storage
+	Output                  io.Writer
+	AutoApprove             bool
+	AgentMaxSteps           int
+	ClockPollInterval       time.Duration
+	WorkerRetryInterval     time.Duration
+	Provenance              runmeta.Provenance
+	RunConfig               runmeta.Config
 }
 
 // Result 汇总一次场景运行的最终状态与完整机器可读审计轨迹。
@@ -50,6 +54,9 @@ type Result struct {
 func Run(ctx context.Context, cfg Config) (result Result, err error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if err = pinExperience(ctx, &cfg, true); err != nil {
+		return Result{}, err
 	}
 	prepared, err := prepareRun(cfg)
 	if err != nil {

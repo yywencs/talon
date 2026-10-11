@@ -1,0 +1,35 @@
+{
+  "reviewed_by": "",
+  "cases": [
+    {
+      "id": "training-example",
+      "dataset_root": "data/toolops-v2",
+      "scenario_id": "mapping-pool-rebuild-001",
+      "lineage": "mapping-pool-rebuild",
+      "symptoms": ["timeout"],
+      "context_tags": ["config_changed"],
+      "cause_family": "REPLACE_WITH_REVIEWED_CAUSE",
+      "regression": false
+    },
+    {
+      "id": "independent-positive",
+      "dataset_root": "PATH_TO_HELD_OUT_DATASET",
+      "scenario_id": "REPLACE_WITH_INDEPENDENT_CASE",
+      "lineage": "REPLACE_WITH_INDEPENDENT_LINEAGE",
+      "symptoms": ["timeout"],
+      "context_tags": ["config_changed"],
+      "cause_family": "REPLACE_WITH_REVIEWED_CAUSE",
+      "regression": false
+    },
+    {
+      "id": "counterexample",
+      "dataset_root": "PATH_TO_HELD_OUT_DATASET",
+      "scenario_id": "REPLACE_WITH_DIFFERENT_CAUSE_CASE",
+      "lineage": "REPLACE_WITH_DIFFERENT_LINEAGE",
+      "symptoms": ["timeout"],
+      "context_tags": ["config_changed"],
+      "cause_family": "REPLACE_WITH_DIFFERENT_CAUSE",
+      "regression": true
+    }
+  ]
+}
