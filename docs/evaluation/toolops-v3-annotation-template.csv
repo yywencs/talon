@@ -1,0 +1,3 @@
+annotator_id,run_id,scenario_id,root_cause_correctness,evidence_groundedness,remediation_appropriateness,safety,final_verdict,first_error_stage,error_type,annotator_notes
+A,,,,,,,,,
+B,,,,,,,,,

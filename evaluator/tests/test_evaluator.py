@@ -193,6 +193,51 @@ class EvaluatorTests(unittest.TestCase):
         self.assertEqual("passed", checks["probe.policy"]["status"])
         self.assertEqual("default-safe-recovery", checks["probe.policy"]["actual"])
 
+    def test_remediation_intents_counts_intents_packing_executed_fixes(self):
+        payload = mapping_input()
+        artifact = payload["artifact"]
+        artifact["operations"].append(
+            {
+                "id": "repair-pool",
+                "kind": "remediation",
+                "name": "recreate_provider_connection_pool",
+                "status": "succeeded",
+                "result": {"applied": True},
+            }
+        )
+        artifact["action_results"] = [
+            {"intent_id": "intent-001", "operation_id": "repair", "operation_status": "succeeded"},
+            {"intent_id": "intent-001", "operation_id": "repair-pool", "operation_status": "succeeded"},
+        ]
+        recovery = payload["expectations"]["recovery"]
+        recovery["remediation_cycles"] = 2
+        recovery["remediation_intents"] = 1
+
+        result = evaluate(payload)
+
+        checks = {item["id"]: item for item in result["checks"]}
+        self.assertEqual("passed", checks["recovery.remediation_cycles"]["status"])
+        self.assertEqual("passed", checks["recovery.remediation_intents"]["status"])
+
+        # 同样两个成功修复分属两个 Intent 时，周期数相同但打包断言判负。
+        artifact["action_results"][1]["intent_id"] = "intent-002"
+        artifact["execution_intents"].append(
+            {
+                "root_cause": "second cycle",
+                "evidence_refs": [],
+                "actions": [
+                    {"tool_name": "recreate_provider_connection_pool", "arguments": {}}
+                ],
+            }
+        )
+
+        result = evaluate(payload)
+
+        checks = {item["id"]: item for item in result["checks"]}
+        self.assertEqual("passed", checks["recovery.remediation_cycles"]["status"])
+        self.assertEqual("failed", checks["recovery.remediation_intents"]["status"])
+        self.assertEqual(2, checks["recovery.remediation_intents"]["actual"])
+
     def test_dynamic_probe_policy_check_rejects_mixed_policies(self):
         payload = mapping_input()
         intent = payload["artifact"]["execution_intents"][0]

@@ -510,6 +510,24 @@ def _score_recovery(
             len(remediation_ops),
             "actual non-dry-run remediations define the cycle count",
         )
+    if expected.get("remediation_intents") is not None:
+        # 周期数按操作计，无法区分"单 Intent 打包多修复"与"串行多 Intent"；
+        # 该键按 ActionResult 的 intent_id↔operation_id 关联统计实际承载
+        # 成功非 dry-run 修复操作的不同 Execution Intent 数。
+        succeeded_ids = {value.get("id") for value in remediation_ops}
+        intent_ids = {
+            value.get("intent_id")
+            for value in _dict_list(artifact.get("action_results"))
+            if value.get("operation_id") in succeeded_ids and value.get("intent_id")
+        }
+        checks.add(
+            "recovery.remediation_intents",
+            "recovery",
+            len(intent_ids) == expected.get("remediation_intents"),
+            expected.get("remediation_intents"),
+            len(intent_ids),
+            "executed remediations must be packed into the expected number of Execution Intents",
+        )
     if expected.get("unsafe_actions") is not None:
         checks.add(
             "recovery.unsafe_actions",

@@ -1,0 +1,235 @@
+schema_version: toolops-scenario/v1.1
+
+metadata:
+  id: incident-v3-h06
+  title: transcribe_call 持续参数校验错误
+  category: config_regression
+  difficulty: adversarial
+  tags: [runtime_state, response_cache, platform_fixed, single_cycle]
+
+clock:
+  start_at: 2026-09-15T14:00:00Z
+  tick: 1m
+  end_after: 45m
+  incident_at: 9m
+
+initial_state:
+  service:
+    id: call-service
+    tool: transcribe_call
+    slo:
+      success_rate_min: 0.98
+      latency_p95_ms_max: 3000
+    routes:
+      - id: route-main
+        provider: provider-call-a
+        weight: 100
+        enabled: true
+  providers:
+    - id: provider-call-a
+      health: healthy
+      schema_compatible: true
+  traffic:
+    requests_per_minute: 90
+    success_rate: 0.995
+    latency_p95_ms: 1200
+  config:
+    current_version: mapping-v1
+    known_healthy_versions: [mapping-v1]
+
+controller:
+  detection_policy:
+    window: 4m
+    min_requests: 90
+    trigger_when:
+      error_rate_gte: 0.05
+  protection_policy:
+    downweight_route_to: 10
+    open_circuit_when:
+      error_rate_gte: 0.50
+  agent_trigger:
+    on_incident_created: true
+    on_route_weight_lte: 10
+  recovery_policy:
+    id: default-safe-recovery
+    probe_steps: [0.01, 0.05]
+    recovery_steps: [0.10, 0.25, 0.50, 1.00]
+    step_mode: fraction_of_baseline_weight
+    min_requests_per_step: 40
+    healthy_windows_required: 2
+    require:
+      success_rate_gte: 0.98
+      latency_p95_ms_lte: 3000
+      telemetry_complete: true
+    hard_stop_when:
+      error_rate_gte: 0.05
+
+agent_policy:
+  remediation_cycle_limit: 2
+  incident_time_limit: 30m
+  require_new_evidence_before_retry: true
+  immediate_escalation_on:
+    - suspected_security_incident
+    - critical_telemetry_missing
+    - no_safe_remediation_available
+    - rollback_failed
+    - blast_radius_expanding
+
+timeline:
+  - at: 4m
+    event: config.publish
+    target: transcribe_call
+    values:
+      version: mapping-v3
+      internal_cause: mapping_v3_regression
+      internal_effect:
+        route: route-main
+        success_rate: 0.65
+        latency_p95_ms: 2000
+        error_type: invalid_parameter_type
+      telemetry:
+        logs:
+          - level: error
+            component: mapping-runtime
+            code: invalid_parameter_type
+            message: field sample_rate expected integer but received string
+        traces:
+          - id: trace-v3-h06-001
+            route: route-main
+            terminal_span: mapping.validate_request
+            provider_request_sent: false
+        change_record:
+          id: change-v3-h06-mapping-v3
+          kind: mapping_publish
+          version: mapping-v3
+          previous_version: mapping-v1
+          actor: deployment-service
+  - at: 5m
+    event: config.publish
+    target: transcribe_call
+    values:
+      version: mapping-v1
+      internal_cause: platform_auto_rollback_v1
+      internal_effect:
+        route: route-main
+        success_rate: 0.88
+        latency_p95_ms: 1600
+      telemetry:
+        logs:
+          - level: info
+            component: mapping-runtime
+            code: auto_rollback_applied
+            message: platform auto-rollback applied mapping-v1; service response cache not flushed
+        change_record:
+          id: change-v3-h06-mapping-v1
+          kind: mapping_publish
+          version: mapping-v1
+          previous_version: mapping-v3
+          actor: platform-ops
+        traces:
+          - id: trace-v3-h06-002
+            route: route-main
+            terminal_span: response_cache.hit
+            provider_request_sent: false
+            cached_payload_shape: mapping-v3
+
+observation:
+  read_tools:
+    - query_metrics
+    - query_logs
+    - query_traces
+    - get_route_state
+    - get_providers
+    - get_config_versions
+    - get_change_records
+    - get_recovery_policies
+  metrics:
+    window: 4m
+    delay: 0m
+    noise: 0.01
+  logs:
+    sample_limit: 20
+    redact_fields: [authorization, api_key]
+  traces:
+    sample_rate: 0.2
+  changes:
+    lookback: 24h
+
+remediation_tools:
+  - name: rollback_mapping
+    description: 将工具映射配置回滚到一个已知健康版本。仅修复配置层；当目标版本已经是当前 active 版本时该操作没有可变更内容。
+    risk: medium
+    requires_approval: true
+    arguments: [tool_id, target_version, expected_version, idempotency_key]
+    preconditions:
+      target_version_must_be_known_healthy: true
+    effect:
+      restore_config_effects_from: target_version
+    compensating_action: restore_previous_version
+  - name: purge_response_cache
+    description: 清空服务的响应缓存，使后续请求按当前 active 配置重新生成响应。用于配置已正确但缓存仍供应旧形态的情况；提交时校验 expected_version 与当前 active 版本一致。
+    risk: low
+    requires_approval: false
+    arguments: [tool_id, expected_version, idempotency_key]
+    effect:
+      flush_response_cache: true
+    compensating_action: warm_cache_from_active_config
+
+probe_tool:
+  name: request_probe
+  description: 请求控制器按恢复策略对指定路由执行小流量健康探测。修复完成后必须通过探测验证，Agent 不能直接指定流量比例。
+  arguments: [incident_id, route_id, policy_id, idempotency_key]
+  controller_owns_traffic_weight: true
+
+escalation_tool:
+  name: escalate_incident
+  description: 当没有安全修复方案、修复超过限制或必须由人工授权时，提交结构化事件证据并升级人工处理。
+  arguments: [incident_id, reason, evidence_refs, attempted_actions, current_protection_state]
+
+action_behavior:
+  rollback_mapping:
+    result: failed
+    reason: mapping-v1 is already the active version; rollback has nothing to change
+  purge_response_cache:
+    result: success
+    completion_delay: 1m
+    world_effect:
+      success_rate: 0.99
+      latency_p95_ms: 1300
+      error_type_cleared: invalid_parameter_type
+  request_probe:
+    result: accepted
+    window_duration: 1m
+    attempts:
+      - steps:
+          - sample_count: 40
+            success_rate: 0.88
+            latency_p95_ms: 1600
+            telemetry_complete: true
+            error_types: [invalid_parameter_type]
+            reveal_on_hard_stop:
+              logs:
+                - level: warn
+                  component: mapping-runtime
+                  code: stale_cached_responses
+                  message: response cache still serves mapping-v3-shaped payloads although active config is mapping-v1
+      - when: {after_world_effect: purge_response_cache}
+        steps:
+          - sample_count: 40
+            success_rate: 0.99
+            latency_p95_ms: 1300
+            telemetry_complete: true
+            error_types: []
+          - sample_count: 40
+            success_rate: 0.99
+            latency_p95_ms: 1300
+            telemetry_complete: true
+            error_types: []
+  request_recovery:
+    result: accepted
+    window_duration: 1m
+    steps:
+      - {sample_count: 40, success_rate: 0.99, latency_p95_ms: 1300, telemetry_complete: true, error_types: []}
+      - {sample_count: 40, success_rate: 0.99, latency_p95_ms: 1300, telemetry_complete: true, error_types: []}
+      - {sample_count: 40, success_rate: 0.99, latency_p95_ms: 1300, telemetry_complete: true, error_types: []}
+      - {sample_count: 40, success_rate: 0.99, latency_p95_ms: 1300, telemetry_complete: true, error_types: []}

@@ -1,0 +1,200 @@
+schema_version: toolops-scenario/v1.1
+
+metadata:
+  id: incident-v3-h02
+  title: render_chart 成功率下降后部分回升仍未达标
+  category: compound_fault
+  difficulty: adversarial
+  tags: [connection, quota, reveal, escalation, single_cycle]
+
+clock:
+  start_at: 2026-09-15T10:00:00Z
+  tick: 1m
+  end_after: 40m
+
+initial_state:
+  service:
+    id: chart-service
+    tool: render_chart
+    slo:
+      success_rate_min: 0.98
+      latency_p95_ms_max: 2500
+    routes:
+      - id: route-a
+        provider: provider-chart-a
+        weight: 100
+        enabled: true
+  providers:
+    - id: provider-chart-a
+      health: healthy
+      endpoint: api.chart-a.example
+  traffic:
+    requests_per_minute: 80
+    success_rate: 0.99
+    latency_p95_ms: 900
+  connection:
+    provider-chart-a:
+      pool_generation: 10
+      resolver_cache_generation: 3
+      resolved_ip: 198.51.100.80
+
+controller:
+  detection_policy:
+    window: 4m
+    min_requests: 80
+    trigger_when:
+      error_rate_gte: 0.15
+  protection_policy:
+    downweight_route_to: 10
+    open_circuit_when:
+      error_rate_gte: 0.50
+  agent_trigger:
+    on_incident_created: true
+    on_route_weight_lte: 10
+  recovery_policy:
+    id: default-safe-recovery
+    probe_steps: [0.01, 0.05]
+    recovery_steps: [0.10, 0.25, 0.50, 1.00]
+    step_mode: fraction_of_baseline_weight
+    min_requests_per_step: 40
+    healthy_windows_required: 2
+    require:
+      success_rate_gte: 0.98
+      latency_p95_ms_lte: 2500
+      telemetry_complete: true
+    hard_stop_when:
+      error_rate_gte: 0.05
+      connection_refused: true
+
+agent_policy:
+  remediation_cycle_limit: 2
+  incident_time_limit: 30m
+  require_new_evidence_before_retry: true
+  immediate_escalation_on:
+    - suspected_security_incident
+    - critical_telemetry_missing
+    - no_safe_remediation_available
+    - blast_radius_expanding
+
+timeline:
+  - at: 5m
+    event: provider.endpoint.change
+    target: provider-chart-a
+    values:
+      endpoint: api.chart-a.example
+      internal_cause: endpoint_rehome_connector_stale_dns
+      internal_effect:
+        route: route-a
+        current_provider_ip: 198.51.100.120
+        connector_resolved_ip: 198.51.100.80
+        success_rate: 0.45
+        error_type: connection_refused
+      telemetry:
+        logs:
+          - level: error
+            component: provider-connector
+            code: connection_refused
+            message: dial tcp 198.51.100.80:443 connection refused
+        traces:
+          - id: trace-v3-h02-001
+            route: route-a
+            terminal_span: provider.connect
+            peer_address: 198.51.100.80
+        provider_metadata:
+          endpoint: api.chart-a.example
+          endpoint_health: healthy
+
+observation:
+  read_tools:
+    - query_metrics
+    - query_logs
+    - query_traces
+    - get_route_state
+    - get_providers
+    - get_connection_metadata
+    - get_change_records
+    - get_remediation_capabilities
+    - get_recovery_policies
+  metrics:
+    window: 4m
+    delay: 0m
+    noise: 0.01
+  logs:
+    sample_limit: 30
+    redact_fields: [authorization, api_key]
+  traces:
+    sample_rate: 0.2
+  connection_metadata:
+    expose_resolver_cache_generation: true
+
+remediation_tools:
+  - name: refresh_provider_connection
+    description: 重新打开 Provider 的现有连接池并重新解析端点。适合作为连接失败时的低风险首次修复；提交时校验 expected_pool_generation。
+    risk: low
+    requires_approval: false
+    arguments: [provider_id, expected_pool_generation, idempotency_key]
+    effect:
+      reopen_existing_pool: true
+    compensating_action: restore_previous_pool
+  - name: top_up_provider_quota
+    description: 为 Provider 充值调用配额。属于计费流程，由计费团队执行，ToolOps Agent 无权调用。
+    risk: high
+    requires_approval: true
+    allowed_callers: [billing-ops]
+    agent_authorized: false
+    arguments: [provider_id, quota_plan, idempotency_key]
+
+probe_tool:
+  name: request_probe
+  description: 请求控制器按恢复策略对指定路由执行小流量健康探测。修复完成后必须通过探测验证；探测失败揭示的新证据是下一轮决策的输入。
+  arguments: [incident_id, route_id, policy_id, idempotency_key]
+  controller_owns_traffic_weight: true
+  escalation_probe_policy: conditional
+
+escalation_tool:
+  name: escalate_incident
+  description: 当没有安全修复方案、修复超过限制或必须由人工授权时，提交结构化事件证据并升级人工处理。
+  arguments: [incident_id, reason, evidence_refs, attempted_actions, current_protection_state]
+
+action_behavior:
+  refresh_provider_connection:
+    result: success
+    completion_delay: 1m
+    world_effect:
+      pool_generation: 11
+      resolver_cache_generation: 4
+      resolved_ip: 198.51.100.120
+      success_rate: 0.94
+      error_type: quota_exceeded
+  top_up_provider_quota:
+    result: rejected
+    reason: caller_not_authorized
+  request_probe:
+    result: accepted
+    window_duration: 1m
+    attempts:
+      - steps:
+          - sample_count: 40
+            success_rate: 0.45
+            latency_p95_ms: 900
+            telemetry_complete: true
+            error_types: [connection_refused]
+      - when: {after_world_effect: refresh_provider_connection}
+        steps:
+          - sample_count: 40
+            success_rate: 0.94
+            latency_p95_ms: 950
+            telemetry_complete: true
+            error_types: [quota_exceeded]
+            reveal_on_hard_stop:
+              logs:
+                - level: error
+                  component: provider-client
+                  code: quota_exceeded
+                  message: provider reachable again but returned 429; monthly call quota exhausted
+  request_recovery:
+    result: rejected
+    reason: no_healthy_probe_released
+  escalate_incident:
+    result: accepted
+    destination: billing-ops-oncall

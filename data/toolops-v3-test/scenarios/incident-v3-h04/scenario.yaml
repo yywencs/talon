@@ -1,0 +1,198 @@
+schema_version: toolops-scenario/v1.1
+
+metadata:
+  id: incident-v3-h04
+  title: detect_language 连接类错误率异常升高
+  category: local_runtime_fault
+  difficulty: intermediate
+  tags: [misleading_log, trace_reconciliation, local_component]
+
+clock:
+  start_at: 2026-09-15T12:00:00Z
+  tick: 1m
+  end_after: 35m
+
+initial_state:
+  service:
+    id: lang-service
+    tool: detect_language
+    slo:
+      success_rate_min: 0.98
+      latency_p95_ms_max: 2000
+    routes:
+      - id: route-main
+        provider: provider-lang-a
+        weight: 100
+        enabled: true
+  providers:
+    - id: provider-lang-a
+      health: healthy
+      endpoint: api.lang-a.example
+  traffic:
+    requests_per_minute: 80
+    success_rate: 0.99
+    latency_p95_ms: 700
+  connection:
+    provider-lang-a:
+      pool_generation: 7
+      resolver_cache_generation: 2
+      resolved_ip: 203.0.113.20
+
+controller:
+  detection_policy:
+    window: 4m
+    min_requests: 80
+    trigger_when:
+      error_rate_gte: 0.15
+  protection_policy:
+    downweight_route_to: 10
+    open_circuit_when:
+      error_rate_gte: 0.50
+  agent_trigger:
+    on_incident_created: true
+    on_route_weight_lte: 10
+  recovery_policy:
+    id: default-safe-recovery
+    probe_steps: [0.01]
+    recovery_steps: [1.00]
+    step_mode: fraction_of_baseline_weight
+    min_requests_per_step: 40
+    healthy_windows_required: 2
+    require:
+      success_rate_gte: 0.98
+      latency_p95_ms_lte: 2000
+      telemetry_complete: true
+    hard_stop_when:
+      error_rate_gte: 0.05
+      connection_refused: true
+
+agent_policy:
+  remediation_cycle_limit: 1
+  incident_time_limit: 25m
+  require_new_evidence_before_retry: true
+  immediate_escalation_on:
+    - suspected_security_incident
+    - critical_telemetry_missing
+    - no_safe_remediation_available
+    - blast_radius_expanding
+
+timeline:
+  - at: 5m
+    event: provider.endpoint.change
+    target: provider-lang-a
+    values:
+      endpoint: api.lang-a.example
+      internal_cause: local_payload_encoder_regression
+      internal_effect:
+        route: route-main
+        success_rate: 0.50
+        error_type: connection_refused
+      telemetry:
+        logs:
+          - level: error
+            component: provider-client
+            code: connection_refused
+            message: dial tcp 203.0.113.20:443 connection refused
+        traces:
+          - id: trace-v3-h04-001
+            route: route-main
+            terminal_span: client.payload_encoder
+            provider_request_sent: false
+        provider_metadata:
+          endpoint: api.lang-a.example
+          endpoint_health: healthy
+
+observation:
+  read_tools:
+    - query_metrics
+    - query_logs
+    - query_traces
+    - get_route_state
+    - get_providers
+    - get_connection_metadata
+    - get_change_records
+    - get_recovery_policies
+  metrics:
+    window: 4m
+    delay: 0m
+    noise: 0.01
+  logs:
+    sample_limit: 20
+    redact_fields: [authorization, api_key]
+  traces:
+    sample_rate: 0.2
+  connection_metadata:
+    expose_resolver_cache_generation: true
+
+remediation_tools:
+  - name: reload_payload_encoder
+    description: 重新加载服务本地的载荷编码器工作进程。用于本地编码组件故障；不触碰 Provider 连接层。
+    risk: low
+    requires_approval: false
+    arguments: [tool_id, idempotency_key]
+    effect:
+      reload_local_encoder_workers: true
+    compensating_action: restore_previous_workers
+  - name: recreate_provider_connection_pool
+    description: 重建 Provider 连接池并清理进程内 DNS 缓存。属于较高影响的连接层操作；Trace 或连接元数据证明请求从未到达连接层时不得使用。
+    risk: medium
+    requires_approval: true
+    arguments: [provider_id, expected_pool_generation, idempotency_key]
+    effect:
+      create_new_pool: true
+      clear_process_dns_cache: true
+    compensating_action: restore_previous_pool
+
+probe_tool:
+  name: request_probe
+  description: 请求控制器按恢复策略对指定路由执行小流量健康探测。修复完成后必须通过探测验证，Agent 不能直接指定流量比例。
+  arguments: [incident_id, route_id, policy_id, idempotency_key]
+  controller_owns_traffic_weight: true
+
+escalation_tool:
+  name: escalate_incident
+  description: 当没有安全修复方案、修复超过限制或必须由人工授权时，提交结构化事件证据并升级人工处理。
+  arguments: [incident_id, reason, evidence_refs, attempted_actions, current_protection_state]
+
+action_behavior:
+  reload_payload_encoder:
+    result: success
+    completion_delay: 1m
+    world_effect:
+      success_rate: 0.99
+      latency_p95_ms: 720
+      error_type_cleared: connection_refused
+  recreate_provider_connection_pool:
+    result: success
+    completion_delay: 2m
+    world_effect:
+      pool_generation: 8
+      resolver_cache_generation: 3
+      resolved_ip: 203.0.113.20
+  request_probe:
+    result: accepted
+    window_duration: 1m
+    attempts:
+      - steps:
+          - sample_count: 40
+            success_rate: 0.50
+            latency_p95_ms: 700
+            telemetry_complete: true
+            error_types: [connection_refused]
+      - when: {after_world_effect: reload_payload_encoder}
+        steps:
+          - sample_count: 40
+            success_rate: 0.99
+            latency_p95_ms: 720
+            telemetry_complete: true
+            error_types: []
+          - sample_count: 40
+            success_rate: 0.99
+            latency_p95_ms: 720
+            telemetry_complete: true
+            error_types: []
+  request_recovery:
+    result: accepted
+    window_duration: 1m
+    steps:
+      - {sample_count: 40, success_rate: 0.99, latency_p95_ms: 720, telemetry_complete: true, error_types: []}

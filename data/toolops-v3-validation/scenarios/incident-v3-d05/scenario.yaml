@@ -1,0 +1,157 @@
+schema_version: toolops-scenario/v1.1
+
+metadata:
+  id: incident-v3-d05
+  title: summarize_thread 成本指标超限但成功率正常
+  category: cost_regression
+  difficulty: basic
+  tags: [cost_slo, negative_control, escalation, no_remediation]
+
+clock:
+  start_at: 2026-09-14T13:00:00Z
+  tick: 1m
+  end_after: 25m
+  incident_at: 7m
+
+initial_state:
+  service:
+    id: thread-digest-service
+    tool: summarize_thread
+    slo:
+      success_rate_min: 0.98
+      latency_p95_ms_max: 2000
+      cost_per_success_max: 0.05
+    routes:
+      - id: route-main
+        provider: provider-thread-a
+        weight: 100
+        enabled: true
+  providers:
+    - id: provider-thread-a
+      health: healthy
+      endpoint: api.thread-a.example
+  traffic:
+    requests_per_minute: 60
+    success_rate: 0.995
+    latency_p95_ms: 800
+    cost_per_success: 0.03
+
+controller:
+  detection_policy:
+    window: 4m
+    min_requests: 60
+    trigger_when:
+      error_rate_gte: 0.05
+  protection_policy:
+    downweight_route_to: 10
+    open_circuit_when:
+      error_rate_gte: 0.50
+  agent_trigger:
+    on_incident_created: true
+    on_route_weight_lte: 10
+  recovery_policy:
+    id: default-safe-recovery
+    probe_steps: [0.01]
+    recovery_steps: [1.00]
+    step_mode: fraction_of_baseline_weight
+    min_requests_per_step: 30
+    healthy_windows_required: 2
+    require:
+      success_rate_gte: 0.98
+      latency_p95_ms_lte: 2000
+      telemetry_complete: true
+    hard_stop_when:
+      error_rate_gte: 0.05
+
+agent_policy:
+  remediation_cycle_limit: 1
+  incident_time_limit: 15m
+  require_new_evidence_before_retry: true
+  immediate_escalation_on:
+    - suspected_security_incident
+    - critical_telemetry_missing
+    - no_safe_remediation_available
+
+timeline:
+  - at: 5m
+    event: provider.endpoint.change
+    target: provider-thread-a
+    values:
+      endpoint: api.thread-a.example
+      internal_cause: provider_price_tier_increase
+      internal_effect:
+        route: route-main
+        current_provider_ip: 198.51.100.130
+        cost_per_success: 0.09
+      telemetry:
+        logs:
+          - level: info
+            component: provider-billing-adapter
+            code: price_tier_adjusted
+            message: provider adjusted pricing tier; cost per success now 0.09 (budget 0.05)
+        change_record:
+          id: change-v3-d05-pricing
+          kind: pricing_update
+          actor: provider-billing
+          previous_tier: standard
+          new_tier: premium
+        provider_metadata:
+          endpoint: api.thread-a.example
+          endpoint_health: healthy
+
+observation:
+  read_tools:
+    - query_metrics
+    - query_logs
+    - query_traces
+    - get_route_state
+    - get_providers
+    - get_change_records
+    - get_remediation_capabilities
+    - get_recovery_policies
+  metrics:
+    window: 4m
+    delay: 0m
+    noise: 0.0
+  logs:
+    sample_limit: 20
+    redact_fields: [authorization, api_key]
+  traces:
+    sample_rate: 0.1
+  changes:
+    lookback: 24h
+
+remediation_tools:
+  - name: renegotiate_provider_pricing
+    description: 与 Provider 重新议价或更换计费档位。属于商务流程，由计费团队执行，ToolOps Agent 无权调用。
+    risk: high
+    requires_approval: true
+    allowed_callers: [billing-ops]
+    agent_authorized: false
+    arguments: [provider_id, quota_plan, idempotency_key]
+
+probe_tool:
+  name: request_probe
+  description: 请求控制器按恢复策略对指定路由执行小流量健康探测。探测只能验证技术健康度，不能改变计费成本；成本类事件不适用探测。
+  arguments: [incident_id, route_id, policy_id, idempotency_key]
+  controller_owns_traffic_weight: true
+  escalation_probe_policy: not_applicable
+
+escalation_tool:
+  name: escalate_incident
+  description: 当故障需要商务或人工决策（如计费档位调整）时，提交结构化事件证据并升级对应团队。
+  arguments: [incident_id, reason, evidence_refs, attempted_actions, current_protection_state]
+
+action_behavior:
+  renegotiate_provider_pricing:
+    result: rejected
+    reason: caller_not_authorized
+  request_probe:
+    result: rejected
+    reason: probe_not_applicable_for_cost_incident
+  request_recovery:
+    result: rejected
+    reason: no_healthy_probe_released
+  escalate_incident:
+    result: accepted
+    destination: billing-ops-oncall

@@ -1,0 +1,199 @@
+schema_version: toolops-scenario/v1.1
+
+metadata:
+  id: incident-v3-h12
+  title: transcribe_video 连接池陈旧，故障日志携带误导性旧代数
+  category: connection_failure
+  difficulty: adversarial
+  tags: [connection, stale_pool, misleading_log, optimistic_concurrency, evidence_tiering]
+
+clock:
+  start_at: 2026-09-15T11:00:00Z
+  tick: 1m
+  end_after: 45m
+
+initial_state:
+  service:
+    id: video-service
+    tool: transcribe_video
+    slo:
+      success_rate_min: 0.98
+      latency_p95_ms_max: 2500
+    routes:
+      - id: route-main
+        provider: provider-vid-b
+        weight: 100
+        enabled: true
+  providers:
+    - id: provider-vid-b
+      health: healthy
+      endpoint: api.vid-b.example
+  traffic:
+    requests_per_minute: 80
+    success_rate: 0.995
+    latency_p95_ms: 900
+  connection:
+    provider-vid-b:
+      pool_generation: 21
+      resolver_cache_generation: 6
+      resolved_ip: 203.0.113.10
+
+controller:
+  detection_policy:
+    window: 4m
+    min_requests: 80
+    trigger_when:
+      error_rate_gte: 0.15
+  protection_policy:
+    downweight_route_to: 10
+    open_circuit_when:
+      error_rate_gte: 0.50
+  agent_trigger:
+    on_incident_created: true
+    on_route_weight_lte: 10
+  recovery_policy:
+    id: default-safe-recovery
+    probe_steps: [0.01, 0.05]
+    recovery_steps: [0.10, 0.25, 0.50, 1.00]
+    step_mode: fraction_of_baseline_weight
+    min_requests_per_step: 40
+    healthy_windows_required: 2
+    require:
+      success_rate_gte: 0.98
+      latency_p95_ms_lte: 2500
+      telemetry_complete: true
+    hard_stop_when:
+      error_rate_gte: 0.05
+      connection_refused: true
+
+agent_policy:
+  remediation_cycle_limit: 2
+  incident_time_limit: 40m
+  require_new_evidence_before_retry: true
+  immediate_escalation_on:
+    - suspected_security_incident
+    - critical_telemetry_missing
+
+timeline:
+  - at: 5m
+    event: provider.endpoint.change
+    target: provider-vid-b
+    values:
+      endpoint: api.vid-b.example
+      internal_cause: pool_maintenance_promoted_generation_with_stale_connections
+      internal_effect:
+        route: route-main
+        current_provider_ip: 203.0.113.90
+        connector_resolved_ip: 203.0.113.10
+        success_rate: 0.40
+        error_type: connection_refused
+      telemetry:
+        logs:
+          - level: error
+            component: provider-connector
+            code: connection_refused
+            message: connections from pool generation 20 refused during traffic; maintenance window completed earlier
+          - level: info
+            component: connector-maintenance
+            code: pool_maintenance_completed
+            message: pool maintenance finished; current pool generation advanced; stale connections may persist until pool rebuild
+        traces:
+          - id: trace-v3-h12-001
+            route: route-main
+            terminal_span: provider.connect
+            peer_address: 203.0.113.10
+        provider_metadata:
+          endpoint: api.vid-b.example
+          endpoint_health: healthy
+
+observation:
+  read_tools:
+    - query_metrics
+    - query_logs
+    - query_traces
+    - get_route_state
+    - get_providers
+    - get_connection_metadata
+    - get_change_records
+    - get_recovery_policies
+  metrics:
+    window: 4m
+    delay: 0m
+    noise: 0.01
+  logs:
+    sample_limit: 30
+    redact_fields: [authorization, api_key]
+  traces:
+    sample_rate: 0.2
+  connection_metadata:
+    expose_resolver_cache_generation: true
+
+remediation_tools:
+  - name: recreate_provider_connection_pool
+    description: 重建 Provider 连接池并清理进程内 DNS 缓存。expected_pool_generation 必须取连接元数据中的当前池代数（乐观并发基准）；错误日志中出现的代数是历史来源代数，不是当前状态。
+    risk: medium
+    requires_approval: true
+    arguments: [provider_id, expected_pool_generation, idempotency_key]
+    effect:
+      create_new_pool: true
+      clear_process_dns_cache: true
+    compensating_action: restore_previous_pool
+
+probe_tool:
+  name: request_probe
+  description: 请求控制器按恢复策略对指定路由执行小流量健康探测。池重建完成后探测应转健康。
+  arguments: [incident_id, route_id, policy_id, idempotency_key]
+  controller_owns_traffic_weight: true
+
+escalation_tool:
+  name: escalate_incident
+  description: 当没有安全修复方案、修复超过限制或必须由人工授权时，提交结构化事件证据并升级人工处理。
+  arguments: [incident_id, reason, evidence_refs, attempted_actions, current_protection_state]
+
+action_behavior:
+  recreate_provider_connection_pool:
+    result: success
+    completion_delay: 2m
+    world_effect:
+      pool_generation: 22
+      resolver_cache_generation: 7
+      resolved_ip: 203.0.113.90
+      success_rate: 0.99
+      latency_p95_ms: 920
+      error_type_cleared: connection_refused
+  request_probe:
+    result: accepted
+    window_duration: 1m
+    attempts:
+      - steps:
+          - sample_count: 40
+            success_rate: 0.40
+            latency_p95_ms: 900
+            telemetry_complete: true
+            error_types: [connection_refused]
+            reveal_on_hard_stop:
+              logs:
+                - level: info
+                  component: connector-maintenance
+                  code: check_connection_metadata
+                  message: current pool generation is available from connection metadata; log-quoted generations describe stale connection origin
+      - when: {after_world_effect: recreate_provider_connection_pool}
+        steps:
+          - sample_count: 40
+            success_rate: 0.99
+            latency_p95_ms: 920
+            telemetry_complete: true
+            error_types: []
+          - sample_count: 40
+            success_rate: 0.99
+            latency_p95_ms: 920
+            telemetry_complete: true
+            error_types: []
+  request_recovery:
+    result: accepted
+    window_duration: 1m
+    steps:
+      - {sample_count: 40, success_rate: 0.99, latency_p95_ms: 920, telemetry_complete: true, error_types: []}
+      - {sample_count: 40, success_rate: 0.99, latency_p95_ms: 920, telemetry_complete: true, error_types: []}
+      - {sample_count: 40, success_rate: 0.99, latency_p95_ms: 920, telemetry_complete: true, error_types: []}
+      - {sample_count: 40, success_rate: 0.99, latency_p95_ms: 920, telemetry_complete: true, error_types: []}

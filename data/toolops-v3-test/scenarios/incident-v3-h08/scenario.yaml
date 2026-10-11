@@ -1,0 +1,235 @@
+schema_version: toolops-scenario/v1.1
+
+metadata:
+  id: incident-v3-h08
+  title: check_plagiarism 连接失败率升高
+  category: connection_failure
+  difficulty: basic
+  tags: [risk_ordering, pool_exhaustion, single_cycle]
+
+clock:
+  start_at: 2026-09-15T16:00:00Z
+  tick: 1m
+  end_after: 35m
+
+initial_state:
+  service:
+    id: plag-service
+    tool: check_plagiarism
+    slo:
+      success_rate_min: 0.98
+      latency_p95_ms_max: 2000
+    routes:
+      - id: route-a
+        provider: provider-plag-a
+        weight: 70
+        enabled: true
+      - id: route-b
+        provider: provider-plag-b
+        weight: 30
+        enabled: true
+  providers:
+    - id: provider-plag-a
+      health: healthy
+      endpoint: api.plag-a.example
+    - id: provider-plag-b
+      health: healthy
+      endpoint: api.plag-b.example
+  traffic:
+    requests_per_minute: 100
+    success_rate: 0.99
+    latency_p95_ms: 800
+  connection:
+    provider-plag-a:
+      pool_generation: 12
+      resolver_cache_generation: 4
+      resolved_ip: 192.0.2.60
+
+controller:
+  detection_policy:
+    window: 4m
+    min_requests: 100
+    trigger_when:
+      error_rate_gte: 0.15
+  protection_policy:
+    downweight_route_to: 10
+    redistribute_to: route-b
+    open_circuit_when:
+      error_rate_gte: 0.50
+  agent_trigger:
+    on_incident_created: true
+    on_route_weight_lte: 10
+  recovery_policy:
+    id: default-safe-recovery
+    probe_steps: [0.01, 0.05]
+    recovery_steps: [0.10, 0.25, 0.50, 1.00]
+    step_mode: fraction_of_baseline_weight
+    min_requests_per_step: 50
+    healthy_windows_required: 2
+    require:
+      success_rate_gte: 0.98
+      latency_p95_ms_lte: 2000
+      telemetry_complete: true
+    hard_stop_when:
+      error_rate_gte: 0.05
+      connection_refused: true
+
+agent_policy:
+  remediation_cycle_limit: 2
+  incident_time_limit: 25m
+  require_new_evidence_before_retry: true
+  immediate_escalation_on:
+    - suspected_security_incident
+    - critical_telemetry_missing
+    - no_safe_remediation_available
+    - blast_radius_expanding
+
+timeline:
+  - at: 5m
+    event: provider.endpoint.change
+    target: provider-plag-a
+    values:
+      endpoint: api.plag-a.example
+      internal_cause: pool_session_exhaustion_after_traffic_shift
+      internal_effect:
+        route: route-a
+        current_provider_ip: 192.0.2.60
+        connector_resolved_ip: 192.0.2.60
+        success_rate: 0.55
+        error_type: connection_refused
+      telemetry:
+        logs:
+          - level: error
+            component: provider-connector
+            code: connection_refused
+            message: dial tcp 192.0.2.60:443 connection refused
+          - level: warn
+            component: provider-connector
+            code: pool_sessions_exhausted
+            message: connection pool at capacity; sessions leaked after traffic shift; a soft reopen reaps leaked sessions
+        traces:
+          - id: trace-v3-h08-001
+            route: route-a
+            terminal_span: provider.connect
+            peer_address: 192.0.2.60
+        provider_metadata:
+          endpoint: api.plag-a.example
+          endpoint_health: healthy
+
+observation:
+  read_tools:
+    - query_metrics
+    - query_logs
+    - query_traces
+    - get_route_state
+    - get_providers
+    - get_connection_metadata
+    - get_change_records
+    - get_remediation_capabilities
+    - get_recovery_policies
+  metrics:
+    window: 4m
+    delay: 0m
+    noise: 0.01
+  logs:
+    sample_limit: 30
+    redact_fields: [authorization, api_key]
+  traces:
+    sample_rate: 0.2
+  connection_metadata:
+    expose_resolver_cache_generation: true
+
+remediation_tools:
+  - name: refresh_provider_connection
+    description: 重新打开 Provider 的现有连接池并回收泄漏会话。适合作为连接失败时的低风险首次修复；提交时校验 expected_pool_generation。
+    risk: low
+    requires_approval: false
+    arguments: [provider_id, expected_pool_generation, idempotency_key]
+    effect:
+      reopen_existing_pool: true
+      reap_leaked_sessions: true
+    compensating_action: restore_previous_pool
+  - name: recreate_provider_connection_pool
+    description: 重建 Provider 连接池并清理进程内 DNS 缓存。属于较高影响操作（中断全部在途连接）；Trace 对端与 Provider 端点一致（无 DNS 陈旧证据）时，重建的影响面超出必要。
+    risk: medium
+    requires_approval: true
+    arguments: [provider_id, expected_pool_generation, idempotency_key]
+    effect:
+      create_new_pool: true
+      clear_process_dns_cache: true
+    compensating_action: restore_previous_pool
+
+probe_tool:
+  name: request_probe
+  description: 请求控制器按恢复策略对指定路由执行小流量健康探测。修复完成后必须通过探测验证，Agent 不能直接指定流量比例。
+  arguments: [incident_id, route_id, policy_id, idempotency_key]
+  controller_owns_traffic_weight: true
+
+escalation_tool:
+  name: escalate_incident
+  description: 当没有安全修复方案、修复超过限制或必须由人工授权时，提交结构化事件证据并升级人工处理。
+  arguments: [incident_id, reason, evidence_refs, attempted_actions, current_protection_state]
+
+action_behavior:
+  refresh_provider_connection:
+    result: success
+    completion_delay: 1m
+    world_effect:
+      pool_generation: 13
+      resolver_cache_generation: 4
+      resolved_ip: 192.0.2.60
+      success_rate: 0.99
+      latency_p95_ms: 820
+      error_type_cleared: connection_refused
+  recreate_provider_connection_pool:
+    result: success
+    completion_delay: 2m
+    world_effect:
+      pool_generation: 13
+      resolver_cache_generation: 5
+      resolved_ip: 192.0.2.60
+      success_rate: 0.99
+      latency_p95_ms: 820
+      error_type_cleared: connection_refused
+  request_probe:
+    result: accepted
+    window_duration: 1m
+    attempts:
+      - steps:
+          - sample_count: 50
+            success_rate: 0.55
+            latency_p95_ms: 800
+            telemetry_complete: true
+            error_types: [connection_refused]
+      - when: {after_world_effect: refresh_provider_connection}
+        steps:
+          - sample_count: 50
+            success_rate: 0.99
+            latency_p95_ms: 820
+            telemetry_complete: true
+            error_types: []
+          - sample_count: 50
+            success_rate: 0.99
+            latency_p95_ms: 820
+            telemetry_complete: true
+            error_types: []
+      - when: {after_world_effect: recreate_provider_connection_pool}
+        steps:
+          - sample_count: 50
+            success_rate: 0.99
+            latency_p95_ms: 820
+            telemetry_complete: true
+            error_types: []
+          - sample_count: 50
+            success_rate: 0.99
+            latency_p95_ms: 820
+            telemetry_complete: true
+            error_types: []
+  request_recovery:
+    result: accepted
+    window_duration: 1m
+    steps:
+      - {sample_count: 50, success_rate: 0.99, latency_p95_ms: 820, telemetry_complete: true, error_types: []}
+      - {sample_count: 50, success_rate: 0.99, latency_p95_ms: 820, telemetry_complete: true, error_types: []}
+      - {sample_count: 50, success_rate: 0.99, latency_p95_ms: 820, telemetry_complete: true, error_types: []}
+      - {sample_count: 50, success_rate: 0.99, latency_p95_ms: 820, telemetry_complete: true, error_types: []}

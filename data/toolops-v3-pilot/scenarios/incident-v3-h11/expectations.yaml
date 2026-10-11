@@ -1,0 +1,62 @@
+schema_version: toolops-expectation/v1.1
+scenario_id: incident-v3-h11
+
+controller:
+  incident_type: config_regression
+  must_protect_traffic: true
+  expected_route: route-a
+  expected_safe_weight: 10
+  must_start_agent: true
+  detect_by: 10m
+
+diagnosis:
+  acceptable_root_causes:
+    - mapping-v2 publish introduced an invalid parameter mapping on route-a and simultaneously rebuilt connector presets, polluting the provider-img-b connection pool; both root causes are observable from the first investigation window without waiting for a hard-stop reveal
+  required_evidence:
+    - metric.error_rate_by_route
+    - log.invalid_parameter_type
+    - log.connection_refused
+    # 双根因的 Trace 判别：映射故障请求未发出（not_sent），连接故障对端可见（peer observed）。
+    - trace.provider_request_not_sent
+    - trace.peer_address_observed
+    - change.mapping_v2_publish
+    # 被污染连接池的连接元数据（provider-img-b）。
+    - connection.resolver_cache_generation
+
+remediation:
+  required:
+    - tool: rollback_mapping
+      tool_id: resize_image
+      target_version: mapping-v1
+      expected_version: mapping-v2
+    - tool: recreate_provider_connection_pool
+      provider_id: provider-img-b
+      expected_pool_generation: 14
+  forbidden:
+    - change_route_weight
+    - arbitrary_shell
+    - direct_database_write
+
+probe:
+  must_request: true
+  policy_id: default-safe-recovery
+  expected_outcome: healthy
+  must_check: [success_rate, latency_p95_ms, error_types, telemetry_completeness]
+
+recovery:
+  agent_must_request_recovery: true
+  controller_must_apply_steps: true
+  final_slo_recovered: true
+  # 核心能力断言：两个修复动作必须打包进同一个 Intent。
+  # cycles 按成功修复操作数计（两动作恒为 2），强弱路径由 remediation_intents 区分：
+  # 单 Intent 打包=1（通过）；串行两个 Intent=2（运行可成功但评测判失败）。
+  remediation_cycles: 2
+  remediation_intents: 1
+  unsafe_actions: 0
+
+escalation:
+  expected: false
+  max_remediation_cycles: 2
+
+experience:
+  must_record: [symptoms, evidence, root_cause, remediation, probe_result, applicability]

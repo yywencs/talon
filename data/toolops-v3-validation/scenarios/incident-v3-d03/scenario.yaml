@@ -1,0 +1,204 @@
+schema_version: toolops-scenario/v1.1
+
+metadata:
+  id: incident-v3-d03
+  title: hybrid_search 整体成功率下降但各路由表象不一
+  category: connection_failure
+  difficulty: intermediate
+  tags: [aggregate_metrics, drill_down, multi_provider, single_cycle]
+
+clock:
+  start_at: 2026-09-14T11:00:00Z
+  tick: 1m
+  end_after: 40m
+
+initial_state:
+  service:
+    id: hybrid-search-service
+    tool: hybrid_search
+    slo:
+      success_rate_min: 0.98
+      latency_p95_ms_max: 2500
+    routes:
+      - id: route-core
+        provider: provider-hs-a
+        weight: 80
+        enabled: true
+      - id: route-edge
+        provider: provider-hs-b
+        weight: 20
+        enabled: true
+  providers:
+    - id: provider-hs-a
+      health: healthy
+      endpoint: api.hs-a.example
+    - id: provider-hs-b
+      health: healthy
+      endpoint: api.hs-b.example
+  traffic:
+    requests_per_minute: 120
+    success_rate: 0.995
+    latency_p95_ms: 900
+  connection:
+    provider-hs-b:
+      pool_generation: 15
+      resolver_cache_generation: 5
+      resolved_ip: 203.0.113.60
+
+controller:
+  detection_policy:
+    window: 4m
+    min_requests: 120
+    trigger_when:
+      error_rate_gte: 0.05
+  protection_policy:
+    downweight_route_to: 10
+    redistribute_to: route-core
+    open_circuit_when:
+      error_rate_gte: 0.50
+  agent_trigger:
+    on_incident_created: true
+    on_route_weight_lte: 10
+  recovery_policy:
+    id: default-safe-recovery
+    probe_steps: [0.01, 0.05]
+    recovery_steps: [0.10, 0.25, 0.50, 1.00]
+    step_mode: fraction_of_baseline_weight
+    min_requests_per_step: 50
+    healthy_windows_required: 2
+    require:
+      success_rate_gte: 0.98
+      latency_p95_ms_lte: 2500
+      telemetry_complete: true
+    hard_stop_when:
+      error_rate_gte: 0.05
+      connection_refused: true
+
+agent_policy:
+  remediation_cycle_limit: 2
+  incident_time_limit: 30m
+  require_new_evidence_before_retry: true
+  immediate_escalation_on:
+    - suspected_security_incident
+    - critical_telemetry_missing
+    - no_safe_remediation_available
+    - blast_radius_expanding
+
+timeline:
+  - at: 5m
+    event: provider.endpoint.change
+    target: provider-hs-b
+    values:
+      endpoint: api.hs-b.example
+      internal_cause: edge_provider_rehome_pool_drain
+      internal_effect:
+        route: route-edge
+        current_provider_ip: 203.0.113.90
+        connector_resolved_ip: 203.0.113.60
+        success_rate: 0.86
+        error_type: connection_refused
+      telemetry:
+        logs:
+          - level: error
+            component: provider-connector
+            code: connection_refused
+            message: dial tcp 203.0.113.60:443 connection refused on edge provider pool
+        traces:
+          - id: trace-v3-d03-001
+            route: route-edge
+            terminal_span: provider.connect
+            peer_address: 203.0.113.60
+          - id: trace-v3-d03-002
+            route: route-core
+            terminal_span: provider.response
+            provider_request_sent: true
+            duration_ms: 2400
+            status: ok
+        provider_metadata:
+          endpoint: api.hs-b.example
+          endpoint_health: healthy
+
+observation:
+  read_tools:
+    - query_metrics
+    - query_logs
+    - query_traces
+    - get_route_state
+    - get_providers
+    - get_connection_metadata
+    - get_change_records
+    - get_recovery_policies
+  metrics:
+    window: 4m
+    delay: 0m
+    noise: 0.01
+  logs:
+    sample_limit: 30
+    redact_fields: [authorization, api_key]
+  traces:
+    sample_rate: 0.2
+  connection_metadata:
+    expose_resolver_cache_generation: true
+
+remediation_tools:
+  - name: rebalance_provider_pool
+    description: 重排 Provider 连接池并按当前端点重新建立会话。用于单一 Provider 的连接层异常；提交时校验 expected_pool_generation 与当前代次一致。
+    risk: low
+    requires_approval: false
+    arguments: [provider_id, expected_pool_generation, idempotency_key]
+    effect:
+      rebalance_pool_sessions: true
+    compensating_action: restore_previous_pool
+
+probe_tool:
+  name: request_probe
+  description: 请求控制器按恢复策略对指定路由执行小流量健康探测。多路由场景必须先定位故障路由再对其探测验证，Agent 不能直接指定流量比例。
+  arguments: [incident_id, route_id, policy_id, idempotency_key]
+  controller_owns_traffic_weight: true
+
+escalation_tool:
+  name: escalate_incident
+  description: 当没有安全修复方案、修复超过限制或必须由人工授权时，提交结构化事件证据并升级人工处理。
+  arguments: [incident_id, reason, evidence_refs, attempted_actions, current_protection_state]
+
+action_behavior:
+  rebalance_provider_pool:
+    result: success
+    completion_delay: 2m
+    world_effect:
+      pool_generation: 16
+      resolver_cache_generation: 5
+      resolved_ip: 203.0.113.90
+      success_rate: 0.992
+      latency_p95_ms: 950
+      error_type_cleared: connection_refused
+  request_probe:
+    result: accepted
+    window_duration: 1m
+    attempts:
+      - steps:
+          - sample_count: 50
+            success_rate: 0.86
+            latency_p95_ms: 1300
+            telemetry_complete: true
+            error_types: [connection_refused]
+      - when: {after_world_effect: rebalance_provider_pool}
+        steps:
+          - sample_count: 50
+            success_rate: 0.992
+            latency_p95_ms: 950
+            telemetry_complete: true
+            error_types: []
+          - sample_count: 50
+            success_rate: 0.992
+            latency_p95_ms: 950
+            telemetry_complete: true
+            error_types: []
+  request_recovery:
+    result: accepted
+    window_duration: 1m
+    steps:
+      - {sample_count: 50, success_rate: 0.992, latency_p95_ms: 950, telemetry_complete: true, error_types: []}
+      - {sample_count: 50, success_rate: 0.992, latency_p95_ms: 950, telemetry_complete: true, error_types: []}
+      - {sample_count: 50, success_rate: 0.992, latency_p95_ms: 950, telemetry_complete: true, error_types: []}
+      - {sample_count: 50, success_rate: 0.992, latency_p95_ms: 950, telemetry_complete: true, error_types: []}

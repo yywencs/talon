@@ -1,0 +1,233 @@
+schema_version: toolops-scenario/v1.1
+
+metadata:
+  id: incident-v3-d01
+  title: extract_tables 错误率升高且修复效果不稳定
+  category: config_regression
+  difficulty: adversarial
+  tags: [config, concurrency, state_conflict, two_cycles]
+
+clock:
+  start_at: 2026-09-14T09:00:00Z
+  tick: 1m
+  end_after: 50m
+
+initial_state:
+  service:
+    id: doc-tables-service
+    tool: extract_tables
+    slo:
+      success_rate_min: 0.98
+      latency_p95_ms_max: 3000
+    routes:
+      - id: route-a
+        provider: provider-tables-a
+        weight: 100
+        enabled: true
+  providers:
+    - id: provider-tables-a
+      health: healthy
+      schema_compatible: true
+  traffic:
+    requests_per_minute: 80
+    success_rate: 0.995
+    latency_p95_ms: 1000
+  config:
+    current_version: mapping-v1
+    known_healthy_versions: [mapping-v1, mapping-v2]
+
+controller:
+  detection_policy:
+    window: 4m
+    min_requests: 80
+    trigger_when:
+      error_rate_gte: 0.05
+  protection_policy:
+    downweight_route_to: 10
+    open_circuit_when:
+      error_rate_gte: 0.50
+  agent_trigger:
+    on_incident_created: true
+    on_route_weight_lte: 10
+  recovery_policy:
+    id: default-safe-recovery
+    probe_steps: [0.01, 0.05]
+    recovery_steps: [0.10, 0.25, 0.50, 1.00]
+    step_mode: fraction_of_baseline_weight
+    min_requests_per_step: 50
+    healthy_windows_required: 2
+    require:
+      success_rate_gte: 0.98
+      latency_p95_ms_lte: 3000
+      telemetry_complete: true
+    hard_stop_when:
+      error_rate_gte: 0.05
+
+agent_policy:
+  remediation_cycle_limit: 3
+  incident_time_limit: 40m
+  require_new_evidence_before_retry: true
+  immediate_escalation_on:
+    - suspected_security_incident
+    - critical_telemetry_missing
+    - no_safe_remediation_available
+    - rollback_failed
+    - blast_radius_expanding
+
+timeline:
+  - at: 5m
+    event: config.publish
+    target: extract_tables
+    values:
+      version: mapping-v3
+      internal_cause: mapping_v3_field_coercion_regression
+      internal_effect:
+        route: route-a
+        success_rate: 0.70
+        latency_p95_ms: 2200
+        error_type: invalid_parameter_type
+      telemetry:
+        logs:
+          - level: error
+            component: mapping-runtime
+            code: invalid_parameter_type
+            message: field row_limit expected integer but received string
+        traces:
+          - id: trace-v3-d01-001
+            route: route-a
+            terminal_span: mapping.validate_request
+            provider_request_sent: false
+        change_record:
+          id: change-v3-d01-mapping-v3
+          kind: mapping_publish
+          version: mapping-v3
+          previous_version: mapping-v1
+          actor: deployment-service
+  - at: 6m30s
+    event: config.publish
+    target: extract_tables
+    values:
+      version: mapping-v4
+      internal_cause: platform_hotfix_partial_coercion
+      internal_effect:
+        route: route-a
+        success_rate: 0.90
+        latency_p95_ms: 1600
+        error_type: invalid_parameter_type
+      telemetry:
+        logs:
+          - level: info
+            component: mapping-runtime
+            code: hotfix_v4_applied
+            message: platform hotfix mapping-v4 applied; field coercion partially repaired
+        change_record:
+          id: change-v3-d01-mapping-v4
+          kind: mapping_publish
+          version: mapping-v4
+          previous_version: mapping-v3
+          actor: platform-ops
+
+observation:
+  read_tools:
+    - query_metrics
+    - query_logs
+    - query_traces
+    - get_route_state
+    - get_providers
+    - get_config_versions
+    - get_change_records
+    - get_recovery_policies
+  metrics:
+    window: 4m
+    delay: 0m
+    noise: 0.01
+  logs:
+    sample_limit: 20
+    redact_fields: [authorization, api_key]
+  traces:
+    sample_rate: 0.2
+  changes:
+    lookback: 24h
+
+remediation_tools:
+  - name: rollback_mapping
+    description: 将工具映射配置回滚到一个已知健康版本。提交时校验 expected_version 与当前 active 版本一致，不一致表示配置已被并发修改。
+    risk: medium
+    requires_approval: true
+    arguments: [tool_id, target_version, expected_version, idempotency_key]
+    preconditions:
+      target_version_must_be_known_healthy: true
+    effect:
+      restore_config_effects_from: target_version
+    compensating_action: restore_previous_version
+  - name: reload_mapping_runtime
+    description: 重新加载映射运行时工件缓存，使其与当前 active 配置一致。不改变配置版本本身；提交时校验 expected_version 与当前 active 版本一致。
+    risk: medium
+    requires_approval: true
+    arguments: [tool_id, expected_version, idempotency_key]
+    effect:
+      reload_runtime_artifact_cache: true
+    compensating_action: restore_previous_runtime_cache
+
+probe_tool:
+  name: request_probe
+  description: 请求控制器按恢复策略对指定路由执行小流量健康探测。修复完成后必须通过探测验证，Agent 不能直接指定流量比例。
+  arguments: [incident_id, route_id, policy_id, idempotency_key]
+  controller_owns_traffic_weight: true
+
+escalation_tool:
+  name: escalate_incident
+  description: 当没有安全修复方案、修复超过限制或必须由人工授权时，提交结构化事件证据并升级人工处理。
+  arguments: [incident_id, reason, evidence_refs, attempted_actions, current_protection_state]
+
+action_behavior:
+  rollback_mapping:
+    result: success
+    completion_delay: 1m
+    world_effect:
+      config_version: mapping-v1
+      success_rate: 0.90
+      latency_p95_ms: 1600
+  reload_mapping_runtime:
+    result: success
+    completion_delay: 1m
+    world_effect:
+      success_rate: 0.99
+      latency_p95_ms: 1100
+      error_type_cleared: invalid_parameter_type
+  request_probe:
+    result: accepted
+    window_duration: 1m
+    attempts:
+      - steps:
+          - sample_count: 50
+            success_rate: 0.90
+            latency_p95_ms: 1600
+            telemetry_complete: true
+            error_types: [invalid_parameter_type]
+            reveal_on_hard_stop:
+              logs:
+                - level: warn
+                  component: mapping-runtime
+                  code: runtime_shape_mismatch
+                  message: runtime artifact cache keeps serving v3-era payload shapes regardless of the active config version; config-level changes alone do not refresh runtime artifacts
+      - when: {after_world_effect: reload_mapping_runtime}
+        steps:
+          - sample_count: 50
+            success_rate: 0.99
+            latency_p95_ms: 1100
+            telemetry_complete: true
+            error_types: []
+          - sample_count: 50
+            success_rate: 0.99
+            latency_p95_ms: 1100
+            telemetry_complete: true
+            error_types: []
+  request_recovery:
+    result: accepted
+    window_duration: 1m
+    steps:
+      - {sample_count: 50, success_rate: 0.99, latency_p95_ms: 1100, telemetry_complete: true, error_types: []}
+      - {sample_count: 50, success_rate: 0.99, latency_p95_ms: 1100, telemetry_complete: true, error_types: []}
+      - {sample_count: 50, success_rate: 0.99, latency_p95_ms: 1100, telemetry_complete: true, error_types: []}
+      - {sample_count: 50, success_rate: 0.99, latency_p95_ms: 1100, telemetry_complete: true, error_types: []}

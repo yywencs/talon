@@ -7,8 +7,11 @@
 /evaluation-data/
 /docs/*
 !/docs/sql/
+!/docs/experience/
+!/docs/run-lifecycle.md
 !/docs/simulator-http.md
 !/docs/issues/
+!/docs/evaluation/
 
 .DS_Store
 *.swp

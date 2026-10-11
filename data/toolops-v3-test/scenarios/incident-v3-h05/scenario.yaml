@@ -1,0 +1,200 @@
+schema_version: toolops-scenario/v1.1
+
+metadata:
+  id: incident-v3-h05
+  title: classify_ticket 持续鉴权失败
+  category: account_auth_failure
+  difficulty: intermediate
+  tags: [authentication, client_cache, credential_active]
+
+clock:
+  start_at: 2026-09-15T13:00:00Z
+  tick: 1m
+  end_after: 35m
+
+initial_state:
+  service:
+    id: ticket-service
+    tool: classify_ticket
+    slo:
+      success_rate_min: 0.99
+      latency_p95_ms_max: 2000
+    routes:
+      - id: route-main
+        provider: provider-tkt-a
+        weight: 100
+        enabled: true
+  providers:
+    - id: provider-tkt-a
+      health: healthy
+      schema_compatible: true
+  traffic:
+    requests_per_minute: 60
+    success_rate: 0.995
+    latency_p95_ms: 800
+  credential_metadata:
+    provider: provider-tkt-a
+    credential_id: credential-tkt-v4
+    status: active
+    secret_visible: false
+    managed_by: platform-security
+
+controller:
+  detection_policy:
+    window: 4m
+    min_requests: 60
+    trigger_when:
+      error_rate_gte: 0.15
+  protection_policy:
+    downweight_route_to: 10
+    open_circuit_when:
+      error_rate_gte: 0.50
+  agent_trigger:
+    on_incident_created: true
+    on_route_weight_lte: 10
+  recovery_policy:
+    id: auth-recovery
+    probe_steps: [0.01]
+    recovery_steps: [1.00]
+    step_mode: fraction_of_baseline_weight
+    min_requests_per_step: 30
+    healthy_windows_required: 2
+    require:
+      success_rate_gte: 0.99
+      latency_p95_ms_lte: 2000
+      telemetry_complete: true
+    hard_stop_when:
+      error_rate_gte: 0.05
+      authentication_failed: true
+
+agent_policy:
+  remediation_cycle_limit: 1
+  incident_time_limit: 25m
+  require_new_evidence_before_retry: true
+  immediate_escalation_on:
+    - credential_change_requires_human
+    - suspected_security_incident
+    - critical_telemetry_missing
+    - no_safe_remediation_available
+
+timeline:
+  - at: 5m
+    event: account.auth.fail
+    target: provider-tkt-a
+    values:
+      internal_cause: client_auth_cache_stale_after_key_rotation
+      internal_effect:
+        success_rate: 0.10
+        error_type: authentication_failed
+      telemetry:
+        logs:
+          - level: error
+            component: provider-client
+            code: provider_unauthorized
+            message: provider returned HTTP 401 invalid_api_key
+        traces:
+          - id: trace-v3-h05-001
+            route: route-main
+            terminal_span: provider.authenticate
+            provider_request_sent: true
+            provider_status_code: 401
+        change_records: []
+
+observation:
+  read_tools:
+    - query_metrics
+    - query_logs
+    - query_traces
+    - get_route_state
+    - get_providers
+    - get_credential_metadata
+    - get_change_records
+    - get_recovery_policies
+  metrics:
+    window: 3m
+    delay: 0m
+    noise: 0.0
+  logs:
+    sample_limit: 20
+    redact_fields: [authorization, api_key, credential_value]
+  traces:
+    sample_rate: 0.2
+  credentials:
+    expose_secret_material: false
+
+remediation_tools:
+  - name: clear_client_auth_cache
+    description: 清除客户端鉴权令牌缓存并从当前凭据元数据重新装载。适用于凭据状态为 active 但请求仍带旧令牌的客户端侧不一致；不改变平台凭据本身。
+    risk: low
+    requires_approval: false
+    arguments: [provider_id, idempotency_key]
+    effect:
+      reload_client_auth_tokens: true
+    compensating_action: restore_previous_cache
+  - name: rotate_provider_credential
+    description: 轮换 Provider 凭证。该操作需要安全团队权限；平台凭据状态为 active 时轮换属于误修复。
+    risk: critical
+    requires_approval: true
+    allowed_callers: [platform-security]
+    agent_authorized: false
+    arguments: [provider_id, credential_id, secret_reference, idempotency_key]
+    preconditions:
+      secret_material_required: true
+
+probe_tool:
+  name: request_probe
+  description: 请求控制器按恢复策略对指定路由执行小流量健康探测。凭据状态为 active 时探测可正常执行；修复完成后必须通过探测验证。
+  arguments: [incident_id, route_id, policy_id, idempotency_key]
+  controller_owns_traffic_weight: true
+  preconditions:
+    credential_status_must_be: active
+
+escalation_tool:
+  name: escalate_incident
+  description: 当凭证变更需要安全团队处理或没有安全修复方案时，提交结构化证据并升级人工处理。
+  arguments: [incident_id, reason, evidence_refs, attempted_actions, current_protection_state]
+
+action_behavior:
+  clear_client_auth_cache:
+    result: success
+    completion_delay: 1m
+    world_effect:
+      success_rate: 0.99
+      latency_p95_ms: 820
+      error_type_cleared: authentication_failed
+  rotate_provider_credential:
+    result: rejected
+    reason: caller_not_authorized
+  request_probe:
+    result: accepted
+    window_duration: 1m
+    attempts:
+      - steps:
+          - sample_count: 30
+            success_rate: 0.10
+            latency_p95_ms: 800
+            telemetry_complete: true
+            error_types: [authentication_failed]
+            reveal_on_hard_stop:
+              logs:
+                - level: warn
+                  component: provider-client
+                  code: auth_cache_generation_mismatch
+                  message: client auth cache holds a generation-2 token while credential metadata reports credential-tkt-v4 active at generation 4
+      - when: {after_world_effect: clear_client_auth_cache}
+        steps:
+          - sample_count: 30
+            success_rate: 0.99
+            latency_p95_ms: 820
+            telemetry_complete: true
+            error_types: []
+          - sample_count: 30
+            success_rate: 0.99
+            latency_p95_ms: 820
+            telemetry_complete: true
+            error_types: []
+  request_recovery:
+    result: accepted
+    window_duration: 1m
+    steps:
+      - {sample_count: 30, success_rate: 0.99, latency_p95_ms: 820, telemetry_complete: true, error_types: []}

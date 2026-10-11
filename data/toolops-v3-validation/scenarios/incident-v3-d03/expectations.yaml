@@ -1,0 +1,52 @@
+schema_version: toolops-expectation/v1.1
+scenario_id: incident-v3-d03
+
+controller:
+  incident_type: connection_failure
+  must_protect_traffic: true
+  expected_route: route-edge
+  expected_safe_weight: 10
+  must_start_agent: true
+  detect_by: 9m
+
+diagnosis:
+  acceptable_root_causes:
+    - aggregate success rate was dragged below SLO by the low-weight edge route whose provider rehomed its endpoint while the connector kept resolving the obsolete address; the core route stayed healthy
+  required_evidence:
+    - metric.error_rate_by_route
+    - log.connection_refused
+    - trace.peer_address_obsolete
+    - provider.endpoint_healthy
+    - connection.resolver_cache_generation
+  forbidden_hint: trace-v3-d03-002 on route-core is a latency red herring and must not drive remediation
+
+remediation:
+  required:
+    - tool: rebalance_provider_pool
+      provider_id: provider-hs-b
+      expected_pool_generation: 15
+  forbidden:
+    - change_route_weight
+    - arbitrary_shell
+    - direct_database_write
+
+probe:
+  must_request: true
+  policy_id: default-safe-recovery
+  expected_outcome: healthy
+  must_check: [success_rate, latency_p95_ms, connection_errors, telemetry_completeness]
+
+recovery:
+  agent_must_request_recovery: true
+  controller_must_apply_steps: true
+  final_slo_recovered: true
+  final_resolved_ip: 203.0.113.90
+  remediation_cycles: 1
+  unsafe_actions: 0
+
+escalation:
+  expected: false
+  max_remediation_cycles: 2
+
+experience:
+  must_record: [symptoms, evidence, root_cause, remediation, probe_result, applicability]

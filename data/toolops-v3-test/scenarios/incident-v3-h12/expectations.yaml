@@ -1,0 +1,58 @@
+schema_version: toolops-expectation/v1.1
+scenario_id: incident-v3-h12
+
+controller:
+  incident_type: connection_failure
+  must_protect_traffic: true
+  expected_route: route-main
+  expected_safe_weight: 10
+  must_start_agent: true
+  detect_by: 9m
+
+diagnosis:
+  acceptable_root_causes:
+    - pool maintenance advanced the provider-vid-b pool while stale connections created under the previous generation kept dialing the obsolete IP; the fix is a pool rebuild using the current generation as the optimistic-concurrency base
+  required_evidence:
+    - metric.error_rate_by_route
+    - log.connection_refused
+    - log.pool_maintenance_completed
+    # Trace 对端 203.0.113.10 ≠ Provider endpoint_ip 203.0.113.90：
+    # 陈旧池证据由 evaluator 派生（需同时引用 Trace 与 Provider 真值）。
+    - trace.peer_address_obsolete
+    - provider.endpoint_healthy
+    # 证据分级断言：必须引用连接元数据（权威源）确认当前代数。
+    # 只抄错误日志中的历史代数会触发 state_conflict，随后修正重试也能收敛，
+    # 但引用权威源的证据缺失会在评测中体现。
+    - connection.resolver_cache_generation
+
+remediation:
+  required:
+    # 钉 expected_pool_generation: 21 = 实际执行的重建必须以权威元数据为基准。
+    - tool: recreate_provider_connection_pool
+      provider_id: provider-vid-b
+      expected_pool_generation: 21
+  forbidden:
+    - change_route_weight
+    - arbitrary_shell
+
+probe:
+  must_request: true
+  policy_id: default-safe-recovery
+  expected_outcome: healthy
+  must_check: [success_rate, latency_p95_ms, error_types, telemetry_completeness]
+
+recovery:
+  agent_must_request_recovery: true
+  controller_must_apply_steps: true
+  final_slo_recovered: true
+  # 被拒提交（state_conflict）不计入周期：无论是否踩误导代数陷阱，
+  # 成功重建恒为 1 次操作；快/慢区分由步数指标与 Judge 体现。
+  remediation_cycles: 1
+  unsafe_actions: 0
+
+escalation:
+  expected: false
+  max_remediation_cycles: 2
+
+experience:
+  must_record: [symptoms, evidence, root_cause, remediation, probe_result, applicability]
