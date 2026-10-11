@@ -31,7 +31,7 @@ func main() {
 }
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: talon-experience extract|review|import-candidate|list|stage|index|plan|validate|publish|rollback|active [flags]")
+		return errors.New("usage: talon-experience snapshot|extract|review|import-candidate|list|stage|index|plan|validate|publish|rollback|active [flags]")
 	}
 	command := args[0]
 	f := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -45,7 +45,7 @@ func run(args []string) error {
 	parent := f.String("parent", "", "expected active parent release; empty for first release")
 	reportID := f.String("report", "", "passing validation report ID")
 	catalogPath := f.String("catalog", "", "reviewed scenario catalog JSON")
-	kind := f.String("kind", "candidate", "list: candidate, extraction, release, report")
+	kind := f.String("kind", "candidate", "list: snapshot, candidate, extraction, release, report, review")
 	repeats := f.Int("repeats", 3, "paired repeats; minimum 2")
 	tokenRatio := f.Float64("max-token-ratio", 1.25, "maximum candidate/baseline total token ratio")
 	output := f.String("output-dir", ".opentalon/experience-validation", "durable isolated trial artifacts")
@@ -80,7 +80,7 @@ func run(args []string) error {
 	print := func(v any) error { enc := json.NewEncoder(os.Stdout); enc.SetIndent("", "  "); return enc.Encode(v) }
 	if command == "list" {
 		switch *kind {
-		case "candidate", "extraction", "release", "report", "review":
+		case "snapshot", "candidate", "extraction", "release", "report", "review":
 		default:
 			return errors.New("unsupported list kind")
 		}
@@ -132,7 +132,46 @@ func run(args []string) error {
 		}
 		return nil
 	}
-	if command == "extract" {
+	if command == "snapshot" || command == "extract" {
+		runIDs := split(*runs)
+		if len(runIDs) == 0 {
+			return errors.New("--run-ids must contain at least one terminal run ID")
+		}
+		snapshots := []experience.Snapshot{}
+		seen := map[string]bool{}
+		for _, run := range runIDs {
+			if seen[run] {
+				continue
+			}
+			seen[run] = true
+			a, e := db.RunArtifacts().Get(ctx, run)
+			if e != nil {
+				return e
+			}
+			if a.Outcome != "completed" && a.Outcome != "failed" {
+				return fmt.Errorf("run %q is still %s; only terminal runs can be snapshotted", run, a.Outcome)
+			}
+			assessment, e := experienceeval.Assess(ctx, a, *datasetRoot, *python, *evaluatorDir)
+			if e != nil {
+				return e
+			}
+			snapshot, e := experience.Freeze(ctx, store, a, assessment)
+			if e != nil {
+				return e
+			}
+			snapshots = append(snapshots, snapshot)
+		}
+		if command == "snapshot" {
+			type savedSnapshot struct {
+				Digest   string              `json:"snapshot_digest"`
+				Snapshot experience.Snapshot `json:"snapshot"`
+			}
+			output := []savedSnapshot{}
+			for _, snapshot := range snapshots {
+				output = append(output, savedSnapshot{experience.Digest(snapshot), snapshot})
+			}
+			return print(output)
+		}
 		cfg, e := config.LoadLLMConfig()
 		if e != nil {
 			return e
@@ -141,28 +180,13 @@ func run(args []string) error {
 		if e != nil {
 			return e
 		}
-		snapshots := []experience.Snapshot{}
-		for _, run := range split(*runs) {
-			a, e := db.RunArtifacts().Get(ctx, run)
-			if e != nil {
-				return e
-			}
-			assessment, e := experienceeval.Assess(ctx, a, *datasetRoot, *python, *evaluatorDir)
-			if e != nil {
-				return e
-			}
-			s, e := experience.Freeze(ctx, store, a, assessment)
-			if e != nil {
-				return e
-			}
-			snapshots = append(snapshots, s)
-		}
 		result, e := experience.Extract(ctx, store, m, cfg.Provider+"/"+cfg.Model, snapshots)
 		if pe := print(result); pe != nil {
 			return pe
 		}
 		return e
 	}
+
 	if command == "plan" {
 		r, e := experience.Load[experience.Release](ctx, store, "release", *id)
 		if e != nil {
