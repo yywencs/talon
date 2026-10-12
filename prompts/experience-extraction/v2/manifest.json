@@ -1,0 +1,5 @@
+{
+  "version": "experience-extraction/v2",
+  "description": "逐条工具提交有来源的诊断候选",
+  "protocol": "candidate-tools/v1"
+}

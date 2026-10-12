@@ -66,7 +66,7 @@ func setup(t *testing.T) (context.Context, *experience.Service, experience.Card)
 	s := &experience.Service{Store: db.Experiences(), Index: &index{}, Ranker: ranker{}}
 	snap, e := experience.Freeze(ctx, s.Store, runartifact.RunArtifact{RunID: "source", ScenarioID: "training", Outcome: "failed", AgentRuns: []runartifact.AgentRun{{ToolCalls: []runartifact.ToolCall{{CallID: "ev", EvidenceRef: "ev", Action: workflow.AgentActionRead, Output: json.RawMessage(`{"password":"hidden","status":"timeout"}`)}}}}})
 	require.NoError(t, e)
-	c := experience.Card{Schema: experience.Schema, ID: "exp_a", Version: 1, Title: "check connection", Symptoms: []string{"timeout"}, CauseFamily: "stale", ApplicableWhen: []string{"timeout after change"}, Checks: []experience.Check{{Observe: "connection version", Supports: "old", RulesOut: "new"}}, Verification: "probe", Exceptions: []string{"upstream unavailable"}, Sources: []experience.Source{{RunID: "source", ScenarioID: "training", SnapshotDigest: experience.Digest(snap), EvidenceRefs: []string{"ev"}}}}
+	c := experience.Card{Schema: experience.Schema, ID: "exp_a", Version: 1, Title: "check connection", Component: "connection_pool", Symptoms: []string{"timeout"}, CauseFamily: "stale", ApplicableWhen: []string{"timeout after change"}, Checks: []experience.Check{{Observe: "connection version", Supports: "old", RulesOut: "new"}}, Verification: "probe", Exceptions: []string{"upstream unavailable"}, Sources: []experience.Source{{RunID: "source", ScenarioID: "training", SnapshotDigest: experience.Digest(snap), EvidenceRefs: []string{"ev"}}}}
 	require.NoError(t, experience.Save(ctx, s.Store, "candidate", c.Key(), c))
 	return ctx, s, c
 }
@@ -136,13 +136,12 @@ func TestExtractionRejectsFabricatedReferencesAndAbstains(t *testing.T) {
 	require.NoError(t, e)
 	bad := c
 	bad.Sources[0].EvidenceRefs = []string{"invented"}
-	b, _ := json.Marshal(map[string]any{"cards": []experience.Card{bad}, "reason": ""})
-	m := &modelStub{outputs: []string{string(b)}}
+	m := &extractionModel{messages: []*schema.Message{candidateCall(bad)}}
 	r, e := experience.Extract(ctx, s.Store, m, "test", []experience.Snapshot{snap})
 	require.ErrorContains(t, e, "unknown evidence")
 	require.Equal(t, 2, m.calls)
 	require.Empty(t, r.Cards)
-	m = &modelStub{outputs: []string{`{"cards":[],"reason":"insufficient evidence"}`}}
+	m = &extractionModel{messages: []*schema.Message{finishCall("insufficient evidence")}}
 	r, e = experience.Extract(ctx, s.Store, m, "test", []experience.Snapshot{snap})
 	require.NoError(t, e)
 	require.Empty(t, r.Cards)
@@ -200,8 +199,7 @@ func TestSuccessfulExtractionResolvesSourceAndCanBeReviewed(t *testing.T) {
 	c.Schema = ""
 	c.Version = 0
 	c.Sources = []experience.Source{{RunID: "source", EvidenceRefs: []string{"ev"}}}
-	b, _ := json.Marshal(map[string]any{"cards": []experience.Card{c}, "reason": ""})
-	m := &modelStub{outputs: []string{string(b)}}
+	m := &extractionModel{messages: []*schema.Message{candidateCall(c), finishCall("complete")}}
 	result, e := experience.Extract(ctx, s.Store, m, "test", []experience.Snapshot{snap})
 	require.NoError(t, e)
 	require.Len(t, result.Cards, 1)

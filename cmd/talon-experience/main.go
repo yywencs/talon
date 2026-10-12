@@ -39,6 +39,8 @@ func run(args []string) error {
 	env := f.String("env-file", ".env", "environment file")
 	sqlite := f.String("sqlite-test-db", "", "isolated SQLite test storage; production uses DATABASE_DSN")
 	candidateFile := f.String("file", "", "reviewed candidate JSON for merge/revision; still requires review and validation")
+	snapshotIDs := f.String("snapshot-digests", "", "comma-separated saved snapshot digests; extract only")
+	extractionPrompt := f.String("extraction-prompt-dir", "", "versioned extraction prompt directory; defaults to embedded prompt")
 	runs := f.String("run-ids", "", "comma-separated completed/failed run IDs")
 	keys := f.String("candidates", "", "comma-separated immutable candidate keys")
 	id := f.String("release", "", "immutable release ID")
@@ -134,10 +136,28 @@ func run(args []string) error {
 	}
 	if command == "snapshot" || command == "extract" {
 		runIDs := split(*runs)
-		if len(runIDs) == 0 {
+		if len(runIDs) == 0 && len(split(*snapshotIDs)) == 0 {
 			return errors.New("--run-ids must contain at least one terminal run ID")
 		}
+		if *snapshotIDs != "" && (command != "extract" || len(runIDs) > 0) {
+			return errors.New("--snapshot-digests is extract-only and cannot be combined with --run-ids")
+		}
 		snapshots := []experience.Snapshot{}
+		loaded := map[string]bool{}
+		for _, digest := range split(*snapshotIDs) {
+			if loaded[digest] {
+				continue
+			}
+			loaded[digest] = true
+			snap, e := experience.Load[experience.Snapshot](ctx, store, "snapshot", digest)
+			if e != nil {
+				return e
+			}
+			if experience.Digest(snap) != digest {
+				return errors.New("snapshot digest mismatch")
+			}
+			snapshots = append(snapshots, snap)
+		}
 		seen := map[string]bool{}
 		for _, run := range runIDs {
 			if seen[run] {
@@ -180,7 +200,7 @@ func run(args []string) error {
 		if e != nil {
 			return e
 		}
-		result, e := experience.Extract(ctx, store, m, cfg.Provider+"/"+cfg.Model, snapshots)
+		result, e := experience.Extract(ctx, store, m, cfg.Provider+"/"+cfg.Model, snapshots, *extractionPrompt)
 		if pe := print(result); pe != nil {
 			return pe
 		}

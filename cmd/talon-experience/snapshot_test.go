@@ -81,3 +81,11 @@ func TestSnapshotRequiresRunIDsAndMatchingDataset(t *testing.T) {
 	require.NoError(t, e)
 	require.Empty(t, rows)
 }
+
+func TestExtractSnapshotArgumentsRejectAmbiguity(t *testing.T) {
+	path, _, _ := snapshotFixture(t, "failed")
+	base := []string{"extract", "--env-file", "", "--sqlite-test-db", path}
+	require.ErrorContains(t, run(append(append([]string{}, base...), "--snapshot-digests", "missing", "--run-ids", "snapshot-source")), "cannot be combined")
+	require.ErrorIs(t, run(append(append([]string{}, base...), "--snapshot-digests", "missing", "--python", "/nonexistent-python")), experience.ErrNotFound)
+	require.ErrorContains(t, run(append(snapshotArgs(path), "--snapshot-digests", "missing")), "extract-only")
+}

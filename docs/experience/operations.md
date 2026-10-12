@@ -16,7 +16,7 @@
 
 PostgreSQL `experience_objects` 用 kind/key 管理 candidate、snapshot、extraction、review、release、embedding、indexed、report、published 和 pointer。除 pointer 外只新增、不覆盖；相同 key 的相同内容可幂等重试。卡片与来源快照、审核和报告都有 SHA-256 摘要。当前版本切换使用 CAS，拒绝基于过期 parent 发布。
 
-一次候选生成可以读取多条成功/失败运行。先用原有确定性 Evaluator 评估；只向模型提供判定与检查编号，不提供 expectations 或场景隐藏状态。提炼最多 5 张卡片、最多 2 次格式修正。证据不足允许返回空数组。输入超过 200KB 应拆成更小的同类批次；不会静默截断关键证据。提炼失败和原始模型输出保存在 extraction 对象中。
+一次候选生成可以读取多条成功/失败运行。先用原有确定性 Evaluator 评估；只向模型提供判定与检查编号，不提供 expectations 或场景隐藏状态。提炼通过工具逐条提交，最多 5 张卡片、8 次模型调用；整轮最多允许一次校验修正。证据不足允许返回空数组。输入超过 200KB 应拆成更小的同类批次；不会静默截断关键证据。提炼状态、失败原因、模型响应和工具反馈保存在 extraction 对象中。同一任务 ID 对应追加保存的多个审计快照；查看最终结果时以终态记录为准。
 
 ## 准备依赖
 
@@ -93,6 +93,26 @@ go run ./cmd/talon-experience list --kind snapshot
 重试 `index` 可补齐未完成的索引；每条向量先保存到 SQL，重试写入相同 point，不会重新生成不同向量。索引成功标记只在全部写入并核对数量后生成。网络超时不意味着发布成功；`active` 是新任务取版本的依据。已启动任务固定版本，active 回滚不改变旧任务。
 
 合并/修订候选可以先导出 JSON、修改正文和 sources，并用 `import-candidate --file candidate.json` 保存新 ID/版本，再重新 review。禁止在原 key 下覆盖内容；新批次成员变化也必须重新审核。生成和审核使用独立调用与提示词；默认复用部署的 LLM 配置，模型审核不是事实证明，必须经过场景验证。
+
+## 快照到候选经验
+
+读取已经保存的快照进行提炼，不需要重新评测或启动 Qdrant：
+
+```sh
+go run ./cmd/talon-experience extract --snapshot-digests DIGEST_A,DIGEST_B
+go run ./cmd/talon-experience list --kind candidate
+go run ./cmd/talon-experience list --kind extraction
+```
+
+`--snapshot-digests` 与 `--run-ids` 互斥；后者仍可用于评测并冻结运行后直接提炼。同一批不能包含同一运行的不同快照，以免证据引用歧义。
+
+默认 Prompt 位于 `prompts/experience-extraction/v2/`，由 `manifest.json`（版本、用途和工具协议）与分节的 `system.md` 组成，随二进制嵌入。可用 `--extraction-prompt-dir PATH` 加载其他版本。修改已发布规则时应复制新目录并更新版本。实际 Prompt 内容、版本、摘要和工具 Schema 分别以 `extraction_prompt`、`extraction_tools` 保存，提炼记录引用其摘要；无需额外 SQL 迁移。
+
+模型每轮只能调用一个离线工具：`submit_candidate` 提交一条候选；`finish_extraction` 说明完成或不生成的原因。程序检查字段、快照和证据引用，补齐 ID、版本及来源。候选 ID 根据完整内容计算，同内容重提复用同一候选；不做语义去重。工具不具备在线执行或发布能力。
+
+候选独立保存，后续失败不会撤销已有候选。结果状态为 `succeeded`、`abstained`、`partial` 或 `failed`；每次调用结果和反馈都会持久化。未知字段（包括模型自填 ID）、空白必要字段、伪造引用会被拒绝。程序校验不证明语义正确，候选仍需 review 和场景验证。
+
+当前每次 extract 会创建新的提炼任务；审计记录用于追溯，尚未实现提炼任务的进程重启续跑和跨任务模型调用去重。进程强制退出或数据库不可用时，最终审计可能未完成，已保存候选仍保留。没有包含运行筛选或自动批量调度。
 
 ## 测试目录与发布标准
 

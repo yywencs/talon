@@ -5,5 +5,5 @@ import "embed"
 
 // Files 包含所有已发布的 ToolOps Agent Prompt 版本。
 //
-//go:embed toolops-agent/*/*.md toolops-agent/*/manifest.json
+//go:embed toolops-agent/*/*.md toolops-agent/*/manifest.json experience-extraction/*/*.md experience-extraction/*/manifest.json
 var Files embed.FS
